@@ -50,6 +50,8 @@ Muse Code is the project's only coding agent and must follow [AGENTS.md](AGENTS.
 
 ## Phase 4 — Teach mode
 
+**Status: Complete.** Implementation, automated checks, four consecutive post-fix live smoke runs, and owner-confirmed manual testing are recorded in [docs/PHASE4.md](docs/PHASE4.md). Explicit human approval remains required for each generated lesson as normal product behavior.
+
 **Depends on:** Phases 1 and 3. **Scope and deliverables**
 - Support a short instructor recording or existing-video upload with visible recording state, permissions, preview, discard, and clear errors.
 - Gather grounded visual and audio evidence through verified integrations; allow representative objects to be selected or grounded.

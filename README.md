@@ -6,7 +6,7 @@ StepLint is planned as a visual verification system for physical procedures. It 
 
 ## Current status
 
-Phase 1 foundation is implemented: a minimal Next.js application, an application-only health endpoint, a server-only Meta client, and separate opt-in smoke scripts. On 2026-10-29, both owner-approved live smoke requests passed: Spark returned validated text, and SAM returned one box and a successfully decoded nonempty mask. Phase 2 adds a Zod-validated procedure schema and pure deterministic verifier, with 53 new local tests covering order, uncertainty, duplicates, reset/retry, and recovery. Phase 3 adds an isolated local media lab and opt-in video/transcription smoke scripts; the owner-provided recording passed approved live Files upload, SAM video parsing, cleanup, and Voice transcription on 2026-10-29. Teach and Practice workflows are not implemented.
+Phase 1 foundation is implemented: a minimal Next.js application, an application-only health endpoint, a server-only Meta client, and separate opt-in smoke scripts. On 2026-10-29, both owner-approved live smoke requests passed: Spark returned validated text, and SAM returned one box and a successfully decoded nonempty mask. Phase 2 adds a Zod-validated procedure schema and pure deterministic verifier, with 53 new local tests covering order, uncertainty, duplicates, reset/retry, and recovery. Phase 3 adds an isolated local media lab and opt-in video/transcription smoke scripts; the owner-provided recording passed approved live Files upload, SAM video parsing, cleanup, and Voice transcription on 2026-10-29. Phase 4 Teach mode is implemented with preview/confirmation, timestamped transcription, component selection, grounded draft review and explicit approval; its real-recording end-to-end smoke passed after rejecting an invalid draft and clarifying the model instructions. The owner confirmed manual testing works, closing Phase 4 acceptance. Each generated lesson still requires explicit human review and approval. Live Practice is not implemented.
 
 ## Project documents
 
@@ -18,6 +18,7 @@ Phase 1 foundation is implemented: a minimal Next.js application, an application
 - [docs/PHASE1.md](./docs/PHASE1.md) — Phase 1 implementation and verification record.
 - [docs/PHASE2.md](./docs/PHASE2.md) — procedure schemas, state machine, examples, and verification record.
 - [docs/PHASE3.md](./docs/PHASE3.md) — media lab, measured formats/latency, live script instructions, and verified results.
+- [docs/PHASE4.md](./docs/PHASE4.md) — Teach setup, pipeline, review/approval, tests, and live smoke results.
 
 Muse Code is the project's only coding agent and follows `AGENTS.md`. Muse Code is not a runtime model: only verified calls made by the StepLint application to Meta models count as application Meta integration. Phases 1–3 are complete for their documented tested scope; later phases require the owner's explicit authorization.
 
@@ -73,3 +74,11 @@ Official contracts: [Responses API](https://dev.meta.ai/docs/protocols/responses
 Run `npm run dev` and open http://localhost:3000/dev/media-lab. Confirm recording consent, inspect codec probes, then record 10–15 seconds with spoken narration. Preview/download the generated files or discard them. An existing MP4/H.264 file can be selected when encoding is unsupported. Files stay local; the page never sends them to Meta. The lab is disabled in production unless `ENABLE_MEDIA_LAB=1` is deliberately set server-side.
 
 See [PHASE3.md](docs/PHASE3.md) for local inspection and explicitly approved `smoke:sam-video` / `smoke:voice` commands. Both live Phase 3 smoke tests passed on the owner-provided recording. Successful parsing does not establish segmentation/transcription accuracy or procedural verification.
+
+## Teach mode (Phase 4)
+
+Run `npm run dev` and open http://localhost:3000/teach. The private workspace access code is `TEACH_ACCESS_TOKEN` in your ignored `.env.local`; use a random value of at least 32 characters. It is separate from `MODEL_API_KEY`, which stays server-only. This task generated an access code privately if none existed. Configure both variables in your hosting environment before using paid routes. Codespaces forwarded URLs are recognized automatically; for another reverse proxy, set `TEACH_PUBLIC_ORIGIN` to the exact public origin (for example `https://your-app.example`, without a trailing slash).
+
+Preview and confirm a short lesson before upload. Teach transcribes speech, lets you mark up to four components, tracks them using SAM, and asks Spark for an **unapproved** procedure draft. Correct the draft, inspect source frames and candidate errors, draw observable zone mappings, then explicitly review each condition before approval. Unsupported or uncertain transitions cannot become verified steps. Download the approved artifact to retain it; no server database stores your lesson. Temporary uploads request one-hour expiration and are deleted on compile/discard.
+
+The complete request is limited to 4 MB (MP4 ≤2.8 MB plus PCM WAV ≤1.1 MB and multipart overhead), below Vercel's 4.5 MB body cap. Source video may be saved locally for evidence. No live Practice mode is included. See [PHASE4.md](docs/PHASE4.md) for manual checks and the separately approved `npm run smoke:teach` workflow.

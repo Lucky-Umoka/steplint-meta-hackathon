@@ -66,13 +66,13 @@ export const TranscriptionSchema = z.object({
 });
 
 /** Native fetch because Meta's ASR endpoint is not OpenAI's /audio/transcriptions. */
-export async function transcribeWav(audio: Blob, apiKey: string, transport: typeof fetch = fetch) {
+export async function transcribeWav(audio: Blob, apiKey: string, transport: typeof fetch = fetch, options: { mode?: "PUSH_TO_TALK" | "ENDPOINTING"; signal?: AbortSignal } = {}) {
   if (audio.size > 1_100_000) throw new Error("WAV exceeds the spike size limit.");
   inspectWav(new Uint8Array(await audio.arrayBuffer()));
   // Keep request as a JSON *field* without a filename, matching Meta's curl contract.
   // FormData.append(Blob) would instead mark it as a file part.
   const boundary = `steplint-${crypto.randomUUID()}`;
-  const requestJson = JSON.stringify({ model: VOICE_MODEL, mode: "PUSH_TO_TALK", audioEncoding: "WAV" });
+  const requestJson = JSON.stringify({ model: VOICE_MODEL, mode: options.mode ?? "PUSH_TO_TALK", audioEncoding: "WAV" });
   const body = new Blob([
     `--${boundary}\r\nContent-Disposition: form-data; name="request"\r\nContent-Type: application/json\r\n\r\n${requestJson}\r\n`,
     `--${boundary}\r\nContent-Disposition: form-data; name="audio"; filename="steplint.wav"\r\nContent-Type: audio/wav\r\n\r\n`,
@@ -80,7 +80,7 @@ export async function transcribeWav(audio: Blob, apiKey: string, transport: type
   ], { type: `multipart/form-data; boundary=${boundary}` });
   const response = await transport("https://api.meta.ai/v1/asr/transcribe", {
     method: "POST", headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json", "Content-Type": body.type },
-    body, signal: AbortSignal.timeout(120_000), redirect: "error",
+    body, signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000), redirect: "error",
   });
   if (!response.ok) throw new Error(`Voice Transcribe failed: HTTP ${response.status}. No retry attempted.`);
   const result = TranscriptionSchema.safeParse(await response.json());

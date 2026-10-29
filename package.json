@@ -17,7 +17,8 @@
     "smoke:sam": "node --conditions=react-server --import tsx scripts/smoke-sam.ts",
     "media:inspect": "node --conditions=react-server --import tsx scripts/media-inspect.ts",
     "smoke:sam-video": "node --conditions=react-server --import tsx scripts/smoke-sam-video.ts",
-    "smoke:voice": "node --conditions=react-server --import tsx scripts/smoke-voice.ts"
+    "smoke:voice": "node --conditions=react-server --import tsx scripts/smoke-voice.ts",
+    "smoke:teach": "node --conditions=react-server --import tsx scripts/smoke-teach.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "0.1.0",

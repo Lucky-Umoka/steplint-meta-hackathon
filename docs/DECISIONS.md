@@ -57,3 +57,19 @@ After explicit owner approval, one `muse-spark-1.3` text request and one `sam-3.
 ### Phase 3 live evidence (2026-10-29)
 
 One owner-approved MP4 upload, one sam-3.1 video request (prompt selected from a local preview), one confirmed upload deletion, and one muse-voice-transcribe-1.0 WAV request succeeded without retries. SAM returned 214 decoded box/mask pairs across 214 of 223 source frames; no geometry was returned for nine frames. Upload took 4.409 s; segmentation/parsing 10.551 s; transcription 4.200 s. Only validated compatibility is claimed. Raw media, hashes, and the full transcript remain in ignored local storage; the public record contains aggregate evidence only.
+
+## Phase 4 Teach decisions (2026-10-29)
+
+- Preserve the single Next.js/TypeScript stack and existing ProcedureSpec; no new runtime dependency or database. Separate shared Teach schemas, browser media/UI, server provider orchestration, and small HTTP routes.
+- Stage the workflow so transcription precedes component marking. Upload the MP4 once, retain its file ID inside an authenticated encrypted short-lived reference, and reuse it for one multi-object SAM video call. Do not depend on process memory across Vercel invocations.
+- Correct the Phase 3 expiration assumption: current official Files docs support explicit expires_after with a minimum of 3,600 seconds. Request this one-hour lifetime, require it in upload metadata, and also delete on compile/discard/failure. Default uploads without this policy still do not expire.
+- Restrict the complete multipart body to 4,000,000 bytes, MP4 to 2.8 MB and mono PCM WAV to 1.1 MB. Read/count actual bytes before paid calls; preserve codec/duration/frame validation from the spike.
+- Muse Voice uses ENDPOINTING for actual turn timestamps. SAM uses official box/point prompts, source frame indices, include_confidence and official streaming/mask parsing. Spark receives bounded text evidence and strict-schema output with approval forced null. Generated observations never decide procedural pass/fail.
+- Require a separate high-entropy TEACH_ACCESS_TOKEN for paid owner routes; use HttpOnly owner cookies, same-origin checks and encrypted stage/session references. No API key or private environment value is returned to the browser. No multi-user role system or distributed exactly-once spending claim is made.
+- Approval repeats structural/evidence validation and requires explicit per-step review plus supported, non-overlapping zone mappings and ordered confidence-supported before/after frames without gaps. An integrity receipt accompanies exported artifacts; Phase 5 must validate external artifacts before execution.
+- Browser checks use explicitly mocked provider results; the agent does not approve the owner's lesson. The real-recording batch smoke remains a separate approved run. See [PHASE4.md](PHASE4.md).
+
+- Live draft validation rejected a forbidden transition referencing a non-earlier step. Keep the deterministic schema strict; explicitly explain rule ownership, backward references and empty first-step rules in Spark instructions, rather than silently modifying model output. Report the failing stage and confirmed/unconfirmed cleanup without secrets.
+- Accept the exact server-configured Codespaces/Vercel public origin or optional TEACH_PUBLIC_ORIGIN to support TLS reverse proxies; do not trust arbitrary forwarded-origin headers. Keep origin rejection for other sites.
+
+- Teach origin guard also accepts the browser-controlled `Sec-Fetch-Site: same-origin` signal with a valid HTTP(S) Origin, so preview/reverse proxies can rewrite internal Host/port without rejecting legitimate relative fetches. Explicit cross-site/same-site metadata is rejected; absent metadata retains the exact-origin allowlist. Authentication remains required. Reference: https://www.w3.org/TR/fetch-metadata/ (Sec-Fetch-Site and reserved Sec- headers).
