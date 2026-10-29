@@ -23,6 +23,8 @@ Muse Code is the project's only coding agent and must follow [AGENTS.md](AGENTS.
 
 ## Phase 2 — Deterministic procedure evaluator
 
+**Status: Complete.** See [docs/PHASE2.md](docs/PHASE2.md) for schema/evaluator semantics, recovery examples, limitations, and passing verification results.
+
 **Depends on:** Phase 1 foundation. **Scope and deliverables**
 - Define Zod-validated procedure, evidence, and event types; keep raw observations distinct from evaluated procedural outcomes.
 - Implement explicit state transitions, prerequisites, ordering, forbidden transitions, duplicate protection, and recovery independently of model calls.

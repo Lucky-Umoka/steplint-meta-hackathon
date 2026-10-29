@@ -6,7 +6,7 @@ StepLint is planned as a visual verification system for physical procedures. It 
 
 ## Current status
 
-Phase 1 foundation is implemented: a minimal Next.js application, an application-only health endpoint, a server-only Meta client, and separate opt-in smoke scripts. On 2026-10-29, both owner-approved live smoke requests passed: Spark returned validated text, and SAM returned one box and a successfully decoded nonempty mask. Teach mode, Practice mode, and the procedure evaluator are not implemented.
+Phase 1 foundation is implemented: a minimal Next.js application, an application-only health endpoint, a server-only Meta client, and separate opt-in smoke scripts. On 2026-10-29, both owner-approved live smoke requests passed: Spark returned validated text, and SAM returned one box and a successfully decoded nonempty mask. Phase 2 adds a Zod-validated procedure schema and pure deterministic verifier, with 53 new local tests covering order, uncertainty, duplicates, reset/retry, and recovery. Teach and Practice workflows are not implemented.
 
 ## Project documents
 
@@ -16,8 +16,9 @@ Phase 1 foundation is implemented: a minimal Next.js application, an application
 - [docs/DECISIONS.md](./docs/DECISIONS.md) — decisions and assumptions with their status.
 - [docs/DEMO.md](./docs/DEMO.md) — planned judging demonstration and proof checklist.
 - [docs/PHASE1.md](./docs/PHASE1.md) — Phase 1 implementation and verification record.
+- [docs/PHASE2.md](./docs/PHASE2.md) — procedure schemas, state machine, examples, and verification record.
 
-Muse Code is the project's only coding agent and follows `AGENTS.md`. Muse Code is not a runtime model: only verified calls made by the StepLint application to Meta models count as application Meta integration. Phase 1 is complete; later phases require the owner's explicit authorization.
+Muse Code is the project's only coding agent and follows `AGENTS.md`. Muse Code is not a runtime model: only verified calls made by the StepLint application to Meta models count as application Meta integration. Phases 1 and 2 are complete; later phases require the owner's explicit authorization.
 
 ## Planned demo
 

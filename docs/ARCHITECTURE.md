@@ -1,6 +1,6 @@
 # StepLint architecture
 
-**Status:** Phase 1 foundation is implemented; the two approved Spark/SAM smoke requests returned validated live results on 2026-10-29. The Teach/Practice architecture below remains proposed. See [PHASE1.md](PHASE1.md) for verification evidence.
+**Status:** Phase 1 foundation is implemented; the two approved Spark/SAM smoke requests returned validated live results on 2026-10-29. Phase 2 now implements the pure procedure schema and verifier; the Teach/Practice UI and perception workflows below remain proposed. See [PHASE1.md](PHASE1.md) for verification evidence.
 
 ## System boundaries
 
@@ -84,4 +84,10 @@ Unresolved until measured/documented: official model identifiers and API contrac
 
 ## Phase 1 foundation
 
-Implemented paths: `src/app/` (minimal server-rendered page and GET health route), `src/server/meta/` (server-only client and response validators), `scripts/` (separate explicitly approved live requests), and `tests/` (local tests and a synthetic PNG). There are no model-calling HTTP routes. App rendering and health checks do not construct the Meta client. The official OpenAI SDK targets Meta's base URL; SAM output is consumed by the official parser. No procedure or media workflow is implemented.
+Implemented paths: `src/app/` (minimal server-rendered page and GET health route), `src/server/meta/` (server-only client and response validators), `scripts/` (separate explicitly approved live requests), and `tests/` (local tests and a synthetic PNG). There are no model-calling HTTP routes. App rendering and health checks do not construct the Meta client. The official OpenAI SDK targets Meta's base URL; SAM output is consumed by the official parser. No Teach/Practice or media workflow is implemented.
+
+## Phase 2 deterministic core
+
+`src/procedure/schema.ts` defines strict Zod input/output schemas and inferred TypeScript types. `demo.ts` supplies the explicitly synthetic blue/yellow/red fixture. `verifier.ts` exposes `verifyEvents(unknown, unknown)`, validating and replaying a bounded event log into immutable-to-the-caller results. It has no server-only marker, I/O, provider, camera, or clock dependency; it can be tested in plain TypeScript independently of the app.
+
+Observed target-zone changes, ordering, explicit forbidden rules, prerequisite preservation, uncertainty, duplicate protection, and reset/retry are implemented for the controlled fixture. There are still no procedure or segmentation HTTP routes. See [PHASE2.md](PHASE2.md) for semantics, source-time conventions, limitations, worked recovery, and test evidence.
