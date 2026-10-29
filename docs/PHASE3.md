@@ -1,6 +1,6 @@
 # Phase 3 media compatibility spike
 
-Status: local implementation and browser compatibility experiment completed; real-device demonstration and approved live Files/SAM-video/Voice requests remain unverified. Do not proceed on a claim that those integrations have passed. Phase 1's image SAM success does not establish video support.
+Status: Phase 3 complete for the tested media path. Local compatibility checks passed, and on 2026-10-29 the owner-provided MP4/WAV passed explicitly approved live Files upload, SAM video parsing, cleanup, and Voice transcription. Browser coverage and perception accuracy remain limited as described below.
 
 ## What is implemented
 
@@ -86,10 +86,27 @@ Meta Files docs allow uploads up to 1 GiB, with a team storage cap and no automa
 - Production HTTP checks: `/dev/media-lab` 404 with the enable flag unset, `/api/health` 200 with its unchanged app-only response, public license notice 200.
 - Current credential value absent from source/config/docs/public assets; neither its value nor `MODEL_API_KEY` appears in the 23 browser build files scanned. No credential values were printed.
 - `git diff --check`: passed. `.media-lab/` and real `.env` files are ignored. Next.js-generated changes to `AGENTS.md` and `next-env.d.ts` were removed after verification to preserve the owner's instructions and avoid unrelated type-path churn.
-- **Live Files upload / SAM video / Voice transcription:** not run; awaiting a consented recording containing speech, then explicit owner approval. Upload, model, and network latency are therefore **unmeasured**.
-- **Real camera/microphone check:** not performed in this headless environment. Safari, Firefox, mobile, and AAC-enabled encoding are unverified. The compatibility spike is not a claim of universal browser support.
+- **Live Files upload / SAM video / Voice transcription:** passed on owner-provided recordings after explicit approval, with no retries. See the live verification record below.
+- **Real media:** the owner recorded and supplied a real video and WAV; both were parsed and accepted by their live endpoints. The uploaded MP4 contains AAC, but its browser/encoder capability probe was not independently observed here. Real-device permission/indicator controls were not directly observed by the agent. Safari, Firefox, mobile, and universal browser support remain unverified.
 
-Before moving on: run `npm run dev`, open `/dev/media-lab`, record a physical 10–15 second demonstration with narration, inspect both previews, download MP4/WAV, discard, and verify the camera/mic indicator turns off. Test denied permissions and the existing-file fallback on your actual browser. Provide the resulting local paths for inspection and approval of bounded live requests. Record actual live outputs and latency here before calling Phase 3 fully verified.
+Remaining owner manual checks: verify that the camera/mic indicator turns off after stop/discard and test permissions/fallback on the actual target browser. These controls were exercised with synthetic devices locally; successful live model calls do not establish universal browser compatibility. Phase 4 remains unimplemented and requires separate authorization.
+
+## Owner-provided live verification (2026-10-29)
+
+The owner uploaded `.media-lab/steplint.mp4` and `.media-lab/steplint.wav`, then explicitly authorized the live requests. Local inspection verified formats, limits, and SHA-256 before the calls. The owner received a pre-call notice naming both models, the selected prompt, bounded counts, no retries, and an inference estimate below $0.046. Credentials stayed server-side. The full transcript and file hashes are kept only in ignored `.media-lab/live-results.json`; personal media and the full transcript are not added to public documentation.
+
+| Input | Actual format | Duration | Size |
+| --- | --- | --- | --- |
+| Owner MP4 | H.264 `avc1.64001e`, 640×480, 223 frames at 15 fps; AAC `mp4a.40.2`, mono 48 kHz | 15.0173 s container | 2,103,900 bytes |
+| Owner WAV | RIFF/WAVE, mono integer PCM16, 24 kHz | 14.9973 s | 719,916 bytes |
+
+- Local `npm run media:inspect -- .media-lab/steplint.mp4 .media-lab/steplint.wav`: exit 0.
+- `npm run smoke:sam-video -- --approved --mp4 .media-lab/steplint.mp4 --sha256 <inspected-hash> --concept 'orange box'`: exit 0. The short noun phrase was chosen from a local preview of the supplied recording, rather than assuming it contained the blue/yellow/red fixture. One Files upload with purpose=user_data, one streaming sam-3.1 call, and one confirmed deletion. Upload latency **4,409 ms**; segmentation plus parsing **10,551 ms**.
+- Official parser accepted a completed stream without diagnostics and decoded **214 boxes and 214 nonempty masks**, across **214 unique source frames**. Frames with geometry: 0–60, 62–89, and 98–222. Source frames 61 and 90–97 had no returned geometry; no detection or action success is invented for those nine frames. No per-frame visual accuracy audit was performed.
+- `npm run smoke:voice -- --approved --wav .media-lab/steplint.wav --sha256 <inspected-hash>`: exit 0. One request to muse-voice-transcribe-1.0 returned a validated, nonempty transcript; latency **4,200 ms**, provider audio duration **15,040 ms**. Transcript accuracy was not independently scored.
+- No retries, additional model requests, or billing lookup. Estimated inference cost was below $0.046; this is not an actual measured bill. Measured latencies include client/network/validation time and do not establish real-time performance.
+
+The tested MP4→Files→SAM video and WAV→Voice request paths are now verified. These results establish supported transport and successful response parsing for this recording, not procedure compilation, action recognition, safety, or correctness of the recorded demonstration.
 
 ## Official sources and license
 
