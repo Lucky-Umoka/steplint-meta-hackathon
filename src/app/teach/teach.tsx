@@ -10,6 +10,7 @@ const DraftEvent = z.object({ type: z.literal("draft"), draft: DraftSchema, cont
 export default function Teach() {
   const [access, setAccess] = useState(""), [unlocked, setUnlocked] = useState(false);
   const [prepared, setPrepared] = useState<PreparedLesson | null>(null), [url, setUrl] = useState("");
+  const [automatic, setAutomatic] = useState(true);
   const [confirmed, setConfirmed] = useState(false), [lesson, setLesson] = useState<Lesson | null>(null);
   const [uploadToken, setUploadToken] = useState(""), [result, setResult] = useState<{ draft: TeachDraft; context: TeachContext; token: string } | null>(null);
   const [busy, setBusy] = useState(false), [status, setStatus] = useState(""), [error, setError] = useState("");
@@ -55,16 +56,17 @@ export default function Teach() {
       if (!response.ok) { const parsed = z.object({ error: z.string() }).safeParse(data); throw new Error(parsed.success ? parsed.data.error : "Lesson upload/transcription failed."); }
       const parsed = z.object({ lesson: LessonSchema, token: z.string() }).parse(data);
       cleanupToken.current = parsed.token;
-      setLesson(parsed.lesson); setUploadToken(parsed.token); setStatus("Transcript ready. Mark components within 30 minutes; the temporary provider file expires after one hour.");
+      setLesson(parsed.lesson); setUploadToken(parsed.token); setStatus("Transcript ready. Let AI build the lesson within 30 minutes; the temporary provider file expires after one hour.");
+      if (automatic) await compile(undefined, parsed.token);
     } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "Upload failed."); }
     finally { if (!controller.signal.aborted) { latch.current = false; setBusy(false); } }
   }
-  async function compile(selections: Selection[]) {
-    if (latch.current || !uploadToken) return;
+  async function compile(selections?: Selection[], suppliedToken?: string) {
+    if ((!suppliedToken && latch.current) || !(suppliedToken || uploadToken)) return;
     latch.current = true; setBusy(true); setError("");
     const controller = new AbortController(); request.current = controller;
     try {
-      const response = await fetch("/api/teach/compile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: uploadToken, selections, confirmed: true }), signal: controller.signal });
+      const response = await fetch("/api/teach/compile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: suppliedToken ?? uploadToken, ...(selections ? { selections } : { automatic: true }), confirmed: true }), signal: controller.signal });
       if (!response.ok || !response.body) throw new Error(response.status === 429 ? "Rate limit reached; no retry was made." : "Tracking could not start. Your reference may have expired.");
       // The compile request owns cleanup once it has started; do not send a competing deletion.
       cleanupToken.current = ""; setUploadToken("");
@@ -85,16 +87,16 @@ export default function Teach() {
   }
   return <main className="teach-workspace mx-auto max-w-4xl space-y-6 p-6 text-slate-950">
     <h1 className="text-3xl font-bold">Teach StepLint</h1>
-    <p>Record a short lesson, ground its components, and review a draft procedure. This is batch processing; it does not check your actions live.</p>
+    <p>Record a short lesson, let AI identify and track its components, then review and save the suggested procedure. This is batch processing; it does not check your actions live.</p>
     {!unlocked ? <section className="space-y-3 rounded border p-4"><h2 className="text-xl font-bold">Private teaching workspace</h2><p>Your workspace access code protects paid processing. It is separate from the model API key.</p><label>Access code <input type="password" autoComplete="current-password" value={access} onChange={(e) => setAccess(e.target.value)} /></label><button onClick={() => void unlock()}>Unlock Teach</button></section> : <>
       {!prepared && <LessonCapture onPrepared={acceptPrepared} />}
       {prepared && <section className="space-y-3 rounded border p-4"><h2 className="text-xl font-bold">2. Preview and confirm your lesson</h2><video controls playsInline src={url} className="w-full" /><p>{prepared.media.info.durationSeconds.toFixed(2)} seconds; MP4 {(prepared.video.size / 1_000_000).toFixed(2)} MB; WAV {(prepared.audio.size / 1_000_000).toFixed(2)} MB. Format: {prepared.media.info.mime}.</p>
-        {!lesson && <><p>Transcription estimate: ${(prepared.media.info.durationSeconds * 0.18 / 3600).toFixed(4)}. The video uploads once and is deleted after processing/discard, with a requested one-hour expiration as fallback.</p><label className="flex gap-2"><input type="checkbox" disabled={busy} checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />I previewed this lesson and approve its upload and one Muse Voice transcription request. Later tracking/drafting needs a separate confirmation.</label><button disabled={!confirmed || busy} onClick={() => void upload()}>Confirm lesson and upload</button></>}
+        {!lesson && <><p>Transcription estimate: ${(prepared.media.info.durationSeconds * 0.18 / 3600).toFixed(4)}. The video uploads once and is deleted after processing/discard, with a requested one-hour expiration as fallback.</p><label className="flex gap-2"><input type="checkbox" disabled={busy} checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />I previewed this lesson and approve its upload and one Muse Voice transcription request.{automatic ? " I also approve automatic analysis: two Muse Spark requests and one SAM 3.1 tracking request, with no automatic retries." : " I will choose components before approving tracking and drafting."}</label><details><summary>Processing options</summary><label className="flex gap-2"><input type="checkbox" disabled={busy} checked={!automatic} onChange={(e) => { setAutomatic(!e.target.checked); setConfirmed(false); }} />Choose component marks manually instead of automatic analysis</label></details><p>{automatic ? `SAM estimate: $${(prepared.media.frameTimesMs.length * .20 / 1000).toFixed(4)}. Two Spark calls add video/text processing with up to 7,944 output tokens total; total cost varies.` : "Manual marks use one SAM and one Spark request after separate confirmation."}</p><button disabled={!confirmed || busy} onClick={() => void upload()}>Confirm lesson and upload</button></>}
         <p><a className="underline" href={url} download={`steplint-lesson-${lesson?.lessonId ?? "local"}.mp4`}>Save lesson video on this device</a> if you want to retain source evidence after temporary server files are deleted.</p>
         <button onClick={() => void discard()}>Discard lesson</button>
       </section>}
       {lesson && <section className="space-y-3 rounded border p-4"><h2 className="text-xl font-bold">Transcript and source times</h2><p>{lesson.transcript.text}</p><ol className="list-decimal pl-5">{lesson.transcript.turns.map((turn, index) => <li key={index}>{(turn.startMs / 1000).toFixed(2)}–{(turn.endMs / 1000).toFixed(2)} s: {turn.text}</li>)}</ol><p>These are model-provided speech-turn times, not word timestamps or proof of an action.</p></section>}
-      {lesson && prepared && !result && uploadToken && <ComponentPicker lesson={lesson} video={prepared.video} busy={busy} onCompile={(selections) => void compile(selections)} />}
+      {lesson && prepared && !result && uploadToken && <ComponentPicker lesson={lesson} video={prepared.video} busy={busy} onCompile={(selections) => void compile(selections)} onAutomatic={() => void compile()} />}
       {result && prepared && <Review initial={result.draft} context={result.context} token={result.token} video={prepared.video} />}
     </>}
     {status && <p role="status" aria-live="polite">{status}</p>}{error && <p role="alert" className="text-red-800">{error}</p>}

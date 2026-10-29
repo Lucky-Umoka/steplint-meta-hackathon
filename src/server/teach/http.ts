@@ -63,19 +63,20 @@ export async function lesson(request: Request) {
 export async function compile(request: Request) {
   try {
     const session = authorize(request);
-    const input = z.strictObject({ token: z.string().max(1_000_000), selections: z.unknown(), confirmed: z.literal(true) }).parse(await readJson(request));
+    const input = z.strictObject({ token: z.string().max(1_000_000), selections: z.unknown().optional(), automatic: z.boolean().optional(), confirmed: z.literal(true) }).parse(await readJson(request));
     const upload = UploadReferenceSchema.parse(unseal(input.token, "upload", session));
     // Validate marks before creating a stream or spending on provider requests.
     const { validateSelections } = await import("../../teach/schema");
-    validateSelections(input.selections, upload.lesson.media);
+    if (input.automatic === true && input.selections !== undefined || input.automatic !== true && input.selections === undefined) throw new TeachError(400, "Choose automatic analysis or explicit component marks.");
+    if (input.automatic !== true) validateSelections(input.selections, upload.lesson.media);
     const controller = new AbortController();
-    const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(240_000)]);
+    const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(280_000)]);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
       async start(output) {
         const send = (value: unknown) => { if (!signal.aborted) output.enqueue(encoder.encode(JSON.stringify(value) + "\n")); };
         try {
-          const result = await compileLesson(createMetaClient(), upload, input.selections, (message) => send({ type: "progress", message }), signal);
+          const result = await compileLesson(createMetaClient(), upload, input.automatic === true ? undefined : input.selections, (message) => send({ type: "progress", message }), signal);
           send({ type: "draft", draft: result.draft, context: result.context, token: seal(result.context, "review", session), uploadDeleted: true });
         } catch (error) { send({ type: "error", ...safeError(error) }); }
         finally { try { output.close(); } catch { /* Consumer already cancelled; provider cleanup ran in compileLesson. */ } }

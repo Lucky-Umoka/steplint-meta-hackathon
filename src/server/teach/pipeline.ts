@@ -7,6 +7,7 @@ import { z } from "zod";
 import { inspectLessonVideo, validateLessonAudio } from "../../teach/media";
 import { ContextSchema, DraftSchema, TranscriptSchema, validateDraft, validateSelections, type Lesson, type LessonMedia, type Selection, type TeachContext, type Tracking } from "../../teach/schema";
 import { TeachError, TeachStageError } from "./security";
+import { discoverComponents } from "./discovery";
 import { transcribeWav, type TranscriptionSchema } from "../meta/media";
 
 export type TranscriptResponse = z.infer<typeof TranscriptionSchema>;
@@ -104,11 +105,18 @@ export function parseSparkDraft(response: unknown, context: TeachContext) {
   }
 }
 export async function compileLesson(client: OpenAI, upload: { fileId: string; lesson: Lesson }, selectionInput: unknown, progress: (message: string) => void, signal: AbortSignal) {
-  const selections = validateSelections(selectionInput, upload.lesson.media);
-  let stage = "SAM tracking";
+  let selections: Selection[] = [];
+  if (selectionInput !== undefined) selections = validateSelections(selectionInput, upload.lesson.media);
+  let stage = selectionInput === undefined ? "Automatic component analysis" : "SAM tracking";
   let result: { context: TeachContext; draft: ReturnType<typeof parseSparkDraft> } | null = null;
   let failure: TeachStageError | null = null;
   try {
+    if (selectionInput === undefined) {
+      progress("Finding task components automatically from your video…");
+      selections = await discoverComponents(client, upload.fileId, upload.lesson, signal);
+      progress(`Found ${selections.length} candidate components. Tracking their proposed marks…`);
+    }
+    stage = "SAM tracking";
     progress("Tracking marked components through the recorded lesson…");
     const events = await client.post<Stream<ResponsesEvent>>("/responses", { body: samSelectionRequest(upload.fileId, selections, upload.lesson.media), stream: true, signal, timeout: 120_000 });
     const parsed = parseVideoStream(events);

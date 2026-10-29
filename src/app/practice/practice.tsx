@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { demoProcedure } from "@/procedure/demo";
 import { ProcedureSpecSchema, type VerificationResult } from "@/procedure/schema";
 import { verifyEvents } from "@/procedure/verifier";
@@ -87,6 +87,15 @@ export default function Practice() {
       choose(PracticeLessonSchema.parse(await response.json()));
     } catch (e) { setError(e instanceof Error ? e.message : "Invalid lesson."); }
   }
+  const loadSavedLesson = useEffectEvent(async () => {
+    try {
+      const saved = sessionStorage.getItem("steplint-approved-handoff");
+      if (!saved) return;
+      sessionStorage.removeItem("steplint-approved-handoff");
+      await importLesson(new File([saved], "steplint-approved-lesson.json", { type: "application/json" }));
+    } catch { setError("Saved lesson could not be opened. Import your downloaded approved export."); }
+  });
+  useEffect(() => { const frame = requestAnimationFrame(() => { void loadSavedLesson(); }); return () => cancelAnimationFrame(frame); }, []);
   function position(event: React.PointerEvent<SVGSVGElement>): Point { const r = event.currentTarget.getBoundingClientRect(); return { x: Math.max(0, Math.min(.999, (event.clientX - r.left) / r.width)), y: Math.max(0, Math.min(.999, (event.clientY - r.top) / r.height)) }; }
   function mark(event: React.PointerEvent<SVGSVGElement>) {
     const first = drag.current, last = position(event); drag.current = null;

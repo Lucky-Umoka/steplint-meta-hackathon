@@ -7,19 +7,19 @@ import { inspectLessonVideo, validateLessonAudio } from "../src/teach/media";
 import { ContextSchema, DraftSchema, LessonSchema, validateDraft, validateSelections, MAX_TEACH_BODY } from "../src/teach/schema";
 
 async function main() {
-  const { values } = parseArgs({ options: { approved: { type: "boolean" }, mp4: { type: "string" }, wav: { type: "string" }, "mp4-sha256": { type: "string" }, "wav-sha256": { type: "string" }, selections: { type: "string" }, "base-url": { type: "string", default: "http://127.0.0.1:3000" } } });
+  const { values } = parseArgs({ options: { approved: { type: "boolean" }, automatic: { type: "boolean" }, mp4: { type: "string" }, wav: { type: "string" }, "mp4-sha256": { type: "string" }, "wav-sha256": { type: "string" }, selections: { type: "string" }, "base-url": { type: "string", default: "http://127.0.0.1:3000" } } });
   prepareMediaSmoke(values.approved);
-  if (!values.mp4 || !values.wav || !values["mp4-sha256"] || !values["wav-sha256"] || !values.selections) throw new Error("Require approved MP4/WAV paths and hashes, plus --selections JSON_PATH.");
+  if (!values.mp4 || !values.wav || !values["mp4-sha256"] || !values["wav-sha256"] || (!values.automatic && !values.selections) || (values.automatic && values.selections)) throw new Error("Require approved MP4/WAV paths and hashes, plus either --automatic or --selections JSON_PATH.");
   const base = new URL(values["base-url"]);
   if (!["localhost", "127.0.0.1"].includes(base.hostname) || !["http:", "https:"].includes(base.protocol)) throw new Error("This Phase 4 smoke script only targets a local StepLint server.");
   const mp4 = await readMedia(values.mp4, 2_800_000), wav = await readMedia(values.wav, 1_100_000);
   if (sha256(mp4) !== values["mp4-sha256"] || sha256(wav) !== values["wav-sha256"]) throw new Error("Media hashes differ from the approved recording.");
   const media = await inspectLessonVideo(new Blob([mp4])); validateLessonAudio(wav, media);
-  const selections = validateSelections(JSON.parse((await readMedia(values.selections, 16_000)).toString()), media);
+  const selections = values.selections ? validateSelections(JSON.parse((await readMedia(values.selections, 16_000)).toString()), media) : undefined;
   if (mp4.length + wav.length + 10_000 > MAX_TEACH_BODY) throw new Error("Combined upload too large.");
   const access = z.string().min(32).parse(process.env.TEACH_ACCESS_TOKEN);
   const headers = { Authorization: `Bearer ${access}` };
-  console.log(`Teach live smoke: one MP4 upload, one Muse Voice ENDPOINTING request, one SAM video request (${selections.length} selected components, ${media.frameTimesMs.length} frames), one Muse Spark draft request (max 6144 output tokens), and cleanup deletion; no retries. No human approval will be fabricated.`);
+  console.log(`Teach live smoke: one MP4 upload, one Muse Voice ENDPOINTING request, one SAM video request (${selections?.length ?? "up to 4 automatically proposed"} selected components, ${media.frameTimesMs.length} frames), ${values.automatic ? "one Muse Spark video-discovery request (max 1800 output tokens), " : ""}one Muse Spark draft request (max 6144 output tokens), and cleanup deletion; no retries. No human approval will be fabricated.`);
   const started = performance.now();
   let draftingStartedMs: number | null = null;
   const body = new FormData(); body.append("video", new Blob([mp4], { type: "video/mp4" }), "lesson.mp4"); body.append("audio", new Blob([wav], { type: "audio/wav" }), "lesson.wav"); body.append("confirmed", "true");
@@ -30,7 +30,7 @@ async function main() {
     const first = z.object({ lesson: LessonSchema, token: z.string() }).parse(await uploaded.json());
     pendingToken = first.token;
     const uploadAndTranscriptionMs = Math.round(performance.now() - started);
-    const compiled = await fetch(new URL("/api/teach/compile", base), { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ token: first.token, selections, confirmed: true }), redirect: "error", signal: AbortSignal.timeout(260_000) });
+    const compiled = await fetch(new URL("/api/teach/compile", base), { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ token: first.token, ...(values.automatic ? { automatic: true } : { selections }), confirmed: true }), redirect: "error", signal: AbortSignal.timeout(values.automatic ? 300_000 : 260_000) });
     if (!compiled.ok || !compiled.body) throw new Error(`Teach compile endpoint failed: HTTP ${compiled.status}. No retry attempted.`);
     pendingToken = ""; // server now owns deletion, including processing failures
     const reader = compiled.body.getReader(); const decoder = new TextDecoder(); let buffer = "";

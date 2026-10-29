@@ -24,7 +24,7 @@ SAM uses learned segmentation and point/box grounding in Teach. The local colour
 
 ## Lesson choice and references
 
-Import an unchanged approved Teach export after unlocking Teach in the same browser session. The signed receipt is verified on the server before the UI accepts it. Arbitrary JSON with an `approval` property does not bypass that check.
+Use **Save and open Practice** after approving in Teach, or import an unchanged approved Teach export after unlocking Teach in the same browser session. The direct handoff consumes a one-use local session-storage entry and validates the same receipt server-side. The signed receipt is verified on the server before the UI accepts it. Arbitrary JSON with an `approval` property does not bypass that check.
 
 Alternatively, review the **hand-authored controlled fixture**, enter a reviewer name and explicitly approve it for this local demo. This approval is an actual UI action; the synthetic approval in the test fixture is replaced. The UI does not claim that Meta generated or approved this fixture. Its three observable transitions are blue base placement, yellow support placement after the base, and red latch marker movement after support verification. The last transition has an explicit forbidden-before-support rule.
 

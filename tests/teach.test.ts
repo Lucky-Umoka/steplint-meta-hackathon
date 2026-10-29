@@ -4,6 +4,8 @@ import OpenAI from "openai";
 import { parseVideoStream, type ResponsesEvent } from "@meta-sam/parser";
 import { approveDraft, validateDraft, validateSelections, type TeachContext, type TeachDraft, type TeachReview } from "../src/teach/schema";
 import { inspectLessonVideo, validateLessonAudio } from "../src/teach/media";
+import { discoveryRequest, parseDiscovery } from "../src/server/teach/discovery";
+import { suggestReviews, keyFrames } from "../src/teach/review-suggestions";
 import { normalizeTranscript, samSelectionRequest, summarizeTracking, sparkRequest, parseSparkDraft, uploadLesson, compileLesson } from "../src/server/teach/pipeline";
 import { authorize, seal, unseal } from "../src/server/teach/security";
 import { boundedBody, lesson as lessonRoute, approve as approvalRoute, compile as compileRoute, access as accessRoute } from "../src/server/teach/http";
@@ -222,5 +224,75 @@ describe("Teach HTTP/security boundaries", () => {
   it("rejects a forged upload reference before processing", async () => {
     const response = await compileRoute(new Request("http://localhost/api/teach/compile", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ token: "forged", selections: context.selections, confirmed: true }) }));
     expect(response.status).toBe(401);
+  });
+});
+
+
+describe("automatic lesson discovery and review suggestions", () => {
+  const discovery = { components: [{ description: "Blue base", timestampMs: 0, box: { left: 10, top: 10, right: 100, bottom: 100 } }] };
+  it("uses documented video file input and bounded structured output for discovery", () => {
+    const request = discoveryRequest("file-reused", context.lesson);
+    expect(request.model).toBe("muse-spark-1.3"); expect(request.max_output_tokens).toBe(1800);
+    expect(request.input[0].content).toContainEqual({ type: "input_file", file_id: "file-reused" });
+    expect(request.text.format.strict).toBe(true);
+  });
+  it("maps proposed timestamps to actual source frames and rejects malformed/out-of-bounds boxes", () => {
+    const response = (data: unknown) => ({ status: "completed", output_text: JSON.stringify(data) });
+    expect(parseDiscovery(response(discovery), context.lesson)[0].mark.kind).toBe("box");
+    expect(parseDiscovery(response({ components: [{ ...discovery.components[0], timestampMs: 920 }] }), context.lesson)[0].frame).toBe(1);
+    for (const data of [{ components: [] }, { components: [{ ...discovery.components[0], timestampMs: 20000 }] }, { components: [{ ...discovery.components[0], box: { left: 10, top: 10, right: 9999, bottom: 100 } }] }]) expect(() => parseDiscovery(response(data), context.lesson)).toThrow();
+    expect(() => parseDiscovery({ status: "incomplete", output_text: "{}" }, context.lesson)).toThrow("did not complete");
+    expect(() => parseDiscovery({ status: "completed", output_text: "not JSON" }, context.lesson)).toThrow("invalid JSON");
+  });
+  it.each([false, true])("automatic pipeline reuses one file and cleans up, discovery invalid=%s", async (invalid) => {
+    const calls: string[] = []; let sparkCalls = 0;
+    const transport: typeof fetch = async (url, options) => {
+      const req = new Request(url, options);
+      if (req.method === "DELETE") { calls.push("delete"); return Response.json({ id: "file-teach", deleted: true }); }
+      const body = await req.json() as { model: string; input: unknown };
+      calls.push(body.model); if (body.model === "sam-3.1" || sparkCalls === 0) expect(JSON.stringify(body.input)).toContain('"file_id":"file-teach"');
+      if (body.model === "sam-3.1") return new Response(events(geometry(0, 10) + geometry(1, 200)).map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
+      const text = ++sparkCalls === 1 ? JSON.stringify(invalid ? { components: [] } : discovery) : JSON.stringify(draftFor());
+      return Response.json({ id: "resp-mock", object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] }] });
+    };
+    const client = new OpenAI({ apiKey: "mock-key", baseURL: "https://api.meta.ai/v1", fetch: transport, maxRetries: 0 });
+    const result = compileLesson(client, { fileId: "file-teach", lesson: context.lesson }, undefined, () => {}, new AbortController().signal);
+    if (invalid) { await expect(result).rejects.toThrow("deletion was confirmed"); expect(calls).toEqual(["muse-spark-1.3", "delete"]); }
+    else { expect((await result).draft.procedure.approval).toBeNull(); expect(calls).toEqual(["muse-spark-1.3", "sam-3.1", "muse-spark-1.3", "delete"]); }
+  });
+  it("prefills supported zones but never marks human review complete", () => {
+    const draft = draftFor(), suggestions = suggestReviews(draft, context), check = suggestions["move-base"];
+    expect(check.fromFrame).toBe(0); expect(check.toFrame).toBe(1); expect(check.fromRegion).not.toBeNull(); expect(check.toRegion).not.toBeNull();
+    expect(check.reviewed).toBe(false); expect(check.conditionConfirmed).toBe(false);
+    expect(() => approveDraft(draft, { reviewer: "Test", confirmed: true, steps: [{ stepId: "move-base", ...check }] }, context, 123)).toThrow();
+    expect(approveDraft(draft, { reviewer: "Test", confirmed: true, steps: [{ stepId: "move-base", ...check, reviewed: true, conditionConfirmed: true }] }, context, 123).procedure.approval).not.toBeNull();
+  });
+  it.each(["missing", "uncertain", "stationary"])("does not suggest success or fabricated zones for %s evidence", (kind) => {
+    const changed = structuredClone(context);
+    if (kind === "missing") changed.tracking[0].samples[1].frame = 2;
+    if (kind === "uncertain") changed.tracking[0].samples[1].confidence = null;
+    if (kind === "stationary") changed.tracking[0].samples[1].box = changed.tracking[0].samples[0].box;
+    expect(suggestReviews(draftFor(), changed)["move-base"].toRegion).toBeNull();
+  });
+  it("does not propose an overlapping before/after interval for a later step", () => {
+    const draft = draftFor(), changed = structuredClone(context);
+    const later = structuredClone(draft.procedure.steps[0]); later.id = "later"; later.condition.componentId = "component-2"; later.prerequisites = ["move-base"];
+    draft.procedure.steps.push(later); draft.procedure.components.push({ id: "component-2", description: "Second object" });
+    changed.tracking.push({ ...structuredClone(changed.tracking[0]), componentId: "component-2" });
+    expect(suggestReviews(draft, changed).later.toRegion).toBeNull();
+  });
+  it("rejects conflicting automatic/manual requests before any provider request", async () => {
+    const factory = vi.spyOn(providerClient, "createMetaClient");
+    const token = seal({ fileId: "file-teach", lesson: context.lesson }, "upload", "owner-cli");
+    const response = await compileRoute(new Request("http://localhost/api/teach/compile", { method: "POST", headers: { Authorization: `Bearer ${process.env.TEACH_ACCESS_TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify({ token, selections: context.selections, automatic: true, confirmed: true }) }));
+    expect(response.status).toBe(400); expect(factory).not.toHaveBeenCalled();
+  });
+  it("shows a bounded set of useful moments and retains selected before/after frames", () => {
+    const changed = structuredClone(context); changed.lesson.media.frameTimesMs = Array.from({ length: 223 }, (_, i) => i * 67);
+    const result = keyFrames(changed, Array.from({ length: 223 }, (_, i) => i), [0, 222]);
+    expect(result.length).toBeLessThanOrEqual(10); expect(result).toContain(0); expect(result).toContain(222);
+    const selected = [0, 2, 30, 60, 90, 120, 180, 222];
+    const dense = keyFrames(changed, Array.from({ length: 223 }, (_, i) => i), selected);
+    expect(dense.length).toBeLessThanOrEqual(10); for (const frame of selected) expect(dense).toContain(frame);
   });
 });

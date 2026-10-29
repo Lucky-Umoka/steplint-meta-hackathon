@@ -3,19 +3,25 @@ import { useEffect, useState } from "react";
 import { frameImage } from "@/teach/media";
 import type { Lesson, Selection } from "@/teach/schema";
 import FrameMark, { type Mark } from "./frame-mark";
-export default function ComponentPicker({ lesson, video, busy, onCompile }: { lesson: Lesson; video: Blob; busy: boolean; onCompile: (selections: Selection[]) => void }) {
+export default function ComponentPicker({ lesson, video, busy, onCompile, onAutomatic }: { lesson: Lesson; video: Blob; busy: boolean; onCompile: (selections: Selection[]) => void; onAutomatic: () => void }) {
   const [frame, setFrame] = useState(0), [image, setImage] = useState<{ frame: number; url: string } | null>(null);
   const [mode, setMode] = useState<"point" | "box">("point");
   const [mark, setMark] = useState<Mark | null>(null), [name, setName] = useState("");
   const [selections, setSelections] = useState<Selection[]>([]);
+  const [automaticConsent, setAutomaticConsent] = useState(false);
   const [consent, setConsent] = useState(false), [error, setError] = useState("");
   useEffect(() => { let active = true; void frameImage(video, lesson.media.frameTimesMs[frame]).then((url) => { if (active) setImage({ frame, url }); }).catch(() => { if (active) setError("This frame could not be decoded."); }); return () => { active = false; }; }, [video, frame, lesson.media.frameTimesMs]);
   const size = lesson.media.info.video;
   if (!size) return null;
   return <section className="space-y-4 rounded border p-4">
-    <h2 className="text-xl font-bold">3. Mark the components</h2>
+    <h2 className="text-xl font-bold">3. Let AI build your lesson</h2>
+    <p>AI will identify up to four task components, propose their marks, track them through the clip and draft steps with suggested starting/target zones. You review, edit and approve the result before Practice can use it.</p>
+    <label className="flex gap-2"><input type="checkbox" checked={automaticConsent} disabled={busy} onChange={(e) => setAutomaticConsent(e.target.checked)} />I approve automatic lesson analysis: Muse Spark identifies components, SAM 3.1 tracks them, then Muse Spark drafts the procedure. Two Spark requests and one SAM request; no automatic retries.</label>
+    <p>Estimated SAM tracking: ${(lesson.media.frameTimesMs.length * .20 / 1000).toFixed(4)}. Spark adds video analysis, bounded text processing and up to 7,944 output tokens across two calls. Total cost varies; the earlier one-Spark estimate does not apply.</p>
+    <button disabled={busy || !automaticConsent} onClick={onAutomatic}>Automatically create my lesson</button>
+    <details><summary>Optional: correct component marks manually</summary>
     <p>Choose up to four physical components. Points and boxes identify objects; they do not prove an action.</p>
-    <label>Source frame <input aria-label="Source frame" type="number" min={0} max={lesson.media.frameTimesMs.length - 1} value={frame} disabled={busy} onChange={(e) => { setFrame(Math.max(0, Math.min(lesson.media.frameTimesMs.length - 1, Math.floor(Number(e.target.value))))); setMark(null); }} /></label>
+    <label>Choose a useful moment <input aria-label="Source time" type="range" min={0} max={lesson.media.frameTimesMs.length - 1} step={Math.max(1, Math.round((lesson.media.info.video?.fps ?? 15)))} value={frame} disabled={busy} onChange={(e) => { setFrame(Number(e.target.value)); setMark(null); }} /></label>
     <p>Source time: {(lesson.media.frameTimesMs[frame] / 1000).toFixed(3)} s</p>
     <label>Mark type <select value={mode} disabled={busy} onChange={(e) => { setMode(e.target.value === "box" ? "box" : "point"); setMark(null); }}><option value="point">Point</option><option value="box">Box</option></select></label>
     {image?.frame === frame && <div className={busy ? "pointer-events-none opacity-60" : ""}><FrameMark image={image.url} width={size.width} height={size.height} mode={mode} mark={mark} onMark={setMark} /></div>}
@@ -26,5 +32,6 @@ export default function ComponentPicker({ lesson, video, busy, onCompile }: { le
     <p>SAM estimate: ${(lesson.media.frameTimesMs.length * 0.20 / 1000).toFixed(4)}. Spark adds bounded text processing and up to 6,144 output tokens; normal short-lesson inference is expected below $0.20 combined, not a billing guarantee.</p>
     <button disabled={busy || !consent || !selections.length} onClick={() => onCompile(selections)}>Track components and draft procedure</button>
     {error && <p role="alert">{error}</p>}
+    </details>
   </section>;
 }

@@ -2,7 +2,21 @@
 
 Status: **Complete.** Implementation, 128 automated tests, lint, type checking, production build, browser checks and four consecutive post-fix live smoke runs passed. The owner confirmed their manual test works and requested Phase 4 closure. Each generated lesson still requires human review and explicit approval; this phase sign-off does not approve a particular lesson. No live Practice workflow is implemented.
 
-## Files and data flow
+## Automatic-first Teach update
+
+The default is now preview/consent → one upload and Muse Voice transcription → Spark video component discovery → SAM tracking → Spark draft → human review/edit/approval → **Save and open Practice**. No initial manual marking is required. The same uploaded file ID feeds Spark discovery and SAM; the final Spark call uses the bounded transcript/tracking summary. Manual marking remains an optional fallback. The earlier four successful live runs tested the manual-mark path; **the new automatic discovery request has not been live-tested**.
+
+SAM's documented contract needs either one concept prompt or object locations; it does not understand a lesson independently. Spark uses documented Responses `input_file` with `file_id` to propose up to four component boxes and source times. The server bounds/validates those proposals and maps times to actual source frames. Official `buildObjectPrompt`, SAM streaming and the official parser then track the proposed objects. Automatic compilation makes two Spark requests (1,800 discovery + 6,144 drafting output-token caps) and one SAM request, without retries. The old one-Spark combined cost estimate does not apply. The preview consent states the new request count before spending; no new live request was made during this update.
+
+Review prefills candidate before/after intervals and small zones from continuously tracked, sufficiently confident movement, while preserving order. Missing/low-confidence/stationary evidence gets no invented zone suggestion. All review flags stay false until explicitly checked. Object overlays show the current step's component. Moment choices are bounded to useful references rather than every frame; optional manual correction uses a time slider. Users can still adjust zone marks and edit draft data before approval. SAM boxes are perception evidence, not proof of an action.
+
+Approved lessons can be saved to a one-use browser session-storage handoff and opened directly in Practice. Practice still verifies the original approval receipt with the server; local storage does not authorize a procedure. Download/export remains available as a fallback, including browsers that reject local storage. Source videos stay local and should be saved separately if needed for reference frames.
+
+New modules: `src/server/teach/discovery.ts` (bounded video request and proposal parsing) and `src/teach/review-suggestions.ts` (pure interval/zone/moment suggestions). The existing compile endpoint supports explicit automatic or manual mode; conflicting mode/mark input is rejected before a provider request. Discovery failures also delete the temporary file, with expiry fallback and no automatic retry.
+
+Verification: **157 tests passed** (11 automatic-first cases plus 146 existing cases), lint, type checking and production build; a headless browser using the actual MP4 for local decoding and **mocked provider/approval responses** verified automatic processing without marking, labelled object boxes, bounded moment choices, unchecked approval gates, and Save/open into Practice. Mocked approval is not a real lesson approval. A fresh explicitly authorized live run is required before claiming the automatic discovery integration succeeded against Meta.
+
+## Manual-path foundation and shared data flow
 
 `/teach` is the teaching workspace. The home page links to it. A user unlocks the private workspace, records 10–20 seconds with camera/microphone or selects a supported MP4, previews it, and explicitly confirms processing. The recorder displays REC, Start/Done, elapsed time, preview, and discard; Done is available after 10 seconds and recording automatically stops at 20 seconds. Camera/microphone tracks are stopped on Done, discard, error, or unmount. Codec failures are reported; an existing MP4 with speech is the fallback.
 
@@ -150,3 +164,5 @@ Verified 128 tests, lint, type checking and production build passed. A real head
 ### Phase 4 closure
 
 Owner-reported manual test: “I have already done the test and it works.” Phase 4 is marked complete on that confirmation, together with the recorded technical checks. This records the owner's report without inventing additional observed test details or a signed lesson approval. No additional live API calls or Phase 5 implementation were performed for closure.
+
+The opt-in smoke script now accepts `--automatic` instead of `--selections PATH` for this new path. It still requires fresh file/hash/request-count approval and `--approved`; without approval it exits locally before any network request. Automatic compilation has a bounded server deadline and no retries. No new automatic live response or accuracy result is claimed.

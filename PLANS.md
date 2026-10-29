@@ -52,6 +52,8 @@ Muse Code is the project's only coding agent and must follow [AGENTS.md](AGENTS.
 
 **Status: Complete.** Implementation, automated checks, four consecutive post-fix live smoke runs, and owner-confirmed manual testing are recorded in [docs/PHASE4.md](docs/PHASE4.md). Explicit human approval remains required for each generated lesson as normal product behavior.
 
+**Automatic-first refinement:** implemented with mocked verification; the new Spark video-discovery call awaits a fresh approved live test. Review uses proposed marks/zones and a few useful moments, with optional corrections and direct approved handoff to Practice. Earlier live successes cover the manual-mark path.
+
 **Depends on:** Phases 1 and 3. **Scope and deliverables**
 - Support a short instructor recording or existing-video upload with visible recording state, permissions, preview, discard, and clear errors.
 - Gather grounded visual and audio evidence through verified integrations; allow representative objects to be selected or grounded.
