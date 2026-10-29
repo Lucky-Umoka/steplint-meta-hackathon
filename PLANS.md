@@ -64,6 +64,8 @@ Muse Code is the project's only coding agent and must follow [AGENTS.md](AGENTS.
 
 ## Phase 5 — Practice mode
 
+**Status: Implemented with local automated/browser verification; physical-camera workbench acceptance pending.** See [docs/PHASE5.md](docs/PHASE5.md) for the tracker, approval boundary, measured synthetic latency, limitations and manual demonstration.
+
 **Depends on:** Phases 2 and 4 (and verified perception/media paths from Phase 3). **Scope and deliverables**
 - Provide a controlled camera practice environment; ground objects and observable states.
 - Prefer local frequent processing where feasible; use bounded model re-localization only when needed. Map timestamped observations into evidence events for the deterministic evaluator.

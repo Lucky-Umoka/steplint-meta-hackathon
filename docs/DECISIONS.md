@@ -73,3 +73,10 @@ One owner-approved MP4 upload, one sam-3.1 video request (prompt selected from a
 - Accept the exact server-configured Codespaces/Vercel public origin or optional TEACH_PUBLIC_ORIGIN to support TLS reverse proxies; do not trust arbitrary forwarded-origin headers. Keep origin rejection for other sites.
 
 - Teach origin guard also accepts the browser-controlled `Sec-Fetch-Site: same-origin` signal with a valid HTTP(S) Origin, so preview/reverse proxies can rewrite internal Host/port without rejecting legitimate relative fetches. Explicit cross-site/same-site metadata is rejected; absent metadata retains the exact-origin allowlist. Authentication remains required. Reference: https://www.w3.org/TR/fetch-metadata/ (Sec-Fetch-Site and reserved Sec- headers).
+
+## Phase 5 Practice decisions
+
+- Preserve the approved ProcedureSpec and existing pure evaluator. Frequent observations use local saturated-colour connected components and area checks; no remote SAM or language-model rule override. User colour sampling is appropriate grounding for this controlled fixture; tracking loss asks for intervention rather than paid re-localization.
+- Accept three fresh frames spanning at least 400ms, reject stale timestamps, emit uncertainty immediately, and require fresh start-to-target evidence after loss. Short continuously visible transit has a bounded 1.2s grace; target loss and ambiguous matches never receive that grace.
+- Bind imported Teach exports to their original approval digest and owner session before use. The hand-authored fixture is separately and explicitly approved by the user; no synthetic approval is represented as an actual Teach lesson.
+- Lock zone calibration during verification. Speech uses approved text only. Keep camera frames local, cap event logs and expose reset/retry, source reference and detected-change-to-warning measurement. Physical-camera performance and arbitrary-task accuracy are not inferred from synthetic tests.

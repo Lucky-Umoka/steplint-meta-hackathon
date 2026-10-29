@@ -72,6 +72,6 @@ export default function Review({ initial, context, token, video }: { initial: Te
     <label className="flex gap-2"><input type="checkbox" checked={confirm} onChange={(e) => { setConfirm(e.target.checked); setApproved(null); }} />I explicitly approve the corrected procedure and every reviewed visual condition.</label>
     <button disabled={busy || dirty || !confirm || !reviewer.trim()} onClick={() => void approve()}>Approve procedure</button>
     {error && <p role="alert" className="whitespace-pre-wrap text-red-800">{error}</p>}
-    {approved !== null && <div role="status"><p className="font-bold">Procedure approved. Practice mode is not implemented.</p><a className="underline" href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(approved, null, 2))}`} download="steplint-approved-lesson.json">Download approved procedure and zone mappings</a></div>}
+    {approved !== null && <div role="status"><p className="font-bold">Procedure approved. Download the artifact, then import it in Practice in this browser session.</p><a className="underline" href="/practice">Open Practice mode</a><a className="underline" href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(approved, null, 2))}`} download="steplint-approved-lesson.json">Download approved procedure and zone mappings</a></div>}
   </section>;
 }
