@@ -14,11 +14,15 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "smoke:spark": "node --conditions=react-server --import tsx scripts/smoke-spark.ts",
-    "smoke:sam": "node --conditions=react-server --import tsx scripts/smoke-sam.ts"
+    "smoke:sam": "node --conditions=react-server --import tsx scripts/smoke-sam.ts",
+    "media:inspect": "node --conditions=react-server --import tsx scripts/media-inspect.ts",
+    "smoke:sam-video": "node --conditions=react-server --import tsx scripts/smoke-sam-video.ts",
+    "smoke:voice": "node --conditions=react-server --import tsx scripts/smoke-voice.ts"
   },
   "dependencies": {
     "@meta-sam/parser": "0.1.0",
     "@next/env": "16.4.3",
+    "mediabunny": "^1.63.0",
     "next": "16.4.3",
     "openai": "7.45.1",
     "react": "^19.2.0",

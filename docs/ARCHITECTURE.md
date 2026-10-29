@@ -91,3 +91,9 @@ Implemented paths: `src/app/` (minimal server-rendered page and GET health route
 `src/procedure/schema.ts` defines strict Zod input/output schemas and inferred TypeScript types. `demo.ts` supplies the explicitly synthetic blue/yellow/red fixture. `verifier.ts` exposes `verifyEvents(unknown, unknown)`, validating and replaying a bounded event log into immutable-to-the-caller results. It has no server-only marker, I/O, provider, camera, or clock dependency; it can be tested in plain TypeScript independently of the app.
 
 Observed target-zone changes, ordering, explicit forbidden rules, prerequisite preservation, uncertainty, duplicate protection, and reset/retry are implemented for the controlled fixture. There are still no procedure or segmentation HTTP routes. See [PHASE2.md](PHASE2.md) for semantics, source-time conventions, limitations, worked recovery, and test evidence.
+
+## Phase 3 media compatibility spike
+
+An isolated `/dev/media-lab` page now captures local media, probes browser codecs, converts compatible recordings with Mediabunny, inspects generated MP4/WAV bytes, and offers an existing-MP4 fallback. `src/media/` contains shared media inspection and browser conversion; `src/server/meta/media.ts` isolates the provider contracts; opt-in CLI scripts send bounded Files/SAM-video/ASR requests directly from Node. No paid web upload route, Teach workflow, or deployment has been added.
+
+Local fake-device recording and PCM conversion were measured; live video/ASR integration remains unverified pending consented speech input and explicit approval. See [PHASE3.md](PHASE3.md) for actual formats, latency, browser failures, limits, and manual gates. Vercel's documented 4.5 MB function payload limit is one reason to keep this experiment in CLI scripts instead of a large-file route proxy.

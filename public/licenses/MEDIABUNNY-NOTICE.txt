@@ -1,0 +1,8 @@
+StepLint's media compatibility lab uses unmodified Mediabunny 1.63.0.
+Copyright (c) 2026-present, Vanilagy and contributors.
+Mediabunny is licensed under the Mozilla Public License 2.0 (MPL-2.0).
+A copy is provided at /licenses/MEDIABUNNY-MPL-2.0.txt.
+The exact package, including its Source Code Form, is available at:
+https://registry.npmjs.org/mediabunny/-/mediabunny-1.63.0.tgz
+Project: https://github.com/Vanilagy/mediabunny
+No Mediabunny source files have been modified by this spike.

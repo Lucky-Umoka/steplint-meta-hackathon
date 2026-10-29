@@ -6,7 +6,7 @@ StepLint is planned as a visual verification system for physical procedures. It 
 
 ## Current status
 
-Phase 1 foundation is implemented: a minimal Next.js application, an application-only health endpoint, a server-only Meta client, and separate opt-in smoke scripts. On 2026-10-29, both owner-approved live smoke requests passed: Spark returned validated text, and SAM returned one box and a successfully decoded nonempty mask. Phase 2 adds a Zod-validated procedure schema and pure deterministic verifier, with 53 new local tests covering order, uncertainty, duplicates, reset/retry, and recovery. Teach and Practice workflows are not implemented.
+Phase 1 foundation is implemented: a minimal Next.js application, an application-only health endpoint, a server-only Meta client, and separate opt-in smoke scripts. On 2026-10-29, both owner-approved live smoke requests passed: Spark returned validated text, and SAM returned one box and a successfully decoded nonempty mask. Phase 2 adds a Zod-validated procedure schema and pure deterministic verifier, with 53 new local tests covering order, uncertainty, duplicates, reset/retry, and recovery. Phase 3 adds an isolated local media lab and opt-in video/transcription smoke scripts; real-device and live video/ASR verification remain pending. Teach and Practice workflows are not implemented.
 
 ## Project documents
 
@@ -17,6 +17,7 @@ Phase 1 foundation is implemented: a minimal Next.js application, an application
 - [docs/DEMO.md](./docs/DEMO.md) — planned judging demonstration and proof checklist.
 - [docs/PHASE1.md](./docs/PHASE1.md) — Phase 1 implementation and verification record.
 - [docs/PHASE2.md](./docs/PHASE2.md) — procedure schemas, state machine, examples, and verification record.
+- [docs/PHASE3.md](./docs/PHASE3.md) — media lab, measured formats/latency, live script instructions, and pending gates.
 
 Muse Code is the project's only coding agent and follows `AGENTS.md`. Muse Code is not a runtime model: only verified calls made by the StepLint application to Meta models count as application Meta integration. Phases 1 and 2 are complete; later phases require the owner's explicit authorization.
 
@@ -66,3 +67,9 @@ Model IDs select which Meta model performs the request; the SDK package does not
 Pricing checked 2026-10-29: Spark standard input $1.25 / million tokens, output $4.25 / million tokens; this tiny request is expected below $0.001 (128 output tokens cost at most $0.000544, plus input). SAM is $0.0025 per image. Combined expected cost is below $0.0035 for the two requests, without retries; provider billing is authoritative. See [official pricing](https://dev.meta.ai/docs/pricing-rate-limits).
 
 Official contracts: [Responses API](https://dev.meta.ai/docs/protocols/responses), [SAM requests](https://dev.meta.ai/docs/sam/overview), [SAM TypeScript parser](https://dev.meta.ai/docs/sam/client-libraries). The parser package uses Meta's SAM License, not MIT; retain its license if redistributing it. Next.js, React, Tailwind, Zod, Vitest, TypeScript, and ESLint use MIT; OpenAI's SDK uses Apache-2.0. See `docs/PHASE1.md` for actual verification outcomes.
+
+## Media compatibility lab (Phase 3)
+
+Run `npm run dev` and open http://localhost:3000/dev/media-lab. Confirm recording consent, inspect codec probes, then record 10–15 seconds with spoken narration. Preview/download the generated files or discard them. An existing MP4/H.264 file can be selected when encoding is unsupported. Files stay local; the page never sends them to Meta. The lab is disabled in production unless `ENABLE_MEDIA_LAB=1` is deliberately set server-side.
+
+See [PHASE3.md](docs/PHASE3.md) for local inspection and explicitly approved `smoke:sam-video` / `smoke:voice` commands. Live Phase 3 model results are still pending; passing local tests is not live model verification.

@@ -36,6 +36,8 @@ Muse Code is the project's only coding agent and must follow [AGENTS.md](AGENTS.
 
 ## Phase 3 — Media compatibility spike
 
+**Status: Local spike implemented and tested; live verification pending.** See [docs/PHASE3.md](docs/PHASE3.md) for browser measurements, fallback behavior, and remaining consented-media/approval gates.
+
 **Depends on:** Phase 1. **Scope and deliverables**
 - Check current official media requirements, supported upload process, and applicable hosting/request-body/execution limits.
 - Capture a short (about 20-second) browser recording and inspect actual MIME type, codec, size, and duration.

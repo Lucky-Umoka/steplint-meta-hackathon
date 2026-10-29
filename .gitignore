@@ -12,3 +12,6 @@ npm-debug.log*
 .DS_Store
 *.log
 
+
+# Private recordings and local spike outputs
+/.media-lab/
