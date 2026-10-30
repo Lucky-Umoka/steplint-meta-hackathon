@@ -65,3 +65,12 @@ This is a fixed-camera, stable-lighting workbench MVP. Remove similar colours, k
 - Source-frame browser check used a **mocked import response** and the existing real local MP4 solely for decoding. It displayed the requested 1.000s source frame. This does not claim a new real human approval or that the recording teaches the controlled fixture. Signed-import server validation is covered separately by tests.
 - The existing Teach browser regression walkthrough passed with mocked provider responses: consent, visible file chooser, preview before upload, review gates, export/edit invalidation, fake-device REC/Done and track cleanup. No new live Meta calls were made.
 - No `/dev/video*` physical camera device is available in this workspace. The physical-camera blue/yellow/red demo, real lighting/occlusion robustness, actual training-reference alignment and physical-demo latency remain owner-run manual checks using the steps above. No physical workbench success is claimed.
+
+### Interaction simplification
+
+File import/reference controls now use visible buttons. Help and detailed explanations are collapsed; step states use readable labels. Marking a component selects the next unmarked part. Brief centred success messages confirm important actions; acknowledged failure dialogs show actual approved correction text. Local tracking/evaluator rules are unchanged. Browser tests on generated camera frames passed wrong-order popup, recovery, completion popup, missing-evidence blocking, reset and camera cleanup. Live Meta trials verified Teach processing and evidence readiness; no real AI-generated lesson was auto-approved and no physical-camera success was claimed.
+
+
+### Teach-to-Practice audit follow-up
+
+A later owner-approved live-model trial processed an owned synthetic 18-second lesson, passed real server approval/receipt validation with an explicitly synthetic test reviewer, and imported directly into Practice. A generated camera then triggered the actual premature-latch rule violation, recovery, correct-order completion and obstruction/reacquisition blocking. All camera tracks ended on Stop. Measured warning delay was 766 ms in this one synthetic test; it is not a physical-camera or general latency claim. See PHASE4.md for the five-trial record, including four earlier failed attempts and measured geometry. All 186 automated tests, lint, type checking and production build pass. The real-camera acceptance demonstration remains owner-run.

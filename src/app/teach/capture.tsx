@@ -1,4 +1,5 @@
 "use client";
+import FeedbackPopup, { useFeedback } from "@/components/feedback";
 import { useEffect, useRef, useState } from "react";
 import { createMp4, extractWav, probeEncoding, type EncodingSupport } from "@/media/convert";
 import { inspectLessonVideo } from "@/teach/media";
@@ -6,6 +7,8 @@ import { MAX_TEACH_BODY, type LessonMedia } from "@/teach/schema";
 
 export type PreparedLesson = { video: Blob; audio: Blob; media: LessonMedia };
 export default function LessonCapture({ onPrepared }: { onPrepared: (lesson: PreparedLesson) => void }) {
+  const feedback = useFeedback();
+  function fail(message: string) { setError(message); feedback.failure(message); }
   const [consent, setConsent] = useState(false);
   const [support, setSupport] = useState<EncodingSupport | null>(null);
   const [state, setState] = useState("idle");
@@ -41,7 +44,7 @@ export default function LessonCapture({ onPrepared }: { onPrepared: (lesson: Pre
       if (video.size + audio.blob.size + 10_000 > MAX_TEACH_BODY) throw new Error("This lesson is too large. Use a shorter or lower-bitrate recording.");
       controller.signal.throwIfAborted();
       setState("idle"); onPrepared({ video, audio: audio.blob, media });
-    } catch (e) { if (!controller.signal.aborted) { setState("idle"); setError(e instanceof Error ? e.message : "Unable to prepare lesson."); } }
+    } catch (e) { if (!controller.signal.aborted) { setState("idle"); fail(e instanceof Error ? e.message : "Unable to prepare lesson."); } }
   }
   async function record() {
     cancel();
@@ -69,12 +72,12 @@ export default function LessonCapture({ onPrepared }: { onPrepared: (lesson: Pre
       recorder.start(250); setState("recording");
       const start = performance.now();
       resources.current.timer = setInterval(() => { const elapsed = (performance.now() - start) / 1000; setSeconds(elapsed); if (elapsed >= 20 && recorder.state === "recording") recorder.stop(); }, 100);
-    } catch (e) { if (!controller.signal.aborted) { stopTracks(); setState("idle"); setError(e instanceof Error ? e.message : "Permission or camera error."); } }
+    } catch (e) { if (!controller.signal.aborted) { stopTracks(); setState("idle"); fail(e instanceof Error ? e.message : "Permission or camera error."); } }
   }
   return <section className="space-y-4 rounded border p-4">
     <h2 className="text-xl font-bold">1. Record or choose a lesson</h2>
-    <p>Use 10–20 seconds, with clear narration and visible component movements. Nothing uploads until you preview and confirm.</p>
-    <label className="flex gap-2"><input type="checkbox" checked={consent} disabled={state !== "idle"} onChange={(e) => setConsent(e.target.checked)} />Everyone visible or audible has consented to this recording and its processing.</label>
+    <p>Record 10–20 seconds. Explain each movement clearly.</p>
+    <label className="flex gap-2"><input type="checkbox" checked={consent} disabled={state !== "idle"} onChange={(e) => setConsent(e.target.checked)} />Everyone visible or audible has agreed to recording and processing.</label>
     <p role="status" aria-live="polite" className={state === "recording" ? "font-bold text-red-700" : "font-medium"}>{state === "recording" ? `● REC — camera + microphone — ${seconds.toFixed(1)} s` : state === "permission" ? "Waiting for camera/microphone permission…" : state === "preparing" ? "Camera off. Preparing MP4 and mono PCM WAV locally…" : "Camera and microphone off"}</p>
     <video ref={camera} autoPlay muted playsInline className="w-full max-w-xl bg-slate-100" aria-label="Live lesson preview" />
     <div className="flex gap-3"><button disabled={state !== "idle" || !consent || !support?.h264} onClick={() => void record()}>Start recording</button><button disabled={state !== "recording" || seconds < 10} onClick={() => resources.current.recorder?.stop()}>Done</button><button onClick={cancel}>Discard recording</button></div>
@@ -82,6 +85,7 @@ export default function LessonCapture({ onPrepared }: { onPrepared: (lesson: Pre
       <button type="button" disabled={!consent || state !== "idle"} onClick={() => fileInput.current?.click()} aria-controls="teach-mp4-upload">Choose MP4 file</button>
       <input ref={fileInput} id="teach-mp4-upload" hidden aria-label="Existing lesson MP4" type="file" accept="video/mp4,.mp4" disabled={!consent || state !== "idle"} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) { cancel(); const controller = new AbortController(); resources.current.abort = controller; void prepare(file, true, controller); } }} />
     </div>
+    <FeedbackPopup notice={feedback.notice} onClose={feedback.close} />
     {support && !support.h264 && <p>H.264 encoding is unavailable here. The existing MP4 option is available.</p>}
     {error && <p role="alert" className="text-red-800">{error}</p>}
   </section>;

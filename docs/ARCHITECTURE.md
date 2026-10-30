@@ -1,6 +1,6 @@
 # StepLint architecture
 
-**Status:** Phase 1 foundation is implemented; the two approved Spark/SAM smoke requests returned validated live results on 2026-10-29. Phase 2 now implements the pure procedure schema and verifier; the Teach/Practice UI and perception workflows below remain proposed. See [PHASE1.md](PHASE1.md) for verification evidence.
+**Status:** Phases 1–4 and the Phase 5 controlled-scene Practice implementation are present. See PHASE1.md–PHASE5.md for separate automated, real API and manual verification records. Physical-camera acceptance remains pending; successful model requests alone do not prove complete Teach-to-Practice reliability.
 
 ## System boundaries
 

@@ -87,3 +87,25 @@ One owner-approved MP4 upload, one sam-3.1 video request (prompt selected from a
 - Keep automatic discovery capped at four boxes and 1,800 output tokens, final drafting at 6,144. Explicit preview consent names one Voice, one SAM and two Spark requests. No retries or new live smoke runs without approval; previous manual-path live successes are not automatic discovery evidence.
 - Suggest review zones only from clear contiguous SAM tracking, never fill missing evidence or tick human review. Show a few object-labelled moments instead of exposing hundreds of frames by default. Keep manual correction optional.
 - Save approved exports through a bounded, one-use session-storage handoff to Practice; server approval-receipt validation is unchanged. No new dependencies or infrastructure.
+
+## Teach approval and progress follow-up
+
+- Extract evidence validation so review readiness and server approval use identical confidence/gap/order/zone checks. Never enable approval solely because a reviewer name and whole-procedure checkbox are set. Give actionable missing-zone/checklist messages, preserving explicit human approval and unsupported-evidence rejection.
+- Lower only the suggestion candidate-displacement cutoff from 10% to 5%; do not relax actual evidence or approval rules. Rechecking suggested zones uses cached structured tracking and makes no model request.
+- Use a native accessible processing dialog with real stage transitions, explicit background/cancel controls and honest stopped states. No fake progress percentage, implicit retry or model request is introduced.
+
+- Configure Next development asset/HMR origins separately from Teach API CSRF/auth checks. Use hostname-only explicit loopback/current-workspace/public-origin entries per the installed Next 16.4.3 docs; do not permit arbitrary `*.app.github.dev` origins. Browser testing reproduced blocked HMR and absent hydration before this fix and passed the approval-to-Practice flow after it.
+
+## Simple interaction and live grounding follow-up
+
+- Use visible shared file-picker buttons and centred feedback for meaningful outcomes; keep routine tracking updates quiet. Move detailed explanations under Help while retaining consent, evidence blockers, live state and corrections.
+- Prefer Spark-proposed positive interior points for automatic SAM grounding after live box-proposal trials produced weak confidence. Keep official point utilities and all evidence thresholds unchanged. Do not manufacture approval to resolve a blocked recording.
+- Five owner-approved automatic live trials were consumed. Last three point-grounded runs produced evidence-eligible candidates (two synthetic-fixture runs and one owner-recording run). Real human approval and physical-camera practice are separate from model request success. See PHASE4.md for per-run outcomes.
+
+
+## Response boundaries, timestamp alignment and grounding audit
+
+- Validate complete approval/import payloads after reading response text safely. Preserve original validated approval JSON for receipt digest consistency; no empty/non-JSON response may become success. Keep drafts available after errors and never retry a paid compiler automatically.
+- Isolate verification builds from the directory of an active Next server to avoid manifest-read failures. Keep exact host/auth protections in place.
+- Feed bounded Voice turn timestamps to discovery; map proposal times to actual decoded frame indices. Speech is a timing hint, never geometric or action evidence.
+- Freehand Spark points missed visible object interiors in additional live trials. Request bounded normalized object boxes and derive a central positive SAM point on the server. Reject invalid boxes, retain official parser/utilities, preserve uncertainty and human review, and measure returned geometry against synthetic ground truth rather than assuming confidence alone proves correct identity.

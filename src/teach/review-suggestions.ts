@@ -1,4 +1,4 @@
-import type { TeachContext, TeachDraft, Region } from "./schema";
+import { validateReviewEvidence, type TeachContext, type TeachDraft, type Region } from "./schema";
 export type SuggestedCheck = { reviewed: boolean; conditionConfirmed: boolean; fromFrame: number; toFrame: number; fromRegion: Region | null; toRegion: Region | null };
 const centre = (r: Region) => ({ x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 });
 function around(p: { x: number; y: number }, radius: number): Region { return { left: Math.max(0, p.x - radius), top: Math.max(0, p.y - radius), right: Math.min(1, p.x + radius), bottom: Math.min(1, p.y + radius) }; }
@@ -13,7 +13,7 @@ export function suggestReviews(draft: TeachDraft, context: TeachContext): Record
       for (let j = i + 1; j < samples.length; j++) {
         if (samples[j].frame !== samples[j - 1].frame + 1 || samples[j].confidence === null || samples[j].confidence! < step.condition.minimumConfidence) break;
         const a = centre(samples[i].box), b = centre(samples[j].box), distance = Math.hypot(a.x - b.x, a.y - b.y);
-        if (distance >= .10 && (!best || distance > best.distance)) best = { i, j, distance };
+        if (distance >= .05 && (!best || distance > best.distance)) best = { i, j, distance };
       }
     }
     if (best) {
@@ -35,4 +35,23 @@ export function keyFrames(context: TeachContext, frames: number[], extras: numbe
   const slots = 10 - important.length;
   const filler = slots > 0 ? others.filter((_, i) => i % Math.max(1, Math.ceil(others.length / slots)) === 0).slice(0, slots) : [];
   return [...important, ...filler].sort((a, b) => a - b);
+}
+
+export function reviewBlockers(draft: TeachDraft, context: TeachContext, checks: Record<string, SuggestedCheck>): string[] {
+  const issues: string[] = [];
+  for (const [index, step] of draft.procedure.steps.entries()) {
+    const check = checks[step.id], label = `Step ${index + 1}`;
+    if (!check?.fromRegion || !check.toRegion) issues.push(`${label} — starting/target zones are missing. Recheck suggestions or choose clear moments.`);
+    if (!check?.reviewed) issues.push(`${label} — check “I reviewed this step”.`);
+    if (!check?.conditionConfirmed) issues.push(`${label} — confirm the visible zone entry.`);
+  }
+  if (draft.procedure.steps.every((s) => checks[s.id]?.fromRegion && checks[s.id]?.toRegion)) {
+    try { validateReviewEvidence(draft, draft.procedure.steps.map((s) => ({ stepId: s.id, ...checks[s.id] })), context); }
+    catch (error) { issues.push(error instanceof Error && error.name !== "ZodError" ? error.message : "The selected moments or zones are invalid. Check each before/after selection and zone boundary."); }
+  }
+  return issues;
+}
+export function reviewErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.name === "ZodError") return "The review is incomplete or contains invalid fields. Check the approval checklist and each step's starting/target zones.";
+  return error instanceof Error ? error.message : "Approval failed. Check the review and try again.";
 }

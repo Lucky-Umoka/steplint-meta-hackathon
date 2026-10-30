@@ -1,4 +1,6 @@
 "use client";
+import FeedbackPopup, { useFeedback } from "@/components/feedback";
+import FilePicker from "@/components/file-picker";
 
 import { useEffect, useRef, useState } from "react";
 import { createMp4, extractWav, probeEncoding, type EncodingSupport } from "@/media/convert";
@@ -10,6 +12,7 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : "
 const recorderTypes = ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/webm;codecs=vp8,opus", "video/webm"];
 
 export default function MediaLab() {
+  const feedback = useFeedback();
   const [consent, setConsent] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [support, setSupport] = useState<EncodingSupport | null>(null);
@@ -88,11 +91,11 @@ export default function MediaLab() {
         failures.push(`WAV: ${errorText(error)}`);
       }
       controller.signal.throwIfAborted();
-      setErrors(failures);
+      setErrors(failures); if (failures.length) feedback.failure(failures[0]); else feedback.success("Media ready", "Preview or download your files.");
       setReport({ captureMime: captureMime ?? blob.type, actualInput: inputInfo, processingMs: Math.round(performance.now() - started), outputs: outputs.map((x) => ({ name: x.name, ...x.info })) });
       setPhase("done");
     } catch (error) {
-      if (!controller.signal.aborted) { setErrors([errorText(error)]); setPhase("idle"); }
+      if (!controller.signal.aborted) { setErrors([errorText(error)]); feedback.failure(errorText(error)); setPhase("idle"); }
     }
   }
 
@@ -137,7 +140,7 @@ export default function MediaLab() {
         if (seconds >= 15 && recorder.state === "recording") recorder.stop();
       }, 100);
     } catch (error) {
-      if (!controller.signal.aborted) { controller.abort(); releaseCapture(); setErrors([errorText(error)]); setPhase("idle"); }
+      if (!controller.signal.aborted) { controller.abort(); releaseCapture(); setErrors([errorText(error)]); feedback.failure(errorText(error)); setPhase("idle"); }
     }
   }
 
@@ -153,19 +156,19 @@ export default function MediaLab() {
       requireSamVideo(await inspectMedia(file));
       if (!controller.signal.aborted) await processClip(file, true, controller);
     } catch (error) {
-      if (!controller.signal.aborted) { setErrors([errorText(error)]); setPhase("idle"); }
+      if (!controller.signal.aborted) { setErrors([errorText(error)]); feedback.failure(errorText(error)); setPhase("idle"); }
     }
   }
 
   return <main className="mx-auto max-w-3xl space-y-5 p-6 text-slate-950">
     <h1 className="text-3xl font-bold">StepLint media lab — Phase 3 spike</h1>
     <p className="text-sm"><a className="underline" href="/licenses/MEDIABUNNY-NOTICE.txt">Mediabunny source and license notice</a></p>
-    <p>Record a 10–15 second demonstration with speech; recording stops automatically at 15 seconds. Files stay in this browser until you download them. This page makes no Meta API calls.</p>
+    <p>Record 10–15 seconds. Files stay local; no model calls.</p>
     <label className="flex gap-2"><input type="checkbox" checked={consent} disabled={busy} onChange={(e) => setConsent(e.target.checked)} />I have permission to record and use everyone visible or audible.</label>
     <p role="status" aria-live="polite" className={phase === "recording" ? "font-bold text-red-700" : "font-bold"}>
       {phase === "recording" ? `● RECORDING CAMERA + MICROPHONE — ${elapsed.toFixed(1)} s` : phase === "requesting" ? "Waiting for camera and microphone permission…" : phase === "processing" ? "Camera off — inspecting/converting locally…" : "Camera and microphone off"}
     </p>
-    <pre className="overflow-auto rounded bg-slate-100 p-3" aria-label="Encoding capability results">{support ? JSON.stringify({ ...support, videoProbe: "H.264 640×480 15 fps", audioProbe: "AAC mono 48 kHz; PCM mono 24 kHz" }, null, 2) : "Probing codec support…"}</pre>
+    <details><summary>Encoding details</summary><pre className="overflow-auto rounded bg-slate-100 p-3" aria-label="Encoding capability results">{support ? JSON.stringify({ ...support, videoProbe: "H.264 640×480 15 fps", audioProbe: "AAC mono 48 kHz; PCM mono 24 kHz" }, null, 2) : "Probing codec support…"}</pre></details>
     {support && !support.h264 && <p>H.264 encoding is unsupported in this browser. Upload an existing MP4/H.264 file below; this is a measured capability failure.</p>}
     <div className="flex flex-wrap gap-4">
       <button className="rounded border p-2 disabled:opacity-40" disabled={!consent || !support?.h264 || busy} onClick={() => void startRecording()}>Record 15 seconds</button>
@@ -173,14 +176,15 @@ export default function MediaLab() {
       <button className="rounded border p-2" onClick={discard}>Cancel / discard all</button>
     </div>
     <video ref={preview} autoPlay muted playsInline aria-label="Live camera preview" className="w-full max-w-lg bg-slate-100" />
-    <label className="block">Existing MP4 fallback (H.264, optional AAC, 10–20 seconds, ≤20 MB, ≤600 frames, ≤1280×720 pixels)
-      <input className="mt-2 block" type="file" accept="video/mp4,.mp4" disabled={busy || !consent} onChange={(e) => { void handleFile(e.target.files?.[0]); e.target.value = ""; }} />
-    </label>
+    <div className="block">
+      <FilePicker label="Existing MP4" buttonLabel="Choose MP4 file" accept="video/mp4,.mp4" disabled={busy || !consent} onFile={(file) => void handleFile(file)} />
+    </div>
+    <FeedbackPopup notice={feedback.notice} onClose={feedback.close} />
     {errors.length > 0 && <ul role="alert" className="list-disc pl-5 text-red-800">{errors.map((error) => <li key={error}>{error}</li>)}</ul>}
     {artifacts.map((artifact) => <section key={artifact.name} className="space-y-2 border p-3">
       <h2 className="text-xl font-bold">{artifact.name}</h2>
       {artifact.name.endsWith(".mp4") ? <video controls src={artifact.url} playsInline className="w-full" /> : <audio controls src={artifact.url} />}
-      <pre className="overflow-auto text-sm">{JSON.stringify(artifact.info, null, 2)}</pre>
+      <details><summary>File details</summary><pre className="overflow-auto text-sm">{JSON.stringify(artifact.info, null, 2)}</pre></details>
       <a href={artifact.url} download={artifact.name} className="underline">Download {artifact.name}</a>
     </section>)}
     {report && <section><h2 className="text-xl font-bold">Measured report</h2><pre className="overflow-auto rounded bg-slate-100 p-3 text-sm">{JSON.stringify(report, null, 2)}</pre></section>}

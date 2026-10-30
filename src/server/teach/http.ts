@@ -39,11 +39,20 @@ export function responseError(error: unknown) { const safe = safeError(error); r
 export async function access(request: Request) {
   try {
     requireSameOrigin(request);
-    const body = z.strictObject({ token: z.string().max(256) }).parse(await readJson(request, 1024));
-    if (!matchesAccessToken(body.token)) throw new TeachError(401, "Workspace access code is incorrect.");
+    let input: unknown;
+    try { input = await readJson(request, 1024); }
+    catch (error) {
+      if (error instanceof TeachError && error.status === 413) throw new TeachError(413, "Access code request is too large. Paste only your Teach access code.");
+      throw new TeachError(400, "Enter a valid Teach access code.");
+    }
+    const body = z.strictObject({ token: z.string().min(1).max(256) }).safeParse(input);
+    if (!body.success || !matchesAccessToken(body.data.token)) throw new TeachError(401, "Incorrect Teach access code. Check it and try again.");
     const cookie = seal(randomUUID(), "access", "owner", 8 * 60 * 60 * 1000);
     return Response.json({ unlocked: true }, { headers: { "Cache-Control": "no-store", "Set-Cookie": `steplint-teach=${cookie}; HttpOnly; SameSite=Strict; Path=/api/teach; Max-Age=28800${(request.headers.get("origin") ?? request.url).startsWith("https:") ? "; Secure" : ""}` } });
-  } catch (error) { return responseError(error); }
+  } catch (error) {
+    if (error instanceof TeachError) return responseError(error);
+    return json({ error: "Teach sign-in is unavailable. Please try again." }, 500);
+  }
 }
 export async function lesson(request: Request) {
   try {

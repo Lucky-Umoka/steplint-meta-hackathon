@@ -4,8 +4,9 @@ import OpenAI from "openai";
 import { parseVideoStream, type ResponsesEvent } from "@meta-sam/parser";
 import { approveDraft, validateDraft, validateSelections, type TeachContext, type TeachDraft, type TeachReview } from "../src/teach/schema";
 import { inspectLessonVideo, validateLessonAudio } from "../src/teach/media";
+import { stageFromMessage } from "../src/teach/progress";
 import { discoveryRequest, parseDiscovery } from "../src/server/teach/discovery";
-import { suggestReviews, keyFrames } from "../src/teach/review-suggestions";
+import { suggestReviews, keyFrames, reviewBlockers, reviewErrorMessage } from "../src/teach/review-suggestions";
 import { normalizeTranscript, samSelectionRequest, summarizeTracking, sparkRequest, parseSparkDraft, uploadLesson, compileLesson } from "../src/server/teach/pipeline";
 import { authorize, seal, unseal } from "../src/server/teach/security";
 import { boundedBody, lesson as lessonRoute, approve as approvalRoute, compile as compileRoute, access as accessRoute } from "../src/server/teach/http";
@@ -229,18 +230,21 @@ describe("Teach HTTP/security boundaries", () => {
 
 
 describe("automatic lesson discovery and review suggestions", () => {
-  const discovery = { components: [{ description: "Blue base", timestampMs: 0, box: { left: 10, top: 10, right: 100, bottom: 100 } }] };
+  const discovery = { components: [{ description: "Blue base", timestampMs: 0, box: { left: 0, top: 0, right: 100, bottom: 100 } }] };
   it("uses documented video file input and bounded structured output for discovery", () => {
     const request = discoveryRequest("file-reused", context.lesson);
     expect(request.model).toBe("muse-spark-1.3"); expect(request.max_output_tokens).toBe(1800);
     expect(request.input[0].content).toContainEqual({ type: "input_file", file_id: "file-reused" });
     expect(request.text.format.strict).toBe(true);
+    expect(JSON.stringify(request.input)).toContain("startMs"); expect(JSON.stringify(request.input)).toContain("endMs");
   });
-  it("maps proposed timestamps to actual source frames and rejects malformed/out-of-bounds boxes", () => {
+  it("maps proposed timestamps to actual source frames and rejects malformed/out-of-bounds points", () => {
     const response = (data: unknown) => ({ status: "completed", output_text: JSON.stringify(data) });
-    expect(parseDiscovery(response(discovery), context.lesson)[0].mark.kind).toBe("box");
+    expect(parseDiscovery(response(discovery), context.lesson)[0].mark).toEqual({ kind: "point", x: 32, y: 24 });
+    expect(parseDiscovery(response({ components: [{ ...discovery.components[0], box: { left: 998, top: 998, right: 1000, bottom: 1000 } }] }), context.lesson)[0].mark).toEqual({ kind: "point", x: 638, y: 479 });
     expect(parseDiscovery(response({ components: [{ ...discovery.components[0], timestampMs: 920 }] }), context.lesson)[0].frame).toBe(1);
-    for (const data of [{ components: [] }, { components: [{ ...discovery.components[0], timestampMs: 20000 }] }, { components: [{ ...discovery.components[0], box: { left: 10, top: 10, right: 9999, bottom: 100 } }] }]) expect(() => parseDiscovery(response(data), context.lesson)).toThrow();
+    for (const data of [{ components: [] }, { components: [{ ...discovery.components[0], timestampMs: 20000 }] }, { components: [{ ...discovery.components[0], box: { left: 0, top: 0, right: 9999, bottom: 100 } }] }]) expect(() => parseDiscovery(response(data), context.lesson)).toThrow();
+    expect(() => parseDiscovery(response({ components: [{ ...discovery.components[0], box: { left: 50, top: 0, right: 50, bottom: 100 } }] }), context.lesson)).toThrow("no area");
     expect(() => parseDiscovery({ status: "incomplete", output_text: "{}" }, context.lesson)).toThrow("did not complete");
     expect(() => parseDiscovery({ status: "completed", output_text: "not JSON" }, context.lesson)).toThrow("invalid JSON");
   });
@@ -294,5 +298,86 @@ describe("automatic lesson discovery and review suggestions", () => {
     const selected = [0, 2, 30, 60, 90, 120, 180, 222];
     const dense = keyFrames(changed, Array.from({ length: 223 }, (_, i) => i), selected);
     expect(dense.length).toBeLessThanOrEqual(10); for (const frame of selected) expect(dense).toContain(frame);
+  });
+});
+
+
+describe("approval readiness and processing UI contracts", () => {
+  it("explains the reported missing-zone case and never treats it as ready", () => {
+    const checks = suggestReviews(draftFor(), context);
+    checks["move-base"] = { ...checks["move-base"], reviewed: true, conditionConfirmed: false, fromRegion: null, toRegion: null };
+    const issues = reviewBlockers(draftFor(), context, checks);
+    expect(issues.some((s) => s.includes("starting/target zones are missing"))).toBe(true);
+    expect(issues.some((s) => s.includes("confirm the visible zone entry"))).toBe(true);
+    expect(JSON.stringify(issues)).not.toContain("invalid_value");
+  });
+  it("requires human review even with valid suggested zones, and becomes ready only after all checks", () => {
+    const checks = suggestReviews(draftFor(), context);
+    expect(reviewBlockers(draftFor(), context, checks).length).toBeGreaterThan(0);
+    checks["move-base"].reviewed = true; checks["move-base"].conditionConfirmed = true;
+    expect(reviewBlockers(draftFor(), context, checks)).toEqual([]);
+    expect(approveDraft(draftFor(), { reviewer: "Test", confirmed: true, steps: [{ stepId: "move-base", ...checks["move-base"] }] }, context, 1).procedure.approval).not.toBeNull();
+  });
+  it("uses the same evidence gate as approval, so checking boxes cannot bypass tracking gaps", () => {
+    const changed = structuredClone(context), checks = suggestReviews(draftFor(), context);
+    checks["move-base"].reviewed = true; checks["move-base"].conditionConfirmed = true;
+    changed.tracking[0].samples[1].frame = 2; changed.tracking[0].samples[1].timestampMs = 2000; checks["move-base"].toFrame = 2;
+    const draft = draftFor(); draft.notes[0].supportingFrames = [0, 2];
+    expect(reviewBlockers(draft, changed, checks).some((s) => s.includes("missing or uncertain"))).toBe(true);
+  });
+  it("suggests zones for smaller clearly supported movements instead of leaving null regions", () => {
+    const changed = structuredClone(context);
+    changed.tracking[0].samples[1].box = { left: .11, top: .05, right: .21, bottom: .15 };
+    const checks = suggestReviews(draftFor(), changed);
+    expect(checks["move-base"].fromRegion).not.toBeNull(); expect(checks["move-base"].toRegion).not.toBeNull();
+    checks["move-base"].reviewed = true; checks["move-base"].conditionConfirmed = true;
+    expect(reviewBlockers(draftFor(), changed, checks)).toEqual([]);
+  });
+  it("replaces raw schema JSON with human guidance", () => {
+    let failure: unknown;
+    try { approveDraft(draftFor(), {}, context, 0); } catch (error) { failure = error; }
+    expect(reviewErrorMessage(failure)).toContain("review is incomplete");
+    expect(reviewErrorMessage(failure)).not.toContain("invalid_type");
+  });
+  it("maps only known real processing messages to stages", () => {
+    expect(stageFromMessage("Finding task components automatically from your video…")).toBe("discover");
+    expect(stageFromMessage("Found 2 candidate components. Tracking their proposed marks…")).toBe("track");
+    expect(stageFromMessage("Tracking received 120 geometry records…")).toBe("track");
+    expect(stageFromMessage("Drafting candidate steps and review questions…")).toBe("draft");
+    expect(stageFromMessage("Something else")).toBeUndefined();
+  });
+});
+
+
+describe("Teach access error messages", () => {
+  it.each(["wrong-code", "", "x".repeat(300), null, 42, {}, undefined])("keeps invalid access codes in the sign-in error path (%s)", async (value) => {
+    const factory = vi.spyOn(providerClient, "createMetaClient");
+    const response = await accessRoute(new Request("http://localhost/api/teach/access", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: value }) }));
+    expect(response.status).toBe(401); expect(await response.json()).toEqual({ error: "Incorrect Teach access code. Check it and try again." });
+    expect(response.headers.get("set-cookie")).toBeNull(); expect(factory).not.toHaveBeenCalled();
+  });
+  it("gives sign-in guidance for malformed JSON and oversized requests", async () => {
+    const request = (body: string) => new Request("http://localhost/api/teach/access", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    const malformed = await accessRoute(request("not JSON")); expect(malformed.status).toBe(400); expect(await malformed.json()).toEqual({ error: "Enter a valid Teach access code." });
+    const large = await accessRoute(request(JSON.stringify({ token: "x".repeat(2000) }))); expect(large.status).toBe(413); expect((await large.json()).error).toContain("Access code request is too large");
+  });
+  it("keeps valid access working and reports missing server configuration separately", async () => {
+    const request = () => new Request("http://localhost/api/teach/access", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token }) });
+    expect((await accessRoute(request())).status).toBe(200);
+    vi.stubEnv("TEACH_ACCESS_TOKEN", ""); const unavailable = await accessRoute(request()); expect(unavailable.status).toBe(503); expect((await unavailable.json()).error).toContain("Teach is not configured");
+  });
+});
+
+
+describe("Teach executable-zone coverage", () => {
+  it("rejects forbidden rules requiring zones outside the step's reviewed pair", () => {
+    const draft = draftFor();
+    const first = draft.procedure.steps[0];
+    draft.procedure.components.push({ id: "component-2", description: "Second synthetic object" });
+    draft.procedure.zones.push({ id: "unreviewed-zone", description: "No reviewed geometry" });
+    draft.procedure.steps.push({ ...structuredClone(first), id: "second", condition: { ...first.condition, componentId: "component-2" }, prerequisites: [first.id], forbiddenTransitions: [{ condition: { ...first.condition, componentId: "component-2", toZone: "unreviewed-zone" }, unlessVerified: [first.id], recovery: first.recovery }] });
+    draft.notes.push({ ...structuredClone(draft.notes[0]), stepId: "second" });
+    const changed = structuredClone(context); changed.selections.push({ ...changed.selections[0], id: "component-2" }); changed.tracking.push({ ...structuredClone(changed.tracking[0]), componentId: "component-2" });
+    expect(() => validateDraft(draft, changed)).toThrow("reviewed starting and target zones");
   });
 });

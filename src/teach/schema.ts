@@ -77,6 +77,7 @@ export function validateDraft(input: unknown, context: TeachContext): TeachDraft
   for (const step of p.steps) {
     checkSource(step.source); checkSource(step.recovery.source);
     step.forbiddenTransitions.forEach((r) => checkSource(r.recovery.source));
+    if (step.forbiddenTransitions.some((r) => r.condition.fromZone !== step.condition.fromZone || r.condition.toZone !== step.condition.toZone)) throw new Error("Forbidden rules must use this step's reviewed starting and target zones.");
     const note = draft.notes.find((n) => n.stepId === step.id);
     const track = context.tracking.find((t) => t.componentId === step.condition.componentId);
     if (!note || !track || !track.samples.length || note.supportingFrames.some((f) => !track.samples.some((s) => s.frame === f))) throw new Error("Step has no matching tracked supporting frames.");
@@ -85,10 +86,10 @@ export function validateDraft(input: unknown, context: TeachContext): TeachDraft
 }
 
 const contains = (region: Region, point: { x: number; y: number }) => point.x >= region.left && point.x <= region.right && point.y >= region.top && point.y <= region.bottom;
-/** Explicit human approval plus evidence-supported zone entry; no action is inferred from masks. */
-export function approveDraft(input: unknown, reviewInput: unknown, context: TeachContext, nowMs: number) {
+/** Shared evidence validation only. Does not grant human approval. */
+export function validateReviewEvidence(input: unknown, reviewSteps: unknown, context: TeachContext) {
   const draft = validateDraft(input, context);
-  const review = ReviewSchema.parse(reviewInput);
+  const review = { steps: z.array(StepReviewSchema.omit({ reviewed: true, conditionConfirmed: true }).strip()).min(1).max(4).parse(reviewSteps) };
   const p = draft.procedure;
   if (review.steps.length !== p.steps.length || new Set(review.steps.map((s) => s.stepId)).size !== p.steps.length) throw new Error("Review every step exactly once.");
   let priorEnd = -1;
@@ -112,9 +113,16 @@ export function approveDraft(input: unknown, reviewInput: unknown, context: Teac
     }
     priorEnd = to.timestampMs;
   }
+  return { draft, zoneBindings: [...zoneBindings].map(([zoneId, region]) => ({ zoneId, region })) };
+}
+/** Explicit human approval plus evidence-supported zone entry; no action is inferred from masks. */
+export function approveDraft(input: unknown, reviewInput: unknown, context: TeachContext, nowMs: number) {
+  const review = ReviewSchema.parse(reviewInput);
+  const { draft, zoneBindings } = validateReviewEvidence(input, review.steps, context);
+  const p = draft.procedure;
   return {
     procedure: ProcedureSpecSchema.parse({ ...p, approval: { reviewer: review.reviewer, timestampMs: nowMs } }),
-    zoneBindings: [...zoneBindings].map(([zoneId, region]) => ({ zoneId, region })),
+    zoneBindings,
     review, lessonId: context.lesson.lessonId, notes: draft.notes, sourceLesson: structuredClone(context.lesson),
   };
 }

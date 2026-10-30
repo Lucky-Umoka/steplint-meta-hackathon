@@ -4,5 +4,5 @@ import nextTypescript from "eslint-config-next/typescript";
 export default defineConfig([
   ...nextVitals, ...nextTypescript,
   { rules: { "@typescript-eslint/no-explicit-any": "error" } },
-  globalIgnores([".next/**", "next-env.d.ts", "coverage/**"]),
+  globalIgnores([".next/**", ".next-production/**", ".next-verify/**", "next-env.d.ts", "coverage/**"]),
 ]);

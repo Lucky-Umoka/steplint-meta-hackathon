@@ -15,3 +15,8 @@ npm-debug.log*
 
 # Private recordings and local spike outputs
 /.media-lab/
+
+# Production builds must not replace files served by the development server
+.next-production/
+
+.next-verify/
