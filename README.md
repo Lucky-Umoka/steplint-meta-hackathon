@@ -6,12 +6,19 @@ StepLint is planned as a visual verification system for physical procedures. It 
 
 ## Current status
 
-Phase 1 foundation is implemented: a minimal Next.js application, an application-only health endpoint, a server-only Meta client, and separate opt-in smoke scripts. On 2026-10-29, both owner-approved live smoke requests passed: Spark returned validated text, and SAM returned one box and a successfully decoded nonempty mask. Phase 2 adds a Zod-validated procedure schema and pure deterministic verifier, with 53 new local tests covering order, uncertainty, duplicates, reset/retry, and recovery. Phase 3 adds an isolated local media lab and opt-in video/transcription smoke scripts; the owner-provided recording passed approved live Files upload, SAM video parsing, cleanup, and Voice transcription on 2026-10-29. Phase 4 Teach mode is implemented with preview/confirmation, timestamped transcription, component selection, grounded draft review and explicit approval; its real-recording end-to-end smoke passed after rejecting an invalid draft and clarifying the model instructions. The owner confirmed manual testing works, closing Phase 4 acceptance. Each generated lesson still requires explicit human review and approval. Phase 5 adds local controlled-colour Practice with approved-rule verification; the physical-camera workbench demo remains a manual acceptance check.
+The browser-first Teach/Practice repair is in progress as version 0.2.0. The learner flow now selects a locally saved guide, starts the camera, receives automatic setup assistance, and starts practice with Ready or an observed task action. The creator reviews labelled start/change/result frames and a goal, can privately rehearse, and explicitly approves a revision before saving. The normal learner interface has no test fixture, colour-sampling calibration or developer diagnostics.
+
+Runtime Meta roles remain Voice transcription, Spark interpretation/drafting and SAM segmentation, with server-only credentials and deterministic procedural decisions. The new real-recording acceptance is **not complete**: all five approved live repair trials stopped before approval/Practice because discovery or grounding evidence was insufficient. Upload deletion was confirmed. No sixth trial was run. See [current repair evidence](docs/REPAIR_VERIFICATION.md). Historical model successes are recorded separately in PHASE1–PHASE5 and do not prove the new workflow or physical-camera accuracy.
+
+Local guide storage is browser/origin-specific. Cloud sharing, longer lessons and additional model hosting are deferred in [FUTURE_WORK.md](docs/FUTURE_WORK.md). [The approved repair plan](docs/TEACH_PRACTICE_REPAIR_PLAN.md) defines the current gates.
 
 ## Project documents
 
 - [AGENTS.md](./AGENTS.md) — canonical coding-agent instructions.
-- [PLANS.md](./PLANS.md) — phased implementation roadmap and gates.
+- [PLANS.md](./PLANS.md) — implementation roadmap and current repair priority.
+- [docs/TEACH_PRACTICE_REPAIR_PLAN.md](./docs/TEACH_PRACTICE_REPAIR_PLAN.md) — scoped repair and acceptance gates.
+- [docs/FUTURE_WORK.md](./docs/FUTURE_WORK.md) — deferred work with explicit return gates.
+- [docs/MODEL_ROLES.md](./docs/MODEL_ROLES.md) — selected models and researched future candidates.
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — proposed system design and open technical questions.
 - [docs/DECISIONS.md](./docs/DECISIONS.md) — decisions and assumptions with their status.
 - [docs/DEMO.md](./docs/DEMO.md) — planned judging demonstration and proof checklist.
@@ -22,9 +29,9 @@ Phase 1 foundation is implemented: a minimal Next.js application, an application
 
 Muse Code is the project's only coding agent and follows `AGENTS.md`. Muse Code is not a runtime model: only verified calls made by the StepLint application to Meta models count as application Meta integration. Phases 1–3 are complete for their documented tested scope; later phases require the owner's explicit authorization.
 
-## Planned demo
+## Current acceptance target
 
-The initial controlled fixture uses a blue base, yellow support, and red latch. The key scenario is closing the latch before installing the support, then correcting the order. The demo must show evidence-backed feedback and must not claim success when the available evidence is insufficient.
+Use the owner's consented phone-unboxing recording through Teach, creator rehearsal, local save and learner Practice. Correct/wrong-order/uncertain cases must use observed changes and approved rules. The blue/yellow/red fixture remains deterministic regression-test data only; it is not part of the normal learner flow. Recorded camera replay and physical-camera acceptance are separate evidence categories.
 
 ## Setup expectations
 
@@ -90,3 +97,10 @@ Open `/practice`. Import an unchanged approved Teach export in its approving bro
 Frames stay local. Practice uses colour/area tracking with three-frame/400ms debounce, not remote inference per frame. Optional SpeechSynthesis reads approved instructions and corrections. Teach source reference frames come from the locally selected original MP4; the synthetic fixture has no real teaching video. See [PHASE5.md](docs/PHASE5.md) for exact limitations, latency evidence, tests and the physical-camera acceptance walkthrough.
 
 The automatic component-discovery path passed real owner-approved API trials. Point grounding produced evidence-eligible drafts on the synthetic fixture and one visible movement in the owner recording; earlier box-grounded trials were held for weak evidence. All five trials confirmed upload deletion. Human approval and physical-camera testing remain separate. The interface uses visible upload buttons, concise help and centred action feedback. See PHASE4.md for the full test record.
+
+
+## Browser-first repair checks
+
+`npm test` runs deterministic tests without live model requests. `npm run test:e2e` runs mocked-provider Chromium journeys and starts an isolated verification build on port 3001 when needed. Use `QA_BASE_URL` to test an already running compatible build. Browser tooling is a development dependency (Playwright, Apache-2.0); Prettier (MIT) formats code. Neither is a runtime perception model.
+
+The explicitly invoked `npm run smoke:workflow -- --preflight ...` checks the consented file hash, size, configured environment and app health without consuming a live trial. Actual `--approved-live --trial N --video PATH --sha256 HASH --base URL` runs are separately authorized and recorded in the ignored local ledger. They never run as part of unit/browser tests. Automated acceptance review is marked test-only and is not owner human approval. Never rebuild the directory used by a running app server.

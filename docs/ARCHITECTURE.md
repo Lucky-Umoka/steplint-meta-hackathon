@@ -111,3 +111,14 @@ Shared Teach schemas and evidence/approval checks live in `src/teach/`; provider
 ## Automatic-first Teach refinement
 
 The default batch pipeline now includes a bounded Spark video-discovery request before the existing SAM/structured-draft stages. Automatic boxes are validated server-side and encoded with official SAM prompt utilities. Shared pure helpers suggest evidence-supported review intervals/zones and a small set of reference moments. Review remains mandatory. One-use local session storage can hand an approved export to Practice, where its receipt is still checked server-side. This path reuses the uploaded video ID and makes no additional upload. The new discovery path is implemented and mock-tested; the recorded earlier live smoke successes used manual marks.
+
+
+## Browser-first repair (v0.2, acceptance in progress)
+
+`src/guide/` owns the V2 guide, immutable revision/method identities, source-linked visual evidence, goal conditions, canonical content, local IndexedDB repository and pure evaluator. `src/server/guide/` owns bounded source analysis, signed reviewed artifacts, process-local test quotas and camera perception. Small `/api/teach/guide/*` handlers keep credentials server-side. Published artifact verification is independent of the creator session; rehearsal access still requires creator authorization. Process-local spending limits are a local-test guard, not distributed production abuse protection.
+
+The new Teach UI saves reference images and appearance crops with reviewed guides. Practice uses the local library and native-aspect camera, semantic Spark/SAM grounding and bounded feature tracking rather than hue sampling. Setup/readiness is separate from scoring; automatic start requires a fresh baseline and task-relevant change, including early forbidden actions. Completed events and final-goal state are distinct. Runtime observations cannot change the approved guide.
+
+Legacy procedure/provider modules remain regression-tested. Their controlled fixture is not exposed in the new learner flow. This implementation is not an assertion of completed real-recording or physical-camera acceptance; see REPAIR_VERIFICATION.md and the owner-approved repair plan.
+
+Practice foreground transport is provider-neutral packed bits plus normalized crop bounds. The server uses the official SAM raster decoder; browser feature selection excludes holes/background and requires matching object identities. No SAM token syntax is decoded in browser regular expressions. This post-trial repair is locally tested, not live accepted.

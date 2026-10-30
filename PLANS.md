@@ -4,6 +4,18 @@ This roadmap is the source of truth for scope, deliverables, verification, and e
 
 Muse Code is the project's only coding agent and must follow [AGENTS.md](AGENTS.md) throughout development. Muse Code writes the application; it is not an application runtime model. Only actual, verified StepLint application calls to Meta models establish runtime Meta integration.
 
+## Current priority — Teach/Practice workflow and accuracy repair
+
+**Status: owner authorized implementation on 2026-10-30 after plan completion; repair implemented with local checks, real-recording acceptance failed and remains pending.** The current learner experience and real-scene grounding have reported acceptance gaps despite prior passing automated checks. Historical phase completion records below do not close these gaps.
+
+- Read [docs/TEACH_PRACTICE_REPAIR_PLAN.md](docs/TEACH_PRACTICE_REPAIR_PLAN.md) for the scoped browser-first repair, intended files, lifecycle, automatic start, evidence/goal review, local guide library, versioning and sequential verification gates.
+- Use the owner's existing phone-unboxing recording for first acceptance. Camera setup assistance starts immediately; scoring starts from a valid observed baseline after Ready or a clear task-relevant action. No colour fixture or manual calibration chores in the normal learner flow.
+- Keep cloud storage, longer lessons, additional model integrations and GPU hosting behind the return-to-work gates in [docs/FUTURE_WORK.md](docs/FUTURE_WORK.md). [docs/MODEL_ROLES.md](docs/MODEL_ROLES.md) records model research and candidate roles; these are not implementation or accuracy claims.
+- The newest five-trial live allowance is exhausted: all five stopped before approval/Practice. See [REPAIR_VERIFICATION.md](docs/REPAIR_VERIFICATION.md). No sixth trial or automatic retry is authorized. Preserve the evidence gates and resolve source grounding before a separately approved live acceptance run.
+- Core gate: Teach -> reviewed visual guide and goal -> optional creator rehearsal -> saved revision -> learner camera/setup -> Ready or observed automatic start -> correct/incorrect/uncertain Practice -> recovery and completion, with separate physical-camera evidence.
+
+Owner approval covers this scoped repair. It does not authorize deployment, deferred model comparisons, a later roadmap phase or additional infrastructure.
+
 ## Phase 1 — Foundation and API smoke tests
 
 **Status: Complete.** See [docs/PHASE1.md](docs/PHASE1.md) for implementation details, test results, and bounded live smoke-test results.

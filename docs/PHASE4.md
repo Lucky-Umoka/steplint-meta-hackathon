@@ -1,5 +1,7 @@
 # Phase 4 — Teach mode and batch lesson processing
 
+> Historical implementation record. The v0.2 Teach/Practice repair supersedes the UI and runtime path described below. Current Practice uses bounded server-side Spark/SAM grounding and local mask-constrained appearance tracking; the old colour-calibration flow is no longer the normal learner UI. See [current verification](REPAIR_VERIFICATION.md): the new real-recording acceptance has not passed.
+
 Status: **Complete.** Implementation, 128 automated tests, lint, type checking, production build, browser checks and four consecutive post-fix live smoke runs passed. The owner confirmed their manual test works and requested Phase 4 closure. Each generated lesson still requires human review and explicit approval; this phase sign-off does not approve a particular lesson. No live Practice workflow is implemented.
 
 ## Automatic-first Teach update

@@ -1,173 +1,1244 @@
 "use client";
-import { readAppJson } from "@/teach/api-response";
-import FilePicker from "@/components/file-picker";
-import FeedbackPopup, { useFeedback } from "@/components/feedback";
 import Link from "next/link";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import { demoProcedure } from "@/procedure/demo";
-import { ProcedureSpecSchema, type VerificationResult } from "@/procedure/schema";
-import { verifyEvents } from "@/procedure/verifier";
-import { PracticeLessonSchema, type PracticeLesson } from "@/practice/lesson";
-import { controlSession, createSession, feedDetection, type PracticeSession, type ZoneBinding } from "@/practice/pipeline";
-import { groundColour, trackColour, type ColourProfile, type Detection, type Pixels, type Point } from "@/practice/tracker";
-import { inspectLessonVideo } from "@/teach/media";
-import { useCamera } from "./use-camera";
-import Reference from "./reference";
-const fixtureZones: ZoneBinding[] = [
-  { zoneId: "staging", region: { left: .02, top: .05, right: .44, bottom: .95 } },
-  { zoneId: "base-target", region: { left: .55, top: .05, right: .95, bottom: .3 } },
-  { zoneId: "support-target", region: { left: .55, top: .36, right: .95, bottom: .62 } },
-  { zoneId: "latch-closed", region: { left: .55, top: .69, right: .95, bottom: .95 } },
-];
+import Workspace from "@/components/workspace";
+import GuideFrame from "@/components/guide-frame";
+import { type GuideObservation, type ObjectDetection } from "@/guide/schema";
+import {
+  guideRepository,
+  latestPublished,
+  type SavedGuide,
+} from "@/guide/storage";
+import {
+  beginGuide,
+  createGuideSession,
+  feedGuideObservation,
+  recoverReturnedObjects,
+  shouldAutoStart,
+  changeMetric,
+  type GuideSession,
+  type PracticeEvent,
+} from "@/guide/evaluator";
+import {
+  PerceptionResultSchema,
+  PerceptionSessionSchema,
+} from "@/guide/perception-contract";
+import {
+  createSessionClock,
+  clockPhase,
+  timingSummary,
+  formatDuration,
+  localAverage,
+} from "@/guide/timing";
+import { readAppJson } from "@/teach/api-response";
+import {
+  groundAppearance,
+  groundBackground,
+  trackAppearance,
+  frameQuality,
+  type AppearanceTrack,
+} from "@/practice/appearance";
+import type { Pixels } from "@/practice/tracker";
+import { useGuideCamera } from "./use-guide-camera";
+type View =
+  | "off"
+  | "permission"
+  | "setup"
+  | "finding"
+  | "ready"
+  | "practice"
+  | "paused"
+  | "complete";
+const fingerprint = (image: Pixels) => {
+  const values = [];
+  for (let y = 0; y < 12; y++)
+    for (let x = 0; x < 16; x++) {
+      const i =
+        (Math.floor(((y + 0.5) * image.height) / 12) * image.width +
+          Math.floor(((x + 0.5) * image.width) / 16)) *
+        4;
+      values.push((image.data[i] + image.data[i + 1] + image.data[i + 2]) / 3);
+    }
+  return values;
+};
+const difference = (a: number[], b: number[]) =>
+  a.reduce((sum, v, i) => sum + Math.abs(v - b[i]), 0) / a.length;
 export default function Practice() {
-  const feedback = useFeedback();
-  const [lesson, setLesson] = useState<PracticeLesson | null>(null), [reviewer, setReviewer] = useState(""), [fixtureReviewed, setFixtureReviewed] = useState(false);
-  const [bindings, setBindings] = useState<ZoneBinding[]>([]), [profiles, setProfiles] = useState<ColourProfile[]>([]);
-  const [selection, setSelection] = useState(""), [mode, setMode] = useState<"component" | "zone">("component");
-  const [result, setResult] = useState<VerificationResult | null>(null), [running, setRunning] = useState(false), [error, setError] = useState("");
-  const [detections, setDetections] = useState<Detection[]>([]), [speech, setSpeech] = useState(false), [speechError, setSpeechError] = useState("");
-  const [reference, setReference] = useState<File | null>(null), [sourceConfirmed, setSourceConfirmed] = useState(false), [sourceCandidate, setSourceCandidate] = useState<File | null>(null);
-  const [latencies, setLatencies] = useState<{ eventId: string; milliseconds: number }[]>([]), [workbenchConfirmed, setWorkbenchConfirmed] = useState(false);
-  const session = useRef<PracticeSession | null>(null), latestPixels = useRef<Pixels | null>(null), drag = useRef<Point | null>(null);
-  const lastWarningId = useRef("");
-  const pendingWarning = useRef<{ id: string; at: number } | null>(null), lastSpoken = useRef("");
+  const [rows, setRows] = useState<SavedGuide[]>([]),
+    [selected, setSelected] = useState<SavedGuide | null>(null),
+    [loading, setLoading] = useState(true),
+    [view, setView] = useState<View>("off"),
+    [message, setMessage] = useState(""),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [detections, setDetections] = useState<ObjectDetection[]>([]),
+    [states, setStates] = useState<Record<string, string>>({}),
+    [voice, setVoice] = useState(true),
+    [showGoal, setShowGoal] = useState(false),
+    [testMode, setTestMode] = useState(false),
+    [autoStart, setAutoStart] = useState(true),
+    [remaining, setRemaining] = useState(8),
+    [latestEvent, setLatestEvent] = useState<PracticeEvent | null>(null);
+  const clock = useRef(createSessionClock());
+  const [, refreshClock] = useState(0);
+  const recordedCompletion = useRef(false);
+  useEffect(() => {
+    const id = window.setInterval(() => refreshClock((tick) => tick + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const background = useRef<AppearanceTrack | null>(null);
+  const session = useRef<GuideSession | null>(null),
+    pixels = useRef<Pixels | null>(null),
+    tracks = useRef<AppearanceTrack[]>([]),
+    epoch = useRef(""),
+    token = useRef(""),
+    request = useRef<AbortController | null>(null),
+    remote = useRef(false),
+    lastCheck = useRef(-Infinity),
+    lastFingerprint = useRef<number[]>([]),
+    lastChecked = useRef<number[]>([]),
+    stableSince = useRef(0),
+    blocked = useRef(false),
+    phase = useRef("uncertain"),
+    readyBefore = useRef<GuideObservation | null>(null),
+    pendingReady = useRef(false),
+    stepChecked = useRef(-1),
+    history = useRef<{ at: number; pixels: Pixels }[]>([]),
+    sequence = useRef(0),
+    latencies = useRef<{ eventId: string; ms: number }[]>([]),
+    currentView = useRef<View>("off"),
+    voiceRef = useRef(true),
+    lastSaid = useRef(""),
+    runGeneration = useRef(0);
+  useEffect(() => {
+    currentView.current = view;
+    voiceRef.current = voice;
+  }, [view, voice]);
   function speak(text: string) {
-    if (!speech) return;
-    if (!("speechSynthesis" in window)) { setSpeechError("Speech is unsupported; follow the displayed instructions."); return; }
-    window.speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text);
-    utterance.onerror = () => setSpeechError("Speech could not play. Follow the displayed instructions.");
+    if (
+      !voiceRef.current ||
+      lastSaid.current === text ||
+      !("speechSynthesis" in window)
+    )
+      return;
+    lastSaid.current = text;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
     window.speechSynthesis.speak(utterance);
   }
-  function updateResult(next: VerificationResult, detectedAt: number) {
-    const failure = next.events.findLast((e) => e.status === "failed");
-    if (failure && failure.eventId !== lastWarningId.current) { pendingWarning.current = { id: failure.eventId, at: detectedAt }; lastWarningId.current = failure.eventId; }
-    setResult(next);
-    if (next.events.at(-1)?.status === "passed") feedback.success(next.status === "passed" ? "Procedure verified" : "Step verified");
-    const last = next.events.at(-1);
-    if (last?.status === "failed" && last.recovery && last.eventId !== lastSpoken.current) { lastSpoken.current = last.eventId; speak(last.recovery.instruction); feedback.failure(last.recovery.instruction); }
+  function pause(reason: string) {
+    clockPhase(clock.current, performance.now(), "paused");
+    runGeneration.current++;
+    request.current?.abort();
+    remote.current = false;
+    tracks.current = [];
+    readyBefore.current = null;
+    pendingReady.current = false;
+    if (session.current) {
+      session.current.running = false;
+      session.current.baseline = {};
+      session.current.candidates = {};
+    }
+    setBusy(false);
+    setView("paused");
+    setMessage(reason);
+    setError("");
   }
-  function lost(reason: string) {
-    if (session.current && running && !session.current.stopped) {
-      for (const component of session.current.procedure.steps) {
-        const next = feedDetection(session.current, { componentId: component.condition.componentId, quality: "missing", center: null, score: null, reason }, performance.now());
-        if (next.result) setResult(next.result);
+  function currentIndex(s: GuideSession) {
+    const i = s.guide.steps.findIndex(
+      (step) => s.steps[step.id] !== "verified",
+    );
+    return i < 0 ? s.guide.steps.length - 1 : i;
+  }
+  function applyEvents(events: PracticeEvent[]) {
+    const s = session.current;
+    if (!s || !events.length) return;
+    setStates({ ...s.steps });
+    const event = events.at(-1)!;
+    setLatestEvent(event);
+    if (event.kind === "violation") {
+      if (selected?.artifact.guide.approval?.purpose === "rehearsal")
+        void guideRepository
+          .recordRehearsal(selected.key, false, s.events.length, true)
+          .catch((e) =>
+            setError(
+              e instanceof Error
+                ? e.message
+                : "Test result could not be saved.",
+            ),
+          );
+      setMessage(event.message);
+      speak(event.message);
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() =>
+          latencies.current.push({
+            eventId: event.id,
+            ms: Math.round(performance.now() - event.at),
+          }),
+        ),
+      );
+    }
+    if (event.kind === "verified" || event.kind === "retry") {
+      const next = s.guide.steps.find(
+        (step) => s.steps[step.id] !== "verified",
+      );
+      if (next) {
+        setMessage(next.instruction);
+        speak(next.instruction);
       }
     }
-    latestPixels.current = null;
-    setRunning(false); setProfiles([]); setWorkbenchConfirmed(false); setError(reason.startsWith("Camera stopped") ? "" : reason); if (reason.startsWith("Camera stopped")) feedback.success("Camera stopped"); else feedback.failure(reason); if (session.current) session.current.stopped = true;
-    if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
-  }
-  function frame(pixels: Pixels, now: number) {
-    latestPixels.current = pixels;
-    const found = profiles.map((p) => trackColour(pixels, p)); setDetections(found);
-    if (!running || !session.current) return;
-    try {
-      for (const detection of found) {
-        const next = feedDetection(session.current, detection, now);
-        if (next.result) updateResult(next.result, next.detectedAtMs);
+    if (s.finished) {
+      clockPhase(clock.current, performance.now(), "complete");
+      if (!recordedCompletion.current && selected) {
+        recordedCompletion.current = true;
+        const measured = timingSummary(
+          clock.current,
+          s.guide,
+          s.steps,
+          performance.now(),
+        );
+        void guideRepository
+          .recordAttempt(selected.key, {
+            at: Date.now(),
+            completed: true,
+            activeMs: measured.activeMs,
+            pausedMs: measured.pausedMs,
+            verificationMs: measured.verificationMs,
+            elapsedMs: measured.elapsedMs,
+            stepMs: measured.stepMs,
+            corrections: s.events.filter((event) => event.kind === "violation")
+              .length,
+          })
+          .catch((error) =>
+            setError(
+              error instanceof Error
+                ? error.message
+                : "The timing result could not be saved.",
+            ),
+          );
       }
-    } catch (e) { setError(e instanceof Error ? e.message : "Tracking failed."); setRunning(false); }
+      setView("complete");
+      setMessage(s.guide.goal);
+      speak("Guide complete. All reviewed visible steps were verified.");
+      const row = selected;
+      if (row?.artifact.guide.approval?.purpose === "rehearsal")
+        void guideRepository
+          .recordRehearsal(
+            row.key,
+            true,
+            s.events.length,
+            s.events.some((e) => e.kind === "violation"),
+          )
+          .catch((e) =>
+            setError(
+              e instanceof Error
+                ? e.message
+                : "Test result could not be saved.",
+            ),
+          );
+    }
   }
-  const { video: cameraVideo, canvas: cameraCanvas, active: cameraActive, requesting: cameraRequesting, error: cameraError, start: startCamera, stop: stopCamera } = useCamera(frame, lost);
-  useEffect(() => {
-    const pending = pendingWarning.current;
-    if (!pending || !result) return;
-    // Two animation callbacks measure through a rendered warning, not just inference time.
-    let second = 0;
-    const first = requestAnimationFrame(() => { second = requestAnimationFrame(() => { setLatencies((items) => items.some((i) => i.eventId === pending.id) ? items : [...items, { eventId: pending.id, milliseconds: Math.round(performance.now() - pending.at) }]); if (pendingWarning.current?.id === pending.id) pendingWarning.current = null; }); });
-    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
-  }, [result]);
-  useEffect(() => () => { if ("speechSynthesis" in window) window.speechSynthesis.cancel(); }, []);
-  function choose(next: PracticeLesson) {
-    lastWarningId.current = ""; pendingWarning.current = null; lastSpoken.current = "";
-    stopCamera(); session.current = null; setRunning(false); setLesson(next); setBindings(next.zoneBindings); setProfiles([]); setDetections([]); setResult(verifyEvents(next.procedure, [])); setSelection(next.procedure.steps[0].condition.componentId); setMode("component"); setError(""); setReference(null); setSourceCandidate(null); setSourceConfirmed(false); setWorkbenchConfirmed(false); setLatencies([]); feedback.success("Procedure ready", "Start the camera to set up your workbench.");
-  }
-  async function importLesson(file?: File) {
-    if (!file) return;
+  async function checkScene() {
+    const s = session.current,
+      image = pixels.current;
+    if (!s || !image || remote.current || blocked.current || !token.current)
+      return;
+    const index = currentIndex(s),
+      generation = runGeneration.current,
+      captured = image,
+      capturedAt = performance.now();
+    remote.current = true;
+    setBusy(true);
+    lastCheck.current = capturedAt;
+    lastChecked.current = fingerprint(captured);
+    const controller = new AbortController();
+    request.current = controller;
+    if (!s.running) setView("finding");
     try {
-      if (file.size > 1_500_000) throw new Error("Lesson export exceeds 1.5 MB.");
-      const body = await file.text();
-      try { JSON.parse(body); } catch { throw new Error("Choose an approved StepLint lesson JSON file."); }
-      const response = await fetch("/api/teach/practice-lesson", { method: "POST", headers: { "Content-Type": "application/json" }, body });
-      const data = await readAppJson(response, "Lesson import");
-      const parsed = PracticeLessonSchema.safeParse(data);
-      if (!parsed.success) throw new Error("The approved lesson response was incomplete. Try importing the saved lesson again.");
-      choose(parsed.data);
-    } catch (e) { const message = e instanceof Error ? e.message : "Invalid lesson."; setError(message); feedback.failure(message); }
+      const snap = camera.capture();
+      const response = await fetch("/api/teach/guide/perceive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: token.current,
+          ...snap,
+          stepIndex: index,
+        }),
+        signal: controller.signal,
+      });
+      const data = PerceptionResultSchema.parse(
+        await readAppJson(response, "Camera check"),
+      );
+      if (generation !== runGeneration.current) return;
+      setRemaining(data.remainingModelRequests);
+      phase.current = data.phase;
+      const next: AppearanceTrack[] = [];
+      const found: ObjectDetection[] = [];
+      for (const detection of data.objects) {
+        if (detection.quality !== "observed" || !detection.box) {
+          found.push(detection);
+          continue;
+        }
+        try {
+          const track = groundAppearance(
+            captured,
+            detection.objectId,
+            detection.box,
+            data.foregrounds.find((f) => f.objectId === detection.objectId)
+              ?.foreground,
+          );
+          let updated: ObjectDetection = detection;
+          const frames = history.current.filter((f) => f.at > capturedAt);
+          if (
+            frames.length &&
+            frames[0].at - capturedAt > 700 &&
+            difference(
+              lastChecked.current,
+              fingerprint(pixels.current ?? captured),
+            ) > 3
+          )
+            throw Error("The camera moved during setup.");
+          for (const f of frames) {
+            updated = trackAppearance(f.pixels, track);
+            if (updated.quality !== "observed") break;
+          }
+          if (updated.quality === "observed") {
+            next.push(track);
+            found.push(updated);
+          } else found.push(updated);
+        } catch {
+          found.push({
+            ...detection,
+            quality: "ambiguous",
+            box: null,
+            score: null,
+          });
+        }
+      }
+      tracks.current = next;
+      const currentImage = pixels.current ?? captured;
+      background.current = groundBackground(
+        currentImage,
+        found.filter((d) => d.box).map((d) => d.box!),
+      );
+      setDetections(found);
+      stepChecked.current = index;
+      readyBefore.current = null;
+      if (data.phase === "no_work_area") {
+        setView("setup");
+        setMessage(
+          "Point the camera at your work area and put the starting items in view.",
+        );
+        speak("Point the camera at your work area.");
+      } else if (data.phase === "goal" && !s.running) {
+        setView("setup");
+        setMessage(
+          "This looks partly or fully completed. Restore the shown starting view to practice.",
+        );
+      } else if (!s.running) {
+        setView("setup");
+        setMessage(
+          data.phase === "starting"
+            ? "Hold the camera steady while I check the starting view."
+            : "Match the starting view shown beside the camera.",
+        );
+      }
+    } catch (e) {
+      if (!controller.signal.aborted && generation === runGeneration.current) {
+        blocked.current = true;
+        setView(s.running ? "practice" : "setup");
+        setError(
+          e instanceof Error && e.name !== "ZodError"
+            ? e.message
+            : "The camera response was invalid. No step was verified.",
+        );
+        setMessage("The AI check stopped. Your progress is kept.");
+      }
+    } finally {
+      if (generation === runGeneration.current) {
+        remote.current = false;
+        setBusy(false);
+      }
+    }
   }
-  const loadSavedLesson = useEffectEvent(async () => {
-    try {
-      const saved = sessionStorage.getItem("steplint-approved-handoff");
-      if (!saved) return;
-      sessionStorage.removeItem("steplint-approved-handoff");
-      await importLesson(new File([saved], "steplint-approved-lesson.json", { type: "application/json" }));
-    } catch { setError("Saved lesson could not be opened. Import your downloaded approved export."); }
+  function frame(image: Pixels, now: number) {
+    pixels.current = image;
+    history.current.push({ at: now, pixels: image });
+    if (history.current.length > 70) history.current.shift();
+    const fp = fingerprint(image);
+    if (
+      lastFingerprint.current.length &&
+      difference(lastFingerprint.current, fp) > 5
+    )
+      stableSince.current = now;
+    lastFingerprint.current = fp;
+    const s = session.current;
+    if (
+      !s ||
+      s.finished ||
+      currentView.current === "paused" ||
+      currentView.current === "off"
+    )
+      return;
+    const quality = frameQuality(image);
+    if (background.current && !remote.current) {
+      const tracked = trackAppearance(image, background.current);
+      const b = tracked.box;
+      const moved =
+        b &&
+        Math.hypot((b.left + b.right) / 2 - 0.5, (b.top + b.bottom) / 2 - 0.5) >
+          0.012;
+      if (moved) {
+        s.running = false;
+        s.baseline = {};
+        s.candidates = {};
+        readyBefore.current = null;
+        phase.current = "uncertain";
+        tracks.current = [];
+        background.current = null;
+        stepChecked.current = -1;
+        lastCheck.current = now - 6001;
+        setView("setup");
+        setMessage(
+          "The camera moved. Hold it steady while I align your view again.",
+        );
+      } else if (tracked.quality !== "observed") {
+        background.current = null;
+        readyBefore.current = null;
+        setMessage(
+          "Keep the work surface visible and hold the camera steady while I realign.",
+        );
+      }
+    }
+    const aligned = !!background.current && quality.usable;
+    const found = tracks.current.map((track) => {
+      const result = trackAppearance(image, track);
+      return aligned
+        ? result
+        : {
+            objectId: track.objectId,
+            quality: "ambiguous" as const,
+            box: null,
+            score: null,
+          };
+    });
+    for (const obj of s.guide.objects)
+      if (!found.some((d) => d.objectId === obj.id))
+        found.push({
+          objectId: obj.id,
+          quality: "missing",
+          box: null,
+          score: null,
+        });
+    setDetections(found);
+    const observation: GuideObservation = {
+      id: `camera-${++sequence.current}`,
+      timestampMs: Math.floor(now),
+      cameraEpoch: epoch.current,
+      objects: found,
+    };
+    const index = currentIndex(s),
+      step = s.guide.steps[index],
+      needed =
+        index === 0
+          ? s.guide.objects
+              .filter(
+                (o) =>
+                  o.initiallyVisible &&
+                  s.guide.steps.some(
+                    (st) =>
+                      st.condition.objectId === o.id ||
+                      st.condition.anchorId === o.id ||
+                      st.condition.requiredVisibleAfter.includes(o.id),
+                  ),
+              )
+              .map((o) => o.id)
+          : [
+              step.condition.objectId,
+              ...(step.condition.anchorId ? [step.condition.anchorId] : []),
+            ];
+    const clear =
+      aligned &&
+      needed.every((id) =>
+        found.some((d) => d.objectId === id && d.quality === "observed"),
+      );
+    const stable = quality.usable && now - stableSince.current >= 650;
+    clockPhase(
+      clock.current,
+      performance.now(),
+      s.running
+        ? aligned && clear && !remote.current
+          ? "active"
+          : "verifying"
+        : clock.current.startedAt !== null
+          ? "verifying"
+          : "setup",
+      step.id,
+    );
+    if (s.running) {
+      applyEvents(recoverReturnedObjects(s, observation));
+      applyEvents(feedGuideObservation(s, observation));
+      if (s.finished) return;
+      const active = s.guide.steps[currentIndex(s)];
+      const part = found.find((d) => d.objectId === active.condition.objectId);
+      const needsNewStep = stepChecked.current !== currentIndex(s);
+      if (
+        (needsNewStep || !part || part.quality !== "observed") &&
+        stable &&
+        !remote.current &&
+        !blocked.current &&
+        now - lastCheck.current > 6000 &&
+        (needsNewStep || difference(lastChecked.current, fp) > 3)
+      )
+        void checkScene();
+      return;
+    }
+    if (
+      !s.running &&
+      phase.current === "starting" &&
+      !clear &&
+      !remote.current
+    ) {
+      const missingLabels = needed
+        .filter(
+          (id) =>
+            !found.some((d) => d.objectId === id && d.quality === "observed"),
+        )
+        .map((id) => s.guide.objects.find((o) => o.id === id)?.label)
+        .filter(Boolean);
+      setMessage(
+        !aligned
+          ? "Show the surrounding work surface and hold the camera steady so I can align the scene."
+          : `Bring ${missingLabels.join(" and ")} clearly into view. Hold the camera steady.`,
+      );
+    }
+    if (
+      clear &&
+      phase.current === "starting" &&
+      quality.usable &&
+      !remote.current
+    ) {
+      if (!readyBefore.current && stable) {
+        readyBefore.current = observation;
+        setView("ready");
+        setMessage(
+          "Your starting view is ready. Click Ready or begin the first action.",
+        );
+        speak("Your starting view is ready. Click Ready or begin.");
+      }
+      const baseline = readyBefore.current;
+      if (baseline) {
+        const changed = s.guide.steps.some((st) => {
+          const n = changeMetric(st, baseline, observation);
+          return n !== null && n > 0.08;
+        });
+        if (!changed) readyBefore.current = { ...observation };
+        const automatic =
+          autoStart &&
+          shouldAutoStart(s.guide, readyBefore.current!, observation);
+        if (pendingReady.current || automatic) {
+          try {
+            beginGuide(s, readyBefore.current!, automatic);
+            clockPhase(clock.current, performance.now(), "active", step.id);
+            setView("practice");
+            setMessage(step.instruction);
+            speak(step.instruction);
+            pendingReady.current = false;
+            applyEvents(feedGuideObservation(s, observation));
+          } catch (e) {
+            setMessage(
+              e instanceof Error ? e.message : "Restore a clear starting view.",
+            );
+          }
+        }
+      }
+    }
+    const sceneChanged =
+      !lastChecked.current.length || difference(lastChecked.current, fp) > 9;
+    const missing = !clear;
+    const needsCheck =
+      !tracks.current.length || missing || phase.current !== "starting";
+    if (
+      stable &&
+      !remote.current &&
+      !blocked.current &&
+      now - lastCheck.current > 6000 &&
+      needsCheck &&
+      sceneChanged
+    )
+      void checkScene();
+  }
+  const camera = useGuideCamera(frame, pause);
+  const selectInitial = useEffectEvent((row: SavedGuide) => select(row));
+  const disposeSession = useEffectEvent(() => {
+    runGeneration.current++;
+    request.current?.abort();
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
   });
-  useEffect(() => { const frame = requestAnimationFrame(() => { void loadSavedLesson(); }); return () => cancelAnimationFrame(frame); }, []);
-  function position(event: React.PointerEvent<SVGSVGElement>): Point { const r = event.currentTarget.getBoundingClientRect(); return { x: Math.max(0, Math.min(.999, (event.clientX - r.left) / r.width)), y: Math.max(0, Math.min(.999, (event.clientY - r.top) / r.height)) }; }
-  function mark(event: React.PointerEvent<SVGSVGElement>) {
-    const first = drag.current, last = position(event); drag.current = null;
-    if (running || !cameraActive || !selection) return;
+  useEffect(() => {
+    let live = true;
+    const params = new URLSearchParams(window.location.search);
+    const test = params.get("test"),
+      choice = params.get("guide");
+    void guideRepository
+      .list()
+      .then((items) => {
+        if (!live) return;
+        setTestMode(!!test);
+        const visible = test
+          ? items.filter((r) => r.key === test)
+          : latestPublished(items);
+        setRows(visible);
+        const row = visible.find((r) => r.key === (test ?? choice));
+        if (row) selectInitial(row);
+      })
+      .catch((e) => {
+        if (live)
+          setError(
+            e instanceof Error
+              ? e.message
+              : "The guide library is unavailable.",
+          );
+      })
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+      disposeSession();
+    };
+  }, []);
+  function select(row: SavedGuide) {
+    camera.stop();
+    request.current?.abort();
+    runGeneration.current++;
+    session.current = null;
+    token.current = "";
+    tracks.current = [];
+    setSelected(row);
+    clock.current = createSessionClock();
+    recordedCompletion.current = false;
+    setStates({});
+    setView("off");
+    setError("");
+    setMessage("");
+    setDetections([]);
+    setLatestEvent(null);
+    setShowGoal(false);
+  }
+  async function start() {
+    if (!selected || camera.requesting || camera.active) return;
+    const generation = ++runGeneration.current;
+    epoch.current = crypto.randomUUID();
+    const previous = session.current;
+    if (
+      previous &&
+      !previous.finished &&
+      previous.guide.id === selected.artifact.guide.id &&
+      previous.guide.revision === selected.artifact.guide.revision
+    ) {
+      previous.epoch = epoch.current;
+      previous.running = false;
+      previous.baseline = {};
+      previous.candidates = {};
+      previous.lastTime = -1;
+      session.current = previous;
+    } else
+      session.current = createGuideSession(
+        selected.artifact.guide,
+        epoch.current,
+      );
+    if (!previous || previous.finished) {
+      clock.current = createSessionClock();
+      recordedCompletion.current = false;
+    } else clockPhase(clock.current, performance.now(), "verifying");
+    setStates({ ...session.current.steps });
+    tracks.current = [];
+    background.current = null;
+    phase.current = "uncertain";
+    token.current = "";
+    blocked.current = false;
+    remote.current = false;
+    lastCheck.current = -Infinity;
+    lastChecked.current = [];
+    lastFingerprint.current = [];
+    history.current = [];
+    stableSince.current = performance.now();
+    readyBefore.current = null;
+    pendingReady.current = false;
+    stepChecked.current = -1;
+    latencies.current = [];
+    setRemaining(6);
+    setError("");
+    setView("permission");
+    setMessage("Allow camera access, then show your work area.");
+    await camera.start();
+    if (
+      generation !== runGeneration.current ||
+      !camera.video.current?.srcObject
+    )
+      return;
+    setView("setup");
+    setMessage(selected.artifact.guide.initialInstruction);
     try {
-      if (mode === "component" && latestPixels.current) {
-        const profile = groundColour(latestPixels.current, selection, last, profiles); const nextProfiles = [...profiles.filter((p) => p.componentId !== selection), profile]; setProfiles(nextProfiles); if (nextProfiles.length === lesson?.procedure.steps.length) feedback.success("All components marked", "Check your zones, then start Practice."); else { const next = lesson?.procedure.steps.find((step) => !nextProfiles.some((p) => p.componentId === step.condition.componentId)); if (next) setSelection(next.condition.componentId); }
-      } else if (mode === "zone" && first && Math.abs(first.x - last.x) > .03 && Math.abs(first.y - last.y) > .03) {
-        setBindings([...bindings.filter((b) => b.zoneId !== selection), { zoneId: selection, region: { left: Math.min(first.x, last.x), top: Math.min(first.y, last.y), right: Math.max(first.x, last.x), bottom: Math.max(first.y, last.y) } }]);
+      const data = PerceptionSessionSchema.parse(
+        await readAppJson(
+          await fetch("/api/teach/guide/session", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(selected.artifact),
+          }),
+          "Practice session",
+        ),
+      );
+      if (generation === runGeneration.current) {
+        token.current = data.token;
+        speak(selected.artifact.guide.initialInstruction);
       }
-      setWorkbenchConfirmed(false); setError("");
-    } catch (e) { const message = e instanceof Error ? e.message : "Calibration failed."; setError(message); feedback.failure(message); }
+    } catch (e) {
+      if (generation === runGeneration.current) {
+        setError(e instanceof Error ? e.message : "Practice setup failed.");
+        blocked.current = true;
+      }
+    }
   }
-  function begin() {
-    try {
-      if (!lesson || !cameraActive || !workbenchConfirmed || profiles.length !== lesson.procedure.steps.length) throw new Error("Start the camera, mark each component and confirm the setup.");
-      const found = profiles.map((p) => trackColour(latestPixels.current!, p));
-      if (found.some((d) => d.quality !== "observed")) throw new Error("Cannot verify: restore every component before beginning.");
-      lastWarningId.current = ""; pendingWarning.current = null; lastSpoken.current = "";
-      session.current = createSession(lesson.procedure, bindings); setResult(verifyEvents(lesson.procedure, [])); setRunning(true); setError(""); setLatencies([]); feedback.success("Practice started", "Follow the current step."); speak(lesson.procedure.steps[0].description);
-    } catch (e) { const message = e instanceof Error ? e.message : "Cannot begin."; setError(message); feedback.failure(message); }
+  const s = session.current,
+    g = selected?.artifact.guide,
+    index = s ? currentIndex(s) : 0,
+    step = g?.steps[index],
+    violation = s?.guide.steps.find((step) => s.steps[step.id] === "violation"),
+    correction = violation?.correction;
+  const timing = s
+    ? timingSummary(
+        clock.current,
+        s.guide,
+        s.steps,
+        typeof window === "undefined" ? 0 : performance.now(),
+      )
+    : null;
+  const previousAverage = localAverage(selected?.attempts ?? []);
+  const debug =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("debug") === "1";
+  useEffect(() => {
+    if (!debug) return;
+    const probe = window as Window & { stepLintProbe?: () => unknown };
+    probe.stepLintProbe = () => ({
+      view,
+      states: { ...session.current?.steps },
+      events: session.current?.events,
+      latencies: latencies.current,
+      timing: session.current
+        ? timingSummary(
+            clock.current,
+            session.current.guide,
+            session.current.steps,
+            performance.now(),
+          )
+        : null,
+      remaining,
+      objects: detections,
+    });
+    return () => {
+      delete probe.stepLintProbe;
+    };
+  }, [debug, view, states, remaining, detections]);
+  function download() {
+    if (!s) return;
+    const url = URL.createObjectURL(
+      new Blob(
+        [
+          JSON.stringify(
+            {
+              guideId: s.guide.id,
+              revision: s.guide.revision,
+              methodId: s.guide.methodId,
+              steps: s.steps,
+              events: s.events,
+              timing: timingSummary(
+                clock.current,
+                s.guide,
+                s.steps,
+                performance.now(),
+              ),
+              latencies: latencies.current,
+            },
+            null,
+            2,
+          ),
+        ],
+        { type: "application/json" },
+      ),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "steplint-practice-result.json";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  const failure = result?.steps.some((s) => s.status === "failed") ? result.events.findLast((e) => e.status === "failed") : null;
-  const current = lesson?.procedure.steps.find((_, i) => result?.steps[i]?.status !== "passed");
-  const cannotVerify = !running || result?.status === "needs_verification" || detections.some((d) => d.quality !== "observed");
-  const referenceSource = failure?.recovery?.source ?? current?.source ?? lesson?.procedure.steps.at(-1)?.source ?? null;
-  const canRetry = running;
-  return <main className="teach-workspace mx-auto max-w-6xl space-y-6 p-5 text-slate-900">
-    <Link href="/">← StepLint</Link><h1 className="text-3xl font-bold">Practice</h1>
-    <p>Keep the camera fixed. Use distinct colour markers.</p><details><summary>Help and limits</summary><p>Practice checks visible zone changes, not hidden mechanical states or assembly quality. Frames stay on this device. After tracking loss, return the part to its starting zone. A new session replaces the previous log; download it first.</p></details>
-    <section className="space-y-3 rounded border p-4"><h2 className="text-xl font-bold">1. Select an approved procedure</h2>
-      <FilePicker label="Approved lesson" buttonLabel="Upload approved lesson" accept="application/json,.json" disabled={running} onFile={(file) => void importLesson(file)} /><p className="text-sm"><Link href="/teach" className="underline">Create a lesson in Teach</Link>, or use the demo below.</p>
-      <details><summary>Review the hand-authored blue / yellow / red fixture</summary><p>This is a controlled test fixture, not a Meta-generated or previously approved real lesson.</p><ol className="list-decimal pl-6">{demoProcedure.steps.map((s) => <li key={s.id}>{s.description} Observable condition: {s.condition.fromZone} → {s.condition.toZone}. Prerequisites: {s.prerequisites.join(", ") || "none"}. Recovery: {s.recovery.instruction}</li>)}</ol><p>The red latch transition is forbidden until install-support is verified. Use a visible red marker moving between open and closed zones; its colour alone proves no mechanical state.</p>
-      <label>Reviewer name <input value={reviewer} onChange={(e) => setReviewer(e.target.value)} maxLength={100} /></label><label className="flex gap-2"><input type="checkbox" checked={fixtureReviewed} onChange={(e) => setFixtureReviewed(e.target.checked)} />I reviewed the fixture rules and approve them for my controlled demonstration.</label><button disabled={running || !reviewer.trim() || !fixtureReviewed} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); choose({ procedure: ProcedureSpecSchema.parse({ ...demoProcedure, approval: { reviewer: reviewer.trim(), timestampMs: Date.now() } }), zoneBindings: fixtureZones, sourceLesson: null, origin: "controlled-fixture" }); }}>Use demo procedure</button></details>
-      {lesson && <p className="font-semibold">Selected: {lesson.procedure.title} — approved by {lesson.procedure.approval?.reviewer}. {lesson.origin === "controlled-fixture" ? "Demo procedure." : "Teach lesson."}</p>}
-    </section>
-    <section className="space-y-3 rounded border p-4"><h2 className="text-xl font-bold">2. Camera and calibration</h2>
-      <button disabled={!lesson || cameraActive || cameraRequesting} onClick={() => void startCamera()}>Start camera</button> <button disabled={!cameraActive && !cameraRequesting} onClick={() => { lost("Camera stopped. Recalibrate before a new session."); stopCamera(); }}>Stop camera</button>
-      <p role="status" className="font-bold">{cameraActive ? "● CAMERA ON — local preview" : cameraRequesting ? "Waiting for camera permission — Cancel with Stop camera" : "Camera off"} · {running ? "PRACTICE ACTIVE" : "Calibration / paused"}</p>
-      {cameraError && <p role="alert">{cameraError}</p>}
-      <video ref={cameraVideo} muted playsInline className="hidden" />
-      <div className="relative max-w-3xl bg-slate-950"><canvas ref={cameraCanvas} width={160} height={120} className="block w-full" aria-label="Live local workbench preview" /><svg viewBox="0 0 160 120" role="img" aria-label="Practice workbench calibration" className="absolute inset-0 h-full w-full touch-none" onPointerDown={(e) => { if (!running) { e.currentTarget.setPointerCapture(e.pointerId); drag.current = position(e); } }} onPointerUp={mark}>
-        {bindings.map(({ zoneId, region: r }) => <g key={zoneId}><rect x={r.left * 160} y={r.top * 120} width={(r.right - r.left) * 160} height={(r.bottom - r.top) * 120} fill="#38bdf8" fillOpacity={.06} stroke="#fff" strokeWidth={.5} /><text x={r.left * 160 + 1} y={r.top * 120 + 4} fill="white" stroke="black" strokeWidth={.15} fontSize={3.5}>{zoneId}</text></g>)}
-        {detections.map((d) => d.center && <circle key={d.componentId} cx={d.center.x * 160} cy={d.center.y * 120} r={2} fill="#22c55e" stroke="black" strokeWidth={.5} />)}
-      </svg></div>
-      {lesson && <><label>Set up <select disabled={running} value={mode} onChange={(e) => { const next = e.target.value as "component" | "zone"; setMode(next); setSelection(next === "component" ? lesson.procedure.steps[0].condition.componentId : lesson.procedure.zones[0].id); }}><option value="component">Mark component</option><option value="zone">Adjust zones</option></select></label><label>{mode === "component" ? "Component" : "Zone"}<select aria-label={mode === "component" ? "Component" : "Zone"} disabled={running} value={selection} onChange={(e) => setSelection(e.target.value)}>{(mode === "component" ? lesson.procedure.components.filter((c) => lesson.procedure.steps.some((s) => s.condition.componentId === c.id)) : lesson.procedure.zones).map((x) => <option key={x.id} value={x.id}>{x.description}</option>)}</select></label>
-      <p>{mode === "component" ? "Click each component’s solid colour. Keep all parts visible." : "Drag the selected zone onto the workbench."}</p>
-      <ul>{lesson.procedure.steps.map((s) => <li key={s.id}>{lesson.procedure.components.find((c) => c.id === s.condition.componentId)?.description}: {profiles.some((p) => p.componentId === s.condition.componentId) ? "Marked" : "Click to mark"}</li>)}</ul>
-      <label className="flex gap-2"><input type="checkbox" disabled={running} checked={workbenchConfirmed} onChange={(e) => setWorkbenchConfirmed(e.target.checked)} />Components and zones are correct. All parts are in their starting zones.</label><button disabled={running || !cameraActive || !workbenchConfirmed || profiles.length !== lesson?.procedure.steps.length} onClick={begin}>Start Practice</button></>}
-    </section>
-    {error && <p role="alert" className="rounded border border-red-600 bg-red-50 p-4 text-red-900">{error}</p>}
-    {failure && <section role="alert" aria-label="Rule violation" className="rounded border-2 border-red-700 bg-red-100 p-4 text-red-950"><h2 className="text-2xl font-bold">Rule violation</h2><p>{failure.reason}</p><p>Missing prerequisites: {failure.missingPrerequisites.join(", ")}</p><p className="font-bold">{failure.recovery?.instruction}</p><button disabled={!canRetry} onClick={() => { if (session.current && failure.stepId) { updateResult(controlSession(session.current, "retry", performance.now(), failure.stepId), performance.now()); feedback.success("Ready to retry", "Return the part to its starting zone."); } }}>Retry failed step — fresh start evidence required</button></section>}
-    <section className="grid gap-4 md:grid-cols-2"><div className="space-y-4 rounded border p-4"><h2 className="text-xl font-bold">Current step</h2><p role="status" className="text-xl font-bold">{failure ? "STOP — correct the rule violation" : cannotVerify ? "Cannot Verify" : result?.status === "passed" ? "All observable steps verified" : "Observing — hold each position steady"}</p><p>{current?.description ?? (lesson ? "Procedure complete for supported visible conditions." : "Select a procedure.")}</p>{cannotVerify && <p>Restore visibility, return to the start and try again.</p>}<ul>{detections.filter((d) => d.quality !== "observed").map((d) => <li key={d.componentId}>{d.componentId}: {d.reason}</li>)}</ul>
-      <label className="flex gap-2"><input type="checkbox" checked={speech} onChange={(e) => { setSpeech(e.target.checked); if (!e.target.checked && "speechSynthesis" in window) window.speechSynthesis.cancel(); }} />Speak approved instructions and corrections</label><button disabled={!current || !speech} onClick={() => current && speak(current.description)}>Read current instruction</button>{speechError && <p role="status">{speechError}</p>}
-      <button disabled={!lesson || !cameraActive} onClick={() => { if (session.current) setResult(controlSession(session.current, "reset", performance.now())); setRunning(false); if (session.current) session.current.stopped = true; setWorkbenchConfirmed(false); setLatencies([]); feedback.success("Progress reset", "Return parts to their starting zones."); if ("speechSynthesis" in window) window.speechSynthesis.cancel(); }}>Reset practice</button><p className="text-sm">Reset clears progress. Retry requires a fresh movement.</p>
-      <h2 className="text-xl font-bold">Checklist</h2><ol className="list-decimal pl-5">{lesson?.procedure.steps.map((s, i) => <li key={s.id} data-status={result?.steps[i]?.status ?? "pending"}>{s.description} — <strong>{{ passed: "Done", failed: "Wrong order", needs_verification: "Cannot verify", blocked: "Waiting", pending: "Next" }[result?.steps[i]?.status ?? "pending"]}</strong></li>)}</ol></div>
-      <div className="space-y-4"><FilePicker label="Teaching reference video" buttonLabel="Choose reference MP4" accept="video/mp4,.mp4" disabled={!lesson?.sourceLesson} onFile={(file) => { setReference(null); setSourceConfirmed(false); setSourceCandidate(null); if (!file || !lesson?.sourceLesson) return; const source = lesson.sourceLesson; void inspectLessonVideo(file).then((media) => { if (file.size !== source.media.info.bytes || Math.abs(media.info.durationSeconds - source.media.info.durationSeconds) > .1) throw new Error("Source video does not match approved lesson size/duration."); setSourceCandidate(file); feedback.success("Reference ready", "Confirm that this is the original lesson video."); }).catch((e: unknown) => { const message = e instanceof Error ? e.message : "Invalid reference video"; setError(message); feedback.failure(message); }); }} /><label className="flex gap-2"><input type="checkbox" disabled={!sourceCandidate} checked={sourceConfirmed} onChange={(e) => { setSourceConfirmed(e.target.checked); setReference(e.target.checked ? sourceCandidate : null); }} />This is the original lesson video.</label><Reference file={reference} source={referenceSource} /></div>
-    </section>
-    <section className="rounded border p-4"><h2 className="text-xl font-bold">Warning latency</h2><p>Detected change → displayed warning.</p>{latencies.length ? <ul>{latencies.map((l) => <li key={l.eventId}>{l.eventId}: {l.milliseconds} ms detected change → displayed warning</li>)}</ul> : <p>No warning latency measured yet.</p>}</section>
-    <section className="rounded border p-4"><h2 className="text-xl font-bold">Timestamped event timeline</h2><p>Recent events. Download for full details.</p><button disabled={!result} onClick={() => {
-      if (!session.current) return;
-      const url = URL.createObjectURL(new Blob([JSON.stringify({ procedure: lesson?.procedure, bindings, inputs: session.current.events, result, latencies }, null, 2)], { type: "application/json" }));
-      const link = document.createElement("a"); link.href = url; link.download = "steplint-practice-events.json"; link.click(); feedback.success("Download requested"); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }}>Download session log and latency</button><ol className="max-h-80 overflow-auto">{result?.events.slice(-100).reverse().map((e, i) => <li key={`${e.eventId}-${i}`} className="border-b py-2">{(e.timestampMs / 1000).toFixed(3)}s · {e.stepId ?? "session"} · {e.status}: {e.reason}</li>)}</ol></section>
-    <FeedbackPopup notice={feedback.notice} onClose={feedback.close} />
-  </main>;
+  return (
+    <Workspace mode="practice">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-emerald-800">
+            {testMode ? "Private creator rehearsal" : "Your guide library"}
+          </p>
+          <h1 className="mt-1 text-3xl font-bold">
+            {g ? g.title : "What would you like to practice?"}
+          </h1>
+        </div>
+        {testMode ? (
+          <Link className="rounded-lg border bg-white px-4 py-2" href="/teach">
+            Return to review
+          </Link>
+        ) : (
+          selected && (
+            <button
+              onClick={() => {
+                camera.stop();
+                pause("Camera stopped.");
+                setSelected(null);
+                setView("off");
+              }}
+            >
+              Choose another guide
+            </button>
+          )
+        )}
+      </div>
+      {!selected ? (
+        <>
+          {loading ? (
+            <p role="status">Opening your guides…</p>
+          ) : rows.length ? (
+            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {rows.map((row) => {
+                const guide = row.artifact.guide,
+                  cover = guide.images.find(
+                    (i) => i.frame === guide.goalFrame,
+                  )?.image;
+                return (
+                  <button
+                    key={row.key}
+                    className="!overflow-hidden !rounded-2xl !p-0 text-left"
+                    onClick={() => select(row)}
+                  >
+                    {cover && (
+                      <svg
+                        viewBox={`0 0 ${guide.source.width} ${guide.source.height}`}
+                        role="img"
+                        aria-label={`Goal for ${guide.title}`}
+                      >
+                        <image
+                          href={cover}
+                          width={guide.source.width}
+                          height={guide.source.height}
+                        />
+                      </svg>
+                    )}
+                    <span className="block p-5">
+                      <strong className="block text-lg">{guide.title}</strong>
+                      <span className="mt-2 block text-sm font-normal text-slate-500">
+                        {guide.steps.length} steps · Revision {guide.revision}
+                      </span>
+                      <span className="mt-4 block text-emerald-800">
+                        Practice this guide →
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <section className="mx-auto mt-10 max-w-lg rounded-2xl border bg-white p-8 text-center">
+              <h2 className="text-xl font-bold">
+                Your first guide starts in Teach
+              </h2>
+              <p className="my-4 text-slate-600">
+                Create and review a lesson, then it will appear here.
+              </p>
+              <Link className="primary" href="/teach">
+                Create a guide
+              </Link>
+            </section>
+          )}
+        </>
+      ) : (
+        g && (
+          <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2.4fr)_minmax(280px,1fr)]">
+            <section className="overflow-hidden rounded-2xl border bg-white">
+              <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+                <span role="status" className="text-sm font-semibold">
+                  {camera.active
+                    ? "Camera on"
+                    : camera.requesting
+                      ? "Waiting for camera permission"
+                      : "Camera off"}
+                  {testMode ? " · Private test" : ""}
+                </span>
+                <button
+                  aria-pressed={voice}
+                  onClick={() => {
+                    setVoice(!voice);
+                    voiceRef.current = !voice;
+                    if (voice && "speechSynthesis" in window)
+                      window.speechSynthesis.cancel();
+                  }}
+                >
+                  Voice {voice ? "on" : "off"}
+                </button>
+              </div>
+              <div className="space-y-3 border-b p-4">
+                <div
+                  aria-live="polite"
+                  className={`rounded-xl p-4 ${correction ? "bg-red-50 text-red-900" : view === "complete" ? "bg-emerald-50 text-emerald-900" : "bg-slate-50"}`}
+                >
+                  <p className="text-sm font-semibold">
+                    {correction
+                      ? "Pause and correct"
+                      : view === "complete"
+                        ? "Goal reached"
+                        : view === "practice"
+                          ? `Step ${index + 1} of ${g.steps.length}`
+                          : busy
+                            ? "Finding your objects"
+                            : view === "ready"
+                              ? "Ready when you are"
+                              : view === "off"
+                                ? "Start with your camera"
+                                : "Getting ready"}
+                  </p>
+                  <p className="mt-1 text-lg font-medium">
+                    {correction ??
+                      (view === "practice"
+                        ? step?.instruction
+                        : message || g.initialInstruction)}
+                  </p>
+                  {view === "practice" &&
+                    s?.steps[step?.id ?? ""] === "uncertain" &&
+                    !correction && (
+                      <p className="mt-2 text-sm text-amber-800">
+                        Keep the object in view. Restore this step’s starting
+                        view if the action was hidden.
+                      </p>
+                    )}
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  {view === "ready" && (
+                    <button
+                      className="primary"
+                      onClick={() => {
+                        pendingReady.current = true;
+                        setMessage("Starting from the observed view…");
+                      }}
+                    >
+                      Ready — start practice
+                    </button>
+                  )}
+                  {camera.active && (
+                    <button
+                      onClick={() => {
+                        pause("Practice paused. Your verified steps are kept.");
+                        camera.stop();
+                      }}
+                    >
+                      Stop camera
+                    </button>
+                  )}
+                  {view === "paused" && (
+                    <button className="primary" onClick={() => void start()}>
+                      Start camera again
+                    </button>
+                  )}
+                  {view === "complete" && (
+                    <>
+                      <button onClick={download}>Download result</button>
+                      <button
+                        onClick={() => {
+                          camera.stop();
+                          select(selected);
+                        }}
+                      >
+                        Practice again
+                      </button>
+                    </>
+                  )}
+                  {blocked.current && camera.active && remaining >= 2 && (
+                    <button
+                      onClick={() => {
+                        blocked.current = false;
+                        setError("");
+                        void checkScene();
+                      }}
+                    >
+                      Try camera check again
+                    </button>
+                  )}
+                </div>
+                {error && (
+                  <p
+                    role="alert"
+                    className="rounded-lg bg-red-50 p-3 text-red-900"
+                  >
+                    {error}
+                  </p>
+                )}
+              </div>
+              <div
+                className="relative mx-auto bg-slate-950"
+                style={{
+                  aspectRatio: `${camera.size.width}/${camera.size.height}`,
+                  maxWidth: `${(52 * camera.size.width) / camera.size.height}vh`,
+                }}
+              >
+                <video
+                  ref={camera.video}
+                  muted
+                  playsInline
+                  className="h-full w-full object-contain"
+                  aria-label="Live practice camera"
+                />
+                {!camera.active && (
+                  <div className="absolute inset-0 flex items-center justify-center p-8 text-center text-white">
+                    <div>
+                      <p className="mb-5 text-lg">
+                        {camera.requesting
+                          ? "Allow camera access in Chrome."
+                          : "Show your work area to get started."}
+                      </p>
+                      <button
+                        className="primary"
+                        disabled={camera.requesting}
+                        onClick={() => void start()}
+                      >
+                        {camera.requesting ? "Waiting…" : "Start camera"}
+                      </button>
+                      <p className="mt-3 text-sm text-slate-300">
+                        Selected camera images help AI locate the objects.
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {camera.active && (
+                  <svg
+                    viewBox="0 0 1000 1000"
+                    preserveAspectRatio="none"
+                    className="pointer-events-none absolute inset-0 h-full w-full"
+                    role="img"
+                    aria-label="Automatically tracked objects"
+                  >
+                    {detections
+                      .filter((d) => d.quality === "observed" && d.box)
+                      .map((d) => {
+                        const b = d.box!,
+                          label = g.objects.find(
+                            (o) => o.id === d.objectId,
+                          )?.label;
+                        return (
+                          <g key={d.objectId}>
+                            <rect
+                              x={b.left * 1000}
+                              y={b.top * 1000}
+                              width={(b.right - b.left) * 1000}
+                              height={(b.bottom - b.top) * 1000}
+                              rx="5"
+                              fill="#10b981"
+                              fillOpacity=".07"
+                              stroke="#34d399"
+                              strokeWidth="3"
+                            />
+                            <text
+                              x={b.left * 1000 + 6}
+                              y={Math.max(28, b.top * 1000 - 8)}
+                              fill="white"
+                              stroke="#0f172a"
+                              strokeWidth=".8"
+                              fontSize="23"
+                              fontWeight="bold"
+                            >
+                              {label}
+                            </text>
+                          </g>
+                        );
+                      })}
+                  </svg>
+                )}
+              </div>
+            </section>
+            <aside className="space-y-4">
+              <section className="rounded-2xl border bg-white p-5">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-bold">Your progress</h2>
+                  <span className="text-sm text-slate-500">
+                    {
+                      Object.values(states).filter((v) => v === "verified")
+                        .length
+                    }
+                    /{g.steps.length}
+                  </span>
+                </div>
+                <ol className="mt-4 space-y-4">
+                  {g.steps.map((st, i) => (
+                    <li
+                      key={st.id}
+                      data-step-status={states[st.id] ?? "waiting"}
+                      className={`flex gap-3 ${i === index ? "font-semibold" : "text-slate-500"}`}
+                    >
+                      <span
+                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm ${states[st.id] === "verified" ? "bg-emerald-100 text-emerald-900" : states[st.id] === "violation" ? "bg-red-100 text-red-900" : "bg-slate-100"}`}
+                      >
+                        {states[st.id] === "verified" ? "✓" : i + 1}
+                      </span>
+                      <span>{st.instruction}</span>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+              {step && (
+                <GuideFrame
+                  guide={g}
+                  frame={
+                    view === "off" ||
+                    view === "setup" ||
+                    view === "ready" ||
+                    view === "finding"
+                      ? step.evidence.startFrame
+                      : step.evidence.endFrame
+                  }
+                  title={
+                    view === "complete"
+                      ? "Expected result"
+                      : view === "practice"
+                        ? "This step’s result"
+                        : "Starting view"
+                  }
+                  objectIds={[
+                    step.condition.objectId,
+                    ...(step.condition.anchorId
+                      ? [step.condition.anchorId]
+                      : []),
+                  ]}
+                />
+              )}
+              {timing && (
+                <section className="rounded-2xl border bg-white p-4">
+                  <h2 className="font-semibold">
+                    {view === "complete" ? "Your session" : "Time estimate"}
+                  </h2>
+                  {view !== "complete" && (
+                    <p className="mt-2 text-sm">
+                      {timing.remainingMs === null
+                        ? "Estimate updating — finish the current visible action."
+                        : `About ${formatDuration(timing.remainingMs)} remaining`}
+                      <span className="block text-xs text-slate-500">
+                        Based on{" "}
+                        {timing.estimateBasis === "demonstration"
+                          ? "the demonstration, not a learner average"
+                          : "your completed steps"}
+                        .
+                      </span>
+                    </p>
+                  )}
+                  <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                    <dt>Active session</dt>
+                    <dd>{formatDuration(timing.activeMs)}</dd>
+                    <dt>Breaks</dt>
+                    <dd>{formatDuration(timing.pausedMs)}</dd>
+                    <dt>Verification wait</dt>
+                    <dd>{formatDuration(timing.verificationMs)}</dd>
+                    <dt>Total elapsed</dt>
+                    <dd>{formatDuration(timing.elapsedMs)}</dd>
+                  </dl>
+                  {view === "complete" && (
+                    <p className="mt-3 text-sm">
+                      {timing.completed}/{timing.totalSteps} steps verified ·{" "}
+                      {s?.events.filter((event) => event.kind === "violation")
+                        .length ?? 0}{" "}
+                      corrections.
+                    </p>
+                  )}
+                  {previousAverage && (
+                    <p className="mt-2 text-xs text-slate-500">
+                      Your average active time:{" "}
+                      {formatDuration(previousAverage.activeMs)} from{" "}
+                      {previousAverage.samples} previous completed runs on this
+                      device.
+                    </p>
+                  )}
+                  <details className="mt-2 text-xs text-slate-500">
+                    <summary>How time is counted</summary>Active session
+                    includes unpaused thinking time. Breaks are explicit pauses;
+                    stillness alone is not a break. Uncertain tracking and AI
+                    checks count as verification waits. Estimates are guidance,
+                    not speed targets.
+                    <ul>
+                      {g.steps.map((item, i) => (
+                        <li key={item.id}>
+                          Step {i + 1}:{" "}
+                          {formatDuration(timing.stepMs[item.id] ?? 0)} active ·
+                          demonstration{" "}
+                          {formatDuration(
+                            item.evidence.endMs - item.evidence.startMs,
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                </section>
+              )}
+              <section className="rounded-2xl border bg-white p-4">
+                <button
+                  className="!border-0 !p-0"
+                  aria-expanded={showGoal}
+                  onClick={() => setShowGoal(!showGoal)}
+                >
+                  {showGoal ? "Hide goal" : "See the final goal"}
+                </button>
+                {showGoal && (
+                  <div className="mt-3">
+                    <p className="mb-3 text-sm text-slate-600">{g.goal}</p>
+                    <GuideFrame
+                      guide={g}
+                      frame={g.goalFrame}
+                      title="Expected goal"
+                    />
+                  </div>
+                )}
+              </section>
+              <details className="rounded-xl border bg-white p-4 text-sm">
+                <summary>Practice preferences</summary>
+                <label className="my-3 flex gap-2">
+                  <input
+                    type="checkbox"
+                    checked={autoStart}
+                    onChange={(e) => setAutoStart(e.target.checked)}
+                  />
+                  Start automatically when a clear task action begins after
+                  setup.
+                </label>
+                <p className="text-slate-500">
+                  AI receives selected camera images to locate objects. Frequent
+                  tracking stays in this browser. Scoring requires clear
+                  observed changes.
+                </p>
+              </details>
+              {debug && (
+                <details className="rounded-xl border p-4 text-xs">
+                  <summary>Developer evidence</summary>
+                  <p>AI requests remaining: {remaining}</p>
+                  <p>Latest event: {latestEvent?.kind ?? "none"}</p>
+                  <button onClick={download}>Download evidence log</button>
+                </details>
+              )}
+            </aside>
+          </div>
+        )
+      )}
+      {!selected && error && (
+        <p role="alert" className="mt-5 rounded-lg bg-red-50 p-4 text-red-900">
+          {error}
+        </p>
+      )}
+    </Workspace>
+  );
 }

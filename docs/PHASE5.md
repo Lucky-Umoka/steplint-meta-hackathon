@@ -1,5 +1,7 @@
 # Phase 5 — local Practice mode
 
+> Historical implementation record. The v0.2 Teach/Practice repair supersedes the UI and runtime path described below. Current Practice uses bounded server-side Spark/SAM grounding and local mask-constrained appearance tracking; the old colour-calibration flow is no longer the normal learner UI. See [current verification](REPAIR_VERIFICATION.md): the new real-recording acceptance has not passed.
+
 Status: implemented; automated tests, lint, type checking, production build and browser checks passed. The physical-camera demo remains an owner-run manual check. No live Meta calls are required or made by Practice.
 
 ## Files and data flow

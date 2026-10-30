@@ -1,6 +1,43 @@
 @import "tailwindcss";
-body { margin: 0; font-family: Arial, Helvetica, sans-serif; }
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, sans-serif;
+}
 
-.teach-workspace button { @apply rounded border border-slate-400 bg-white px-3 py-2 font-medium hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40; }
-.teach-workspace input:not([type="checkbox"]):not([type="file"]), .teach-workspace select { @apply ml-2 rounded border border-slate-400 bg-white px-2 py-1; }
-.teach-workspace input:focus-visible, .teach-workspace button:focus-visible, .teach-workspace select:focus-visible, .teach-workspace textarea:focus-visible { @apply outline-2 outline-offset-2 outline-blue-700; }
+.teach-workspace button {
+  @apply rounded border border-slate-400 bg-white px-3 py-2 font-medium hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40;
+}
+.teach-workspace input:not([type="checkbox"]):not([type="file"]),
+.teach-workspace select {
+  @apply ml-2 rounded border border-slate-400 bg-white px-2 py-1;
+}
+.teach-workspace input:focus-visible,
+.teach-workspace button:focus-visible,
+.teach-workspace select:focus-visible,
+.teach-workspace textarea:focus-visible {
+  @apply outline-2 outline-offset-2 outline-blue-700;
+}
+
+.flow-workspace button {
+  @apply rounded-lg border border-slate-300 bg-white px-4 py-2.5 font-semibold text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40;
+}
+.flow-workspace button.primary,
+.flow-workspace a.primary {
+  @apply inline-block rounded-lg border border-emerald-700 bg-emerald-700 px-5 py-3 font-semibold text-white hover:bg-emerald-800;
+}
+.flow-workspace button:focus-visible,
+.flow-workspace a:focus-visible,
+.flow-workspace input:focus-visible,
+.flow-workspace textarea:focus-visible {
+  @apply outline-2 outline-offset-2 outline-emerald-700;
+}
+.flow-workspace input:not([type="checkbox"]):not([type="file"]),
+.flow-workspace textarea {
+  @apply block w-full rounded-lg border border-slate-300 bg-white px-3 py-2;
+}
+.flow-workspace summary {
+  @apply cursor-pointer py-2 font-medium;
+}
+.flow-workspace input[type="checkbox"] {
+  @apply h-4 w-4 shrink-0 accent-emerald-700;
+}

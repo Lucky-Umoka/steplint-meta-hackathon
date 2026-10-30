@@ -109,3 +109,15 @@ One owner-approved MP4 upload, one sam-3.1 video request (prompt selected from a
 - Isolate verification builds from the directory of an active Next server to avoid manifest-read failures. Keep exact host/auth protections in place.
 - Feed bounded Voice turn timestamps to discovery; map proposal times to actual decoded frame indices. Speech is a timing hint, never geometric or action evidence.
 - Freehand Spark points missed visible object interiors in additional live trials. Request bounded normalized object boxes and derive a central positive SAM point on the server. Reject invalid boxes, retain official parser/utilities, preserve uncertainty and human review, and measure returned geometry against synthetic ground truth rather than assuming confidence alone proves correct identity.
+
+
+## Browser-first repair decisions (2026-10-30)
+
+- Owner authorized implementation after the revised plan, with five sequential new live workflow trials. Document deferred infrastructure, long lessons and future model hosting rather than expanding this repair.
+- Use a V2 guide contract for repeated-object steps, explicit evidence and final-goal checks, preserving legacy verifier regression coverage. No model output directly sets success. Published rules are signed; canonical validated content removes JSON key-order dependence. Test actor artifacts carry `testOnly` and do not imply owner review.
+- Save guides/reference images in IndexedDB for the current origin/device. Keep practice reading separate from creator unlock, while bounded paid perception stays server-side. Rehearsal is private and separate from publication. Revisions are not alternative methods.
+- Camera assistance starts on camera activation; Ready or a clearly observed task action starts scoring only from a suitable fresh baseline. Setup, camera motion, uncertainty and already-complete scenes cannot invent past success.
+- Use up to four native candidate images alongside video during discovery when the upload bound permits, without extra model requests. Native coordinates and actual frame times matter. Separate covers/contents from containers. Treat missing geometry as missing.
+- Live trial 1 returned no completed usable discovery output and stopped safely; deletion confirmed. Improve documented output-text extraction and add prompt-free status/reason/token diagnostics before the next bounded trial. Raise discovery output cap from 1,800 to 3,000; do not claim truncation as the first cause without retained evidence. No automatic API retry.
+
+- 2026-10-30 acceptance: all five new repair trials failed before approval/Practice. Keep the 0.90 evidence policy, preserve failures, delete temporary uploads and stop paid tests at the approved cap. Do not describe this as a working real-camera workflow. Post-trial mask-constrained local features and UI/storage fixes require fresh live acceptance before any accuracy claim.

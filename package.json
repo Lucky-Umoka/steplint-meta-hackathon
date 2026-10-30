@@ -1,6 +1,6 @@
 {
   "name": "steplint",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -18,7 +18,10 @@
     "media:inspect": "node --conditions=react-server --import tsx scripts/media-inspect.ts",
     "smoke:sam-video": "node --conditions=react-server --import tsx scripts/smoke-sam-video.ts",
     "smoke:voice": "node --conditions=react-server --import tsx scripts/smoke-voice.ts",
-    "smoke:teach": "node --conditions=react-server --import tsx scripts/smoke-teach.ts"
+    "smoke:teach": "node --conditions=react-server --import tsx scripts/smoke-teach.ts",
+    "test:e2e": "playwright test",
+    "smoke:workflow": "node --conditions=react-server --import tsx scripts/smoke-workflow.ts",
+    "format:check": "prettier --check src/guide src/server/guide e2e"
   },
   "dependencies": {
     "@meta-sam/parser": "0.1.0",
@@ -32,12 +35,14 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/postcss": "4.3.3",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "16.4.3",
+    "prettier": "^3.6.2",
     "tailwindcss": "4.3.3",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
