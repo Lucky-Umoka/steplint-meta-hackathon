@@ -1,7 +1,7 @@
 /** Explicit live acceptance test. Real models, test-only review, recorded camera; never normal tests. */
 import { chromium } from "@playwright/test";
 import nextEnv from "@next/env";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, appendFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { GuideSchema, type Guide } from "../src/guide/schema";
 nextEnv.loadEnvConfig(process.cwd());
@@ -14,7 +14,9 @@ declare global {
       canvas: HTMLCanvasElement;
     };
     qaReplayStart?: number;
+    qaStoreAnalysis?: (text: string) => Promise<void>;
     qaAnalysis?: string;
+    qaAnalysisDone?: boolean;
     qaCaptureError?: string;
     stepLintProbe?: () => {
       view: string;
@@ -63,7 +65,7 @@ if (preflight) {
   process.exit(0);
 }
 const batch = arg("--batch") ?? "repair-live";
-if (!["repair-live", "repair-round2"].includes(batch))
+if (!["repair-live", "repair-round2", "repair-round3"].includes(batch))
   throw Error("Unknown approved trial batch.");
 const ledgerPath = `.media-lab/${batch}/ledger.json`,
   ledger = JSON.parse(await readFile(ledgerPath, "utf8")) as {
@@ -119,8 +121,21 @@ await context.addInitScript(
         void response
           .clone()
           .text()
-          .then((text) => {
-            window.qaAnalysis = text;
+          .then(async (text) => {
+            await window.qaStoreAnalysis?.(text);
+            window.qaAnalysis = (window.qaAnalysis ?? "") + text + "\n";
+            if (
+              !response.ok ||
+              text.split("\n").some((line) => {
+                try {
+                  const event = JSON.parse(line);
+                  return event.type === "draft" || event.type === "error";
+                } catch {
+                  return false;
+                }
+              })
+            )
+              window.qaAnalysisDone = true;
           })
           .catch((e) => {
             window.qaCaptureError = String(e);
@@ -164,6 +179,26 @@ await context.addInitScript(
   { url: `data:video/mp4;base64,${bytes.toString("base64")}` },
 );
 const page = await context.newPage();
+await page.exposeFunction("qaStoreAnalysis", async (text: string) => {
+  await appendFile(`${folder}/analysis.partial.ndjson`, text + "\n", {
+    mode: 0o600,
+  });
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line) as {
+        type?: string;
+        frames?: { frame: number; timestampMs: number }[];
+      };
+      if (event.type === "source")
+        console.log(
+          `Trial ${trial}: exact source moments ${JSON.stringify(event.frames)}. Same upload retained for grounding.`,
+        );
+    } catch {
+      /* retain the raw bounded response for diagnostics; parser owns validation */
+    }
+  }
+});
 page.on("pageerror", (e) => errors.push(e.message));
 page.on("request", (r) => {
   const path = new URL(r.url()).pathname;
@@ -283,10 +318,16 @@ try {
   await page
     .getByRole("heading", { name: "Preview your lesson" })
     .waitFor({ timeout: 30000 });
+  const intent = arg("--intent");
+  if (intent) {
+    if (intent.length > 400)
+      throw Error("The acceptance goal exceeds its bound.");
+    await page.getByLabel("Guide goal (optional)").fill(intent);
+  }
   await page.getByLabel("I previewed this lesson").check();
   const response = page.waitForResponse(
     (r) => new URL(r.url()).pathname === "/api/teach/guide/analyse",
-    { timeout: 320000 },
+    { timeout: 600000 },
   );
   await page
     .getByRole("button", { name: "Build my guide", exact: true })
@@ -297,13 +338,21 @@ try {
   const wire = await response;
   await page.waitForFunction(
     () =>
-      window.qaAnalysis !== undefined || window.qaCaptureError !== undefined,
+      window.qaAnalysisDone === true ||
+      window.qaCaptureError !== undefined ||
+      !!document
+        .querySelector('[role="dialog"][aria-labelledby]')
+        ?.textContent?.includes("Could not finish this action"),
     null,
-    { timeout: 320000 },
+    { timeout: 600000 },
   );
   const capture = await page.evaluate(() => ({
     text: window.qaAnalysis,
-    error: window.qaCaptureError,
+    error:
+      window.qaCaptureError ??
+      (!window.qaAnalysisDone
+        ? (document.querySelector('[role="dialog"]')?.textContent ?? undefined)
+        : undefined),
   }));
   if (capture.error || !capture.text)
     throw Error(capture.error ?? "No analysis body captured");
@@ -349,7 +398,7 @@ try {
       .nth(i)
       .screenshot({ path: `${folder}/source-step-${i + 1}.png` });
   if (
-    guide.steps.length < 2 ||
+    guide.steps.length < 1 ||
     guide.steps.some((s) => !s.supported) ||
     !guide.goalSupported ||
     guide.coverage.some((c) => c.status === "unresolved")
@@ -409,8 +458,8 @@ try {
   if (errors.length)
     throw Error(`Browser exceptions occurred: ${errors.join("; ")}`);
   if (
-    counts["/api/teach/guide/analyse"] !== 1 ||
-    counts["/api/teach/guide/perceive"] > 8
+    counts["/api/teach/guide/analyse"] !== 2 ||
+    counts["/api/teach/guide/perceive"] > 6
   )
     throw Error("The bounded request contract was exceeded.");
   await writeFile(

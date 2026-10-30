@@ -2,6 +2,7 @@ import { ArtifactSchema, type GuideArtifact } from "./schema";
 import { z } from "zod";
 import type { TimingRecord } from "./timing";
 export const TimingRecordSchema = z.strictObject({
+  sessionId: z.string().uuid().optional(),
   at: z.number().int().nonnegative(),
   completed: z.boolean(),
   activeMs: z.number().nonnegative(),
@@ -9,6 +10,15 @@ export const TimingRecordSchema = z.strictObject({
   verificationMs: z.number().nonnegative(),
   elapsedMs: z.number().nonnegative(),
   corrections: z.number().int().nonnegative(),
+  evidence: z
+    .strictObject({
+      checked: z.number().int().nonnegative(),
+      usable: z.number().int().nonnegative(),
+      missing: z.number().int().nonnegative(),
+      ambiguous: z.number().int().nonnegative(),
+      obstructed: z.number().int().nonnegative(),
+    })
+    .optional(),
   stepMs: z.record(z.string(), z.number().nonnegative()),
 });
 export const SavedGuideSchema = z.strictObject({
@@ -111,6 +121,37 @@ async function operation<T>(
       );
   });
 }
+async function updateSavedGuide(
+  key: string,
+  change: (row: SavedGuide) => SavedGuide,
+) {
+  const db = await database();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("guides", "readwrite"),
+      store = tx.objectStore("guides"),
+      request = store.get(key);
+    let failure: unknown;
+    request.onsuccess = () => {
+      try {
+        if (!request.result) throw Error("This guide is no longer saved.");
+        store.put(
+          SavedGuideSchema.parse(change(parseSavedGuide(request.result))),
+        );
+      } catch (error) {
+        failure = error;
+        tx.abort();
+      }
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = tx.onabort = () =>
+      reject(
+        failure ??
+          Error(
+            "The session result could not be saved. Download it before leaving.",
+          ),
+      );
+  });
+}
 export const guideRepository: GuideRepository = {
   async list() {
     const items = await operation<unknown[]>("readonly", (s) => s.getAll());
@@ -135,27 +176,23 @@ export const guideRepository: GuideRepository = {
     await operation("readwrite", (s) => s.delete(key));
   },
   async recordAttempt(key, result) {
-    const rows = await this.list(),
-      row = rows.find((r) => r.key === key);
-    if (!row) throw Error("This guide is no longer saved.");
     const attempt = TimingRecordSchema.parse(result);
-    await operation("readwrite", (s) =>
-      s.put({
-        ...row,
-        attempts: [...(row.attempts ?? []), attempt].slice(-30),
-      }),
-    );
+    await updateSavedGuide(key, (row) => ({
+      ...row,
+      attempts: [
+        ...(row.attempts ?? []).filter(
+          (existing) =>
+            !attempt.sessionId || existing.sessionId !== attempt.sessionId,
+        ),
+        attempt,
+      ].slice(-30),
+    }));
   },
   async recordRehearsal(key, passed, events, hadViolations = false) {
-    const rows = await this.list();
-    const row = rows.find((r) => r.key === key);
-    if (!row) throw Error("The test revision is no longer saved.");
-    await operation("readwrite", (s) =>
-      s.put({
-        ...row,
-        rehearsal: { at: Date.now(), passed, events, hadViolations },
-      }),
-    );
+    await updateSavedGuide(key, (row) => ({
+      ...row,
+      rehearsal: { at: Date.now(), passed, events, hadViolations },
+    }));
   },
 };
 

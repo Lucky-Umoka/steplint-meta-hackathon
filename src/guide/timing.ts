@@ -113,6 +113,7 @@ export const formatDuration = (ms: number) => {
 
 /** Anonymous device-local outcomes; never a cross-learner population rating. */
 export type TimingRecord = {
+  sessionId?: string;
   at: number;
   completed: boolean;
   activeMs: number;
@@ -121,6 +122,13 @@ export type TimingRecord = {
   elapsedMs: number;
   corrections: number;
   stepMs: Record<string, number>;
+  evidence?: {
+    checked: number;
+    usable: number;
+    missing: number;
+    ambiguous: number;
+    obstructed: number;
+  };
 };
 export function localAverage(records: TimingRecord[]) {
   const completed = records.filter((r) => r.completed);

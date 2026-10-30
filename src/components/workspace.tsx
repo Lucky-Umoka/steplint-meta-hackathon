@@ -13,7 +13,7 @@ export default function Workspace({
           <Link href="/" className="text-xl font-bold tracking-tight">
             StepLint
             <span className="ml-2 text-xs font-normal text-slate-500">
-              Preview · v0.2
+              Preview · v0.3
             </span>
           </Link>
           <nav aria-label="Main navigation" className="flex gap-2">

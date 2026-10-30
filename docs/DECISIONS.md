@@ -121,3 +121,20 @@ One owner-approved MP4 upload, one sam-3.1 video request (prompt selected from a
 - Live trial 1 returned no completed usable discovery output and stopped safely; deletion confirmed. Improve documented output-text extraction and add prompt-free status/reason/token diagnostics before the next bounded trial. Raise discovery output cap from 1,800 to 3,000; do not claim truncation as the first cause without retained evidence. No automatic API retry.
 
 - 2026-10-30 acceptance: all five new repair trials failed before approval/Practice. Keep the 0.90 evidence policy, preserve failures, delete temporary uploads and stop paid tests at the approved cap. Do not describe this as a working real-camera workflow. Post-trial mask-constrained local features and UI/storage fixes require fresh live acceptance before any accuracy claim.
+
+## Accuracy/timing repair, second owner-approved batch (2026-10-30)
+
+- Version 0.3 adds measured local session timing and observation availability. Availability and provider confidence are not calibrated accuracy. Setup is excluded; explicit breaks and verification waits are separate; completion requires the final approved goal. Local averages require three completed runs and never imply a population benchmark.
+- The owner superseded the temporary phone-removal-only scope: preserve the full necessary demonstrated sequence. Already-removed presence cannot stand for its history. No unshown repair is invented; unobservable necessary actions remain unresolved.
+- Separate semantic discovery from exact single-image Spark localization, using the documented 0–1000 grid before converting to SAM pixels. Group at most six relevant parts into at most four localization calls, keeping the eight-call Teach bound. Keep official SAM streaming/parser utilities and the 0.90 evidence gate.
+- Ground source objects in their selected clear frame, not frame zero based on a model's initial-visibility flag. Retain literal spoken names only when found in the actual Voice transcript turn.
+- Camera setup does not use a face-only view as the workbench. Old verified pixel-space goal references cannot survive unproven scene realignment. This deliberately abstains rather than inventing completion.
+- First two trials of this separate five-trial allowance failed before approval/Practice: incomplete source geometry/coverage, then unavailable source outline. Three remain before the next run. No automated retry, no physical-camera acceptance claim.
+
+
+## Exact action moments rather than a coarse shortlist
+
+- Split automatic source analysis into two authenticated streaming stages, reusing one Meta upload through an encrypted, expiring source context. The browser decodes the actual requested source frames; validate indices, metadata, JPEG dimensions and session ownership before further paid requests. No process-memory rendezvous or cloud storage is added.
+- Dynamic discovery reads video and Voice timing without an evenly spaced still-image shortlist. At most eight exact-image localization calls cover root and declared before/after views. One missing root does not cancel valid planned alternates; each image is requested once, never retried automatically. No unavailable view becomes evidence.
+- Spark reasoning counts within the output budget, per [official reasoning documentation](https://dev.meta.ai/docs/reasoning). A real 6,144-token incomplete response justified a finite 12,288 ceiling and concise drafting instructions. Do not claim the limit fix is live-verified until a completed parsed response is received.
+- The owner authorized a third separate five-trial allowance. New planned bound is 12 Teach model requests plus 6 per creator/learner session, 24 maximum per trial; announce purpose/models/cost before each run. Preserve all prior failures and conservative approval/verification gates.

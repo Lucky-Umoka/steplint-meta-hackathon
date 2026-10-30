@@ -19,6 +19,9 @@ export const ObjectSchema = z.strictObject({
   profile: z
     .strictObject({
       role: z.enum(["task_part", "reference"]),
+      material: z
+        .enum(["opaque", "transparent", "reflective", "unknown"])
+        .optional(),
       namesHeard: z
         .array(
           z.strictObject({
@@ -61,7 +64,7 @@ export const ConditionSchema = z
     objectId: id,
     anchorId: id.nullable(),
     minimumChange: z.number().min(0.15).max(12),
-    requiredVisibleAfter: z.array(id).max(4),
+    requiredVisibleAfter: z.array(id).max(6),
   })
   .superRefine((c, ctx) => {
     if (c.kind === "separation" && (!c.anchorId || c.anchorId === c.objectId))
@@ -97,7 +100,7 @@ export const GuideSchema = z
     title: z.string().trim().min(1).max(180),
     goal: text,
     initialInstruction: text,
-    objects: z.array(ObjectSchema).min(1).max(4),
+    objects: z.array(ObjectSchema).min(1).max(6),
     steps: z.array(GuideStepSchema).min(1).max(12),
     coverage: z
       .array(
@@ -118,6 +121,7 @@ export const GuideSchema = z
       height: z.number().int().positive().max(720),
       frameTimesMs: z.array(z.number().int().nonnegative()).min(2).max(600),
       transcript: TranscriptSchema,
+      teachingIntent: z.string().trim().min(1).max(400).optional(),
       tracking: z
         .array(
           z.strictObject({
@@ -128,7 +132,7 @@ export const GuideSchema = z
             longestTrustedRun: z.number().int().nonnegative(),
           }),
         )
-        .max(4)
+        .max(6)
         .optional(),
     }),
     images: z
@@ -148,7 +152,7 @@ export const GuideSchema = z
           confidence: z.number().min(0).max(1),
         }),
       )
-      .max(2400),
+      .max(3600),
     approval: z
       .strictObject({
         reviewer: z.string().trim().min(1).max(100),
@@ -174,6 +178,8 @@ export const GuideSchema = z
     )
       fail("Unknown or duplicate goal conditions.");
     const frame = (n: number) => n < g.source.frameTimesMs.length;
+    if (g.goalFrame < g.steps.at(-1)!.evidence.endFrame)
+      fail("The final goal must follow the demonstrated steps.");
     if (
       g.objects.some(
         (o) =>
@@ -188,6 +194,20 @@ export const GuideSchema = z
       )
     )
       fail("Object names/appearances must reference actual source evidence.");
+    if (
+      g.source.tracking &&
+      (new Set(g.source.tracking.map((item) => item.objectId)).size !==
+        g.source.tracking.length ||
+        g.source.tracking.some(
+          (item) =>
+            !objects.has(item.objectId) ||
+            item.trustedFrames > item.observedFrames ||
+            item.observedFrames > item.totalFrames ||
+            item.totalFrames !== g.source.frameTimesMs.length ||
+            item.longestTrustedRun > item.trustedFrames,
+        ))
+    )
+      fail("Source tracking counts must match the actual observed frames.");
     if (g.geometry.some((x) => !frame(x.frame) || !objects.has(x.objectId)))
       fail("Unknown source geometry.");
     if (
@@ -258,7 +278,7 @@ export const ObservationSchema = z.strictObject({
   id: z.string().min(1).max(100),
   timestampMs: z.number().int().nonnegative(),
   cameraEpoch: z.string().min(1).max(100),
-  objects: z.array(DetectionSchema).max(4),
+  objects: z.array(DetectionSchema).max(6),
 });
 export type GuideObservation = z.infer<typeof ObservationSchema>;
 /** Readiness is not approval or correctness. */

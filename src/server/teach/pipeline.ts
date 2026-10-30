@@ -48,7 +48,7 @@ export function samSelectionRequest(fileId: string, selections: Selection[], med
   return { model: "sam-3.1", stream: true, store: false, input: [{ type: "message", role: "user", content: [{ type: "input_text", text }, { type: "input_video", file_id: fileId }] }], metadata: { mask_encoding: "one_bit", include_confidence: "true", propagation_direction: "both" } };
 }
 
-export function summarizeTracking(result: VideoSegmentationResult, selections: Selection[], media: LessonMedia): Tracking {
+export function summarizeTracking(result: VideoSegmentationResult, selections: Selection[], media: LessonMedia, validate: (value: unknown) => Tracking = (value) => ContextSchema.shape.tracking.parse(value)): Tracking {
   if (result.outcome.status !== "completed" || result.diagnostics.length) throw new Error("Segmentation is incomplete or malformed.");
   const video = media.info.video;
   if (!video) throw new Error("Missing video.");
@@ -70,7 +70,7 @@ export function summarizeTracking(result: VideoSegmentationResult, selections: S
     tracking[selectionIndex].samples.push({ frame, timestampMs: media.frameTimesMs[frame], box: { left: box.left / video.width, top: box.top / video.height, right: box.right / video.width, bottom: box.bottom / video.height }, confidence: box.confidence ?? null, maskPixels: pixels });
   }
   for (const track of tracking) { track.samples.sort((a, b) => a.frame - b.frame); track.missingFrames = media.frameTimesMs.length - track.samples.length; }
-  return ContextSchema.shape.tracking.parse(tracking);
+  return validate(tracking);
 }
 
 export function sparkRequest(context: TeachContext) {

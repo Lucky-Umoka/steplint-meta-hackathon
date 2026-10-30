@@ -1,7 +1,13 @@
+import { fitSimilarity, transformPoint } from "./similarity";
 import type { Box, ObjectDetection } from "../guide/schema";
 import { foregroundPixels, type Foreground } from "../guide/foreground";
 import type { Pixels } from "./tracker";
-type Feature = { x: number; y: number; patch: Float32Array };
+type Feature = {
+  x: number;
+  y: number;
+  patch: Float32Array;
+  reference?: Float32Array;
+};
 export type AppearanceTrack = {
   objectId: string;
   box: Box;
@@ -9,6 +15,10 @@ export type AppearanceTrack = {
   width: number;
   height: number;
   lost: boolean;
+  seedCount?: number;
+  corners?: { x: number; y: number }[];
+  rotation?: number;
+  scale?: number;
 };
 function grey(image: Pixels) {
   if (
@@ -23,6 +33,14 @@ function grey(image: Pixels) {
       image.data[i * 4 + 1] * 0.587 +
       image.data[i * 4 + 2] * 0.114;
   return out;
+}
+export type TrackingFrame = {
+  width: number;
+  height: number;
+  values: Float32Array;
+};
+export function prepareTrackingFrame(image: Pixels): TrackingFrame {
+  return { width: image.width, height: image.height, values: grey(image) };
 }
 function patch(data: Float32Array, w: number, h: number, x: number, y: number) {
   if (x < 3 || y < 3 || x >= w - 3 || y >= h - 3) return null;
@@ -93,8 +111,9 @@ export function groundAppearance(
   objectId: string,
   box: Box,
   foreground?: Foreground,
+  prepared?: TrackingFrame,
 ): AppearanceTrack {
-  const data = grey(image);
+  const data = prepared?.values ?? grey(image);
   const inside = foreground ? foregroundPixels(foreground) : null;
   const selected = features(
     data,
@@ -117,15 +136,26 @@ export function groundAppearance(
     width: image.width,
     height: image.height,
     lost: false,
+    seedCount: selected.length,
+    corners: [
+      { x: box.left * image.width, y: box.top * image.height },
+      { x: box.right * image.width, y: box.top * image.height },
+      { x: box.right * image.width, y: box.bottom * image.height },
+      { x: box.left * image.width, y: box.bottom * image.height },
+    ],
+    rotation: 0,
+    scale: 1,
   };
-}
-function median(xs: number[]) {
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)];
 }
 /** Bounded feature-patch matching; scores are tracking quality, never action probabilities. */
 export function trackAppearance(
   image: Pixels,
+  track: AppearanceTrack,
+): ObjectDetection {
+  return trackPreparedAppearance(prepareTrackingFrame(image), track);
+}
+export function trackPreparedAppearance(
+  image: TrackingFrame,
   track: AppearanceTrack,
 ): ObjectDetection {
   const failure = (quality: "obstructed" | "ambiguous"): ObjectDetection => {
@@ -138,7 +168,7 @@ export function trackAppearance(
     image.height !== track.height
   )
     return failure("ambiguous");
-  const data = grey(image),
+  const data = image.values,
     matched: {
       old: Feature;
       x: number;
@@ -169,43 +199,64 @@ export function trackAppearance(
     if (
       best &&
       best.score >= 0.88 &&
+      correlation(f.reference ?? f.patch, best.p) >= 0.78 &&
       (best.score - second > 0.025 ||
         (best.score > 0.99 && Math.hypot(best.x - f.x, best.y - f.y) < 3))
     )
       matched.push({ old: f, ...best });
   }
-  if (matched.length < 5 || matched.length / track.features.length < 0.65)
+  if (
+    matched.length < 5 ||
+    matched.length / (track.seedCount ?? track.features.length) < 0.65
+  )
     return failure("obstructed");
-  const dx = median(matched.map((m) => m.x - m.old.x)),
-    dy = median(matched.map((m) => m.y - m.old.y));
-  const consistent = matched.filter(
-    (m) => Math.hypot(m.x - m.old.x - dx, m.y - m.old.y - dy) < 4,
+  const pose = fitSimilarity(
+    matched.map((m) => ({ from: m.old, to: { x: m.x, y: m.y } })),
   );
-  if (consistent.length < 5 || consistent.length / matched.length < 0.75)
+  if (!pose) return failure("ambiguous");
+  const consistent = pose.inliers.map((index) => matched[index]);
+  if (consistent.length / (track.seedCount ?? track.features.length) < 0.65)
     return failure("ambiguous");
+  const corners = (
+    track.corners ?? [
+      { x: track.box.left * image.width, y: track.box.top * image.height },
+      { x: track.box.right * image.width, y: track.box.top * image.height },
+      { x: track.box.right * image.width, y: track.box.bottom * image.height },
+      { x: track.box.left * image.width, y: track.box.bottom * image.height },
+    ]
+  ).map((point) => transformPoint(pose, point));
   const b = {
-    left: track.box.left + dx / image.width,
-    right: track.box.right + dx / image.width,
-    top: track.box.top + dy / image.height,
-    bottom: track.box.bottom + dy / image.height,
+    left: Math.min(...corners.map((p) => p.x)) / image.width,
+    top: Math.min(...corners.map((p) => p.y)) / image.height,
+    right: Math.max(...corners.map((p) => p.x)) / image.width,
+    bottom: Math.max(...corners.map((p) => p.y)) / image.height,
   };
   if (b.left < 0.005 || b.top < 0.005 || b.right > 0.995 || b.bottom > 0.995)
     return failure("obstructed");
   // Texture must remain recognisable; do not teach the tracker a hand/background after loss.
   track.box = b;
-  track.features = consistent.map((m) => ({ x: m.x, y: m.y, patch: m.p }));
+  track.corners = corners;
+  track.rotation = (track.rotation ?? 0) + pose.rotation;
+  track.scale = (track.scale ?? 1) * pose.scale;
+  track.features = consistent.map((m) => ({
+    x: m.x,
+    y: m.y,
+    patch: m.p,
+    reference: m.old.reference ?? m.old.patch,
+  }));
   return {
     objectId: track.objectId,
     quality: "observed",
     box: b,
     score: Math.min(
       0.99,
-      0.9 + (0.09 * consistent.length) / track.features.length,
+      0.9 +
+        (0.09 * consistent.length) / (track.seedCount ?? track.features.length),
     ),
   };
 }
-export function frameQuality(image: Pixels) {
-  const data = grey(image);
+export function frameQuality(image: Pixels, prepared?: TrackingFrame) {
+  const data = prepared?.values ?? grey(image);
   let sum = 0,
     gradient = 0;
   for (let i = 0; i < data.length; i += 3) {
@@ -223,8 +274,9 @@ export function frameQuality(image: Pixels) {
 export function groundBackground(
   image: Pixels,
   excluded: Box[],
+  prepared?: TrackingFrame,
 ): AppearanceTrack | null {
-  const data = grey(image),
+  const data = prepared?.values ?? grey(image),
     box = { left: 0.06, top: 0.06, right: 0.94, bottom: 0.94 };
   const picked = features(
     data,
@@ -246,6 +298,9 @@ export function groundBackground(
         objectId: "camera-background",
         box,
         features: picked,
+        seedCount: picked.length,
+        rotation: 0,
+        scale: 1,
         width: image.width,
         height: image.height,
         lost: false,

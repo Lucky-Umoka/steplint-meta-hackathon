@@ -21,6 +21,18 @@ import {
   ImageSchema,
   type ObjectDetection,
 } from "../../guide/schema";
+const coordinate = z.number().int().min(0).max(1000);
+const GroundingBoxSchema = z
+  .strictObject({
+    left: coordinate,
+    top: coordinate,
+    right: coordinate,
+    bottom: coordinate,
+  })
+  .refine(
+    (box) => box.right > box.left && box.bottom > box.top,
+    "An outline needs positive area.",
+  );
 const SceneSchema = z.strictObject({
   phase: z.enum([
     "starting",
@@ -33,11 +45,11 @@ const SceneSchema = z.strictObject({
     .array(
       z.strictObject({
         id: z.string(),
-        box: BoxSchema.nullable(),
+        box: GroundingBoxSchema.nullable(),
         candidateCount: z.number().int().min(0).max(20),
       }),
     )
-    .max(4),
+    .max(6),
 });
 
 export async function perceive(request: Request) {
@@ -115,7 +127,7 @@ export async function perceive(request: Request) {
     content.push(
       {
         type: "input_text",
-        text: "LIVE CAMERA IMAGE. Return boxes in normalized 0–1 coordinates, tight around the full visible object, not the table or hand. If hidden or not identifiable, box=null and candidateCount=0. If competing matches exist, report candidateCount>1. phase=starting only if the LIVE scene supports the demonstrated beginning of this selected step; face-only/empty scenes are no_work_area. A pre-existing completed scene is goal, not starting.",
+        text: "LIVE CAMERA IMAGE. Return boxes on the documented normalized 0–1000 grid of the LIVE image, x left-to-right and y top-to-bottom, tight around the full visible object, not the table or hand. If hidden or not identifiable, box=null and candidateCount=0. If competing matches exist, report candidateCount>1. phase=starting only if the LIVE scene supports the demonstrated beginning of this selected step; face-only/empty scenes are no_work_area. A pre-existing completed scene is goal, not starting.",
       },
       { type: "input_image", image_url: input.image, detail: "auto" },
     );
@@ -141,7 +153,21 @@ export async function perceive(request: Request) {
       { signal, timeout: 60000 },
     );
     const value = structuredJson(scene, "Camera check");
-    const parsed = SceneSchema.parse(value);
+    const wire = SceneSchema.parse(value);
+    const parsed = {
+      ...wire,
+      objects: wire.objects.map((object) => ({
+        ...object,
+        box: object.box
+          ? {
+              left: object.box.left / 1000,
+              top: object.box.top / 1000,
+              right: object.box.right / 1000,
+              bottom: object.box.bottom / 1000,
+            }
+          : null,
+      })),
+    };
     const ids = new Set(guide.objects.map((o) => o.id));
     if (
       new Set(parsed.objects.map((o) => o.id)).size !== parsed.objects.length ||

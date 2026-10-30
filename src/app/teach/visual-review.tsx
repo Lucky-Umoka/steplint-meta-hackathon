@@ -35,7 +35,11 @@ export default function VisualReview({
         <h2 className="text-2xl font-bold">{guide.title}</h2>
         <p className="mt-2 text-slate-600">{guide.goal}</p>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <GuideFrame guide={guide} frame={0} title="Start here" />
+          <GuideFrame
+            guide={guide}
+            frame={guide.steps[0].evidence.startFrame}
+            title="Start here"
+          />
           <GuideFrame
             guide={guide}
             frame={guide.goalFrame}

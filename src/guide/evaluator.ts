@@ -163,7 +163,8 @@ export function beginGuide(
     throw Error("Keep the starting objects visible before beginning.");
   s.running = true;
   for (const step of s.guide.steps)
-    if (changeMetric(step, o, o) !== null) s.baseline[step.id] = o;
+    if (s.steps[step.id] !== "verified" && changeMetric(step, o, o) !== null)
+      s.baseline[step.id] = o;
   emit(
     s,
     "started",

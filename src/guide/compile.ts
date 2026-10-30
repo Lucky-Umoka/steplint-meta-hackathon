@@ -18,7 +18,7 @@ export const CompilerOutputSchema = z.strictObject({
       }),
     )
     .min(1)
-    .max(4),
+    .max(6),
   steps: z
     .array(
       z.strictObject({
@@ -29,7 +29,7 @@ export const CompilerOutputSchema = z.strictObject({
         objectId: z.string(),
         anchorId: z.string().nullable(),
         kind: z.enum(["movement", "separation"]),
-        requiredVisibleAfter: z.array(z.string()).max(4),
+        requiredVisibleAfter: z.array(z.string()).max(6),
         startFrame: z.number().int().nonnegative(),
         changeFrame: z.number().int().nonnegative(),
         endFrame: z.number().int().nonnegative(),
@@ -77,28 +77,43 @@ export function compileGuide(input: unknown, context: TeachContext): Guide {
       };
     }),
   });
-  const objects = output.objects.map((o) => {
-    const selection = context.selections.find((s) => s.id === o.id);
-    const track = context.tracking.find((t) => t.componentId === o.id);
-    const sample =
-      track?.samples.find(
-        (s) =>
-          s.frame === selection?.frame &&
-          s.confidence !== null &&
-          s.confidence >= 0.9,
-      ) ??
-      track?.samples.find((s) => s.confidence !== null && s.confidence >= 0.9);
-    if (!sample)
-      throw Error(
-        `No reliable geometry for ${o.label}. Correct the proposed mark or use a clearer view.`,
-      );
-    return {
-      ...o,
-      sourceFrame: sample.frame,
-      sourceBox: sample.box,
-      appearance: null,
-    };
-  });
+  const used = new Set(
+    output.steps.flatMap((step) => [
+      step.objectId,
+      ...(step.anchorId ? [step.anchorId] : []),
+      ...step.requiredVisibleAfter,
+    ]),
+  );
+  const objects = output.objects
+    .filter((object) => used.has(object.id))
+    .map((o) => {
+      const selection = context.selections.find((s) => s.id === o.id);
+      const track = context.tracking.find((t) => t.componentId === o.id);
+      const sample =
+        track?.samples.find(
+          (s) =>
+            s.frame === selection?.frame &&
+            s.confidence !== null &&
+            s.confidence >= 0.9,
+        ) ??
+        track?.samples.find(
+          (s) => s.confidence !== null && s.confidence >= 0.9,
+        );
+      if (!sample)
+        throw Error(
+          `No reliable geometry for ${o.label}. Correct the proposed mark or use a clearer view.`,
+        );
+      return {
+        ...o,
+        initiallyVisible: observation(output.steps[0].startFrame).objects.some(
+          (detection) =>
+            detection.objectId === o.id && detection.quality === "observed",
+        ),
+        sourceFrame: sample.frame,
+        sourceBox: sample.box,
+        appearance: null,
+      };
+    });
   const steps = output.steps.map((s, i) => {
     if (s.endFrame >= media.frameTimesMs.length || s.startFrame >= s.endFrame)
       throw Error("A proposed step has invalid source times.");
@@ -170,16 +185,18 @@ export function compileGuide(input: unknown, context: TeachContext): Guide {
       ].slice(0, 8);
     return step;
   });
-  const geometry = context.tracking.flatMap((t) =>
-    t.samples
-      .filter((s) => s.confidence !== null && s.confidence >= 0.9)
-      .map((s) => ({
-        frame: s.frame,
-        objectId: t.componentId,
-        box: s.box,
-        confidence: s.confidence!,
-      })),
-  );
+  const geometry = context.tracking
+    .filter((track) => used.has(track.componentId))
+    .flatMap((t) =>
+      t.samples
+        .filter((s) => s.confidence !== null && s.confidence >= 0.9)
+        .map((s) => ({
+          frame: s.frame,
+          objectId: t.componentId,
+          box: s.box,
+          confidence: s.confidence!,
+        })),
+    );
   return GuideSchema.parse({
     schemaVersion: 2,
     id: context.lesson.lessonId,

@@ -23,7 +23,7 @@ export function newRevision(guide: Guide): Guide {
 export function evidenceFrames(guide: Guide) {
   return [
     ...new Set([
-      0,
+      guide.steps[0].evidence.startFrame,
       guide.goalFrame,
       ...guide.objects.map((o) => o.sourceFrame),
       ...guide.steps.flatMap((s) => [

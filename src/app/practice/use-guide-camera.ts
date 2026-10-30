@@ -114,8 +114,9 @@ export function useGuideCamera(
       last = v.currentTime;
       fresh = performance.now();
       const c = (surface.current ??= document.createElement("canvas"));
-      c.width = 320;
-      c.height = Math.max(80, Math.round((320 * v.videoHeight) / v.videoWidth));
+      const scale = Math.min(1, 640 / v.videoWidth, 480 / v.videoHeight);
+      c.width = Math.max(1, Math.round(v.videoWidth * scale));
+      c.height = Math.max(1, Math.round(v.videoHeight * scale));
       const context = c.getContext("2d", { willReadFrequently: true });
       if (!context) return;
       context.drawImage(v, 0, 0, c.width, c.height);

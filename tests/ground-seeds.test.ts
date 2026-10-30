@@ -164,5 +164,92 @@ it("encodes multiple source views as one video request without treating proposal
   expect(body).toContain("<1f>1");
   expect(body).toContain("file-one-upload");
   expect(body).not.toContain("point;");
+  expect(body).toContain("box;x1=210;y1=227;x2=271;y2=255");
   expect(request.metadata.include_confidence).toBe("true");
+});
+
+it("keeps positive and negative points tied to their actual source frame", async () => {
+  const { multiFrameVideoRequest } = await import(
+    "../src/server/guide/ground-seeds"
+  );
+  const request = multiFrameVideoRequest(
+    "file-one-upload",
+    [[proposal, { ...proposal, frame: 1 }]],
+    media,
+    [
+      [
+        [{ x: 100, y: 100 }],
+        [
+          { x: 120, y: 110 },
+          { x: 130, y: 120, label: "negative" },
+        ],
+      ],
+    ],
+  );
+  const text = request.input[0].content[0].text;
+  if (typeof text !== "string") throw Error("Missing SAM object prompt.");
+  expect(text).toContain("<0f>1");
+  expect(text).toContain("<1f>1");
+  const [before, after] = text.split("<1f>");
+  expect(before).toContain("point;x=100;y=100");
+  expect(before).not.toContain("point;x=120");
+  expect(after).toContain("point;x=120;y=110");
+  expect(after).toContain("-<|point;x=130;y=120");
+});
+
+it("encodes six manually corrected V2 parts with official prompts without changing the legacy four-part contract", async () => {
+  const { guideSelectionRequest } = await import(
+    "../src/server/guide/ground-seeds"
+  );
+  const parts = Array.from({ length: 6 }, (_, i) => ({
+    ...proposal,
+    id: `component-${i + 1}`,
+    mark: { kind: "point" as const, x: 100 + i, y: 120 },
+  }));
+  const request = guideSelectionRequest("file-one-upload", parts, media);
+  expect(request.input[0].content[0].text).toContain("6<|point;x=105;y=120");
+  expect(() =>
+    guideSelectionRequest(
+      "file-one-upload",
+      [...parts, { ...parts[0], id: "component-7" }],
+      media,
+    ),
+  ).toThrow();
+});
+
+it("uses a single noun concept to get an independent SAM mask instead of reusing a proposed hand point", async () => {
+  const { client, post } = clientFor(
+    "<0f>0<|box;x1=211;y1=228;x2=270;y2=254;w=640;h=480;c=0.99|>" + mask,
+  );
+  const seeds = await groundGuideSeeds(
+    client,
+    [proposal],
+    ["phone"],
+    [{ frame: 0, image: fixture().images[0].image }],
+    media,
+    new AbortController().signal,
+    undefined,
+    [[{ x: 1, y: 1 }]],
+    "concept",
+  );
+  expect(post).toHaveBeenCalledTimes(1);
+  const wire = JSON.stringify(post.mock.calls);
+  expect(wire).toContain('"text":"phone"');
+  expect(wire).not.toContain("point;x=1;y=1");
+  expect(seeds[0].point.x).toBeGreaterThanOrEqual(211);
+  const invalid = clientFor("");
+  await expect(
+    groundGuideSeeds(
+      invalid.client,
+      [proposal],
+      ["phone, screwdriver"],
+      [{ frame: 0, image: fixture().images[0].image }],
+      media,
+      new AbortController().signal,
+      undefined,
+      undefined,
+      "concept",
+    ),
+  ).rejects.toThrow("one short object concept");
+  expect(invalid.post).not.toHaveBeenCalled();
 });

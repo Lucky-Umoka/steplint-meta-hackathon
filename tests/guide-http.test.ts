@@ -185,3 +185,24 @@ it("rejects missing source references before any paid upload", async () => {
   expect((await response.json()).error).toContain("reference frames");
   expect(fetch).not.toHaveBeenCalled();
 });
+
+it("bounds the explicit teaching goal before any paid request", async () => {
+  const form = new FormData();
+  form.append("video", new Blob(["local"]), "clip.mp4");
+  form.append("audio", new Blob(["local"]), "clip.wav");
+  form.append("confirmed", "true");
+  form.append("intent", "x".repeat(401));
+  const response = await analyse(
+    new Request("http://localhost:3000/api/teach/guide/analyse", {
+      method: "POST",
+      headers: {
+        Origin: "http://localhost:3000",
+        Authorization: `Bearer ${secret}`,
+      },
+      body: form,
+    }),
+  );
+  expect(response.status).toBe(400);
+  expect((await response.json()).error).toContain("guide goal");
+  expect(fetch).not.toHaveBeenCalled();
+});

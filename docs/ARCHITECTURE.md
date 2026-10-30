@@ -122,3 +122,9 @@ The new Teach UI saves reference images and appearance crops with reviewed guide
 Legacy procedure/provider modules remain regression-tested. Their controlled fixture is not exposed in the new learner flow. This implementation is not an assertion of completed real-recording or physical-camera acceptance; see REPAIR_VERIFICATION.md and the owner-approved repair plan.
 
 Practice foreground transport is provider-neutral packed bits plus normalized crop bounds. The server uses the official SAM raster decoder; browser feature selection excludes holes/background and requires matching object identities. No SAM token syntax is decoded in browser regular expressions. This post-trial repair is locally tested, not live accepted.
+
+## Accuracy and timing repair (v0.3)
+
+V2 discovery can identify six parts without changing the legacy four-part contract. Source identities, literal speech aliases and actual image frames feed bounded single-image outline localization, then one uploaded-video SAM stream. Only validated geometry reaches the draft compiler. Full necessary action history, ordering, human review and final-goal checks remain mandatory.
+
+Practice shares one prepared greyscale frame across local feature tracks. Bounded remote checks restore identity, not procedural authority. A lost scene alignment invalidates old pixel-space proof. Session clocks separately measure active work, explicit pauses and verification waits; observation availability is reported separately from accuracy. Persistence is still local IndexedDB, with atomic attempt/rehearsal updates. Cloud analytics and calibrated accuracy require later evidence and infrastructure.

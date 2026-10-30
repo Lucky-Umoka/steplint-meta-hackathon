@@ -1,6 +1,6 @@
 # v0.2 Teach–Practice repair verification
 
-Status: implementation and verification in progress, not accepted as complete. Owner authorized five new sequential live workflow trials on 2026-10-30. This record supersedes old acceptance assumptions for the changed workflow without rewriting historical live records.
+Historical v0.2 batch: not accepted as complete. The owner later approved a separate v0.3 batch; see [ACCURACY_ROUND2.md](ACCURACY_ROUND2.md). Statements below about the exhausted allowance refer to this first batch only. Owner authorized five new sequential live workflow trials on 2026-10-30. This record supersedes old acceptance assumptions for the changed workflow without rewriting historical live records.
 
 ## Implemented so far
 

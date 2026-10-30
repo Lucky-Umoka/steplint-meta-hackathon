@@ -12,8 +12,15 @@ import { createMetaClient } from "../meta/client";
 import { ProviderDiagnosticSchema } from "./structured";
 import { NativeFramesSchema } from "./discovery";
 import { validateJpeg } from "./jpeg";
-import { analyseGuide } from "./pipeline";
-import { validateSelections, type Selection } from "../../teach/schema";
+import {
+  analyseGuide,
+  prepareGuideSource,
+  PendingGuideSourceSchema,
+  sourceFrames,
+} from "./pipeline";
+import { type Selection } from "../../teach/schema";
+import { validateGuideSelections } from "../../guide/source-context";
+import { deleteLessonFile } from "../teach/pipeline";
 import { inspectLessonVideo } from "../../teach/media";
 import { GuideSchema } from "../../guide/schema";
 import { canonical } from "../../guide/versioning";
@@ -52,9 +59,19 @@ export async function analyse(request: Request) {
       headers: { "Content-Type": request.headers.get("content-type")! },
       body: bytes,
     }).formData();
+    if (form.has("source")) return await resumeSource(request, owner, form);
     if (
       [...form.keys()].some(
-        (k) => !["video", "audio", "confirmed", "marks", "frames"].includes(k),
+        (k) =>
+          ![
+            "video",
+            "audio",
+            "confirmed",
+            "marks",
+            "frames",
+            "intent",
+            "prepare",
+          ].includes(k),
       ) ||
       ["video", "audio", "confirmed"].some((k) => form.getAll(k).length !== 1)
     )
@@ -72,6 +89,15 @@ export async function analyse(request: Request) {
         413,
         "Choose a short lesson: video up to 2.8 MB and audio up to 1.1 MB.",
       );
+    const goal = form.get("intent");
+    if (
+      goal !== null &&
+      (typeof goal !== "string" ||
+        goal.length > 400 ||
+        form.getAll("intent").length !== 1)
+    )
+      throw new TeachError(400, "The guide goal must be short text.");
+    const intent = typeof goal === "string" ? goal.trim() : "";
     let manual: Selection[] | undefined;
     const marks = form.get("marks");
     if (marks !== null) {
@@ -81,7 +107,7 @@ export async function analyse(request: Request) {
         form.getAll("marks").length !== 1
       )
         throw new TeachError(400, "Invalid object marks.");
-      manual = validateSelections(
+      manual = validateGuideSelections(
         JSON.parse(marks),
         await inspectLessonVideo(video),
       );
@@ -103,11 +129,45 @@ export async function analyse(request: Request) {
         );
       }
     }
-    if (!manual && !nativeFrames.length)
+    if (
+      !manual &&
+      (!nativeFrames.length || !nativeFrames.some((frame) => frame.frame === 0))
+    )
       throw new TeachError(
         400,
         "Source reference frames are missing. Choose the clip again before processing.",
       );
+    const preparing = form.get("prepare");
+    if (
+      preparing !== null &&
+      (preparing !== "true" || form.getAll("prepare").length !== 1 || manual)
+    )
+      throw new TeachError(400, "Invalid source preparation request.");
+    if (preparing === "true")
+      return sourceStream(request, async (signal, send) => {
+        const source = await prepareGuideSource(
+          createMetaClient(),
+          video,
+          audio,
+          nativeFrames,
+          intent,
+          signal,
+          (stage, message, details) =>
+            send({ type: "progress", stage, message, details }),
+        );
+        if (signal.aborted) {
+          await deleteLessonFile(createMetaClient(), source.fileId);
+          signal.throwIfAborted();
+        }
+        send({
+          type: "source",
+          token: seal(source, "guide-source-v3", owner, 20 * 60 * 1000),
+          frames: sourceFrames(source).map((frame) => ({
+            frame,
+            timestampMs: source.lesson.media.frameTimesMs[frame],
+          })),
+        });
+      });
     const abort = new AbortController(),
       signal = AbortSignal.any([
         request.signal,
@@ -137,6 +197,7 @@ export async function analyse(request: Request) {
               signal,
               manual,
               nativeFrames,
+              intent,
             );
             send({
               type: "draft",
@@ -185,6 +246,120 @@ export async function analyse(request: Request) {
   } catch (e) {
     return responseError(e);
   }
+}
+type SourceSend = (event: unknown) => void;
+function sourceStream(
+  request: Request,
+  job: (signal: AbortSignal, send: SourceSend) => Promise<void>,
+) {
+  const abort = new AbortController(),
+    signal = AbortSignal.any([
+      request.signal,
+      abort.signal,
+      AbortSignal.timeout(280000),
+    ]),
+    encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      async start(output) {
+        const send: SourceSend = (event) => {
+          if (!request.signal.aborted && !abort.signal.aborted)
+            output.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+        };
+        try {
+          await job(signal, send);
+        } catch (error) {
+          const response = responseError(error),
+            body = (await response.json()) as { error: string };
+          const diagnostic =
+            error && typeof error === "object" && "diagnostic" in error
+              ? ProviderDiagnosticSchema.safeParse(error.diagnostic)
+              : null;
+          send({
+            type: "error",
+            message: body.error,
+            ...(diagnostic?.success ? { diagnostic: diagnostic.data } : {}),
+          });
+        } finally {
+          try {
+            output.close();
+          } catch {
+            /* consumer cancelled; provider expiry is bounded */
+          }
+        }
+      },
+      cancel() {
+        abort.abort();
+      },
+    }),
+    {
+      headers: {
+        "Content-Type": "application/x-ndjson",
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
+}
+async function resumeSource(request: Request, owner: string, form: FormData) {
+  const token = form.get("source");
+  if (
+    typeof token !== "string" ||
+    form.getAll("source").length !== 1 ||
+    [...form.keys()].some((k) => !["source", "frames", "discard"].includes(k))
+  )
+    throw new TeachError(400, "Invalid source continuation.");
+  const source = PendingGuideSourceSchema.parse(
+    unseal(token, "guide-source-v3", owner),
+  );
+  if (form.has("discard")) {
+    if (
+      form.get("discard") !== "true" ||
+      form.getAll("discard").length !== 1 ||
+      form.has("frames")
+    )
+      throw new TeachError(400, "Invalid source cleanup.");
+    await deleteLessonFile(createMetaClient(), source.fileId);
+    return Response.json({ deleted: true });
+  }
+  const raw = form.get("frames");
+  if (typeof raw !== "string" || form.getAll("frames").length !== 1)
+    throw new TeachError(400, "Exact source images are missing.");
+  const frames = NativeFramesSchema.parse(JSON.parse(raw)),
+    expected = sourceFrames(source),
+    size = source.lesson.media.info.video;
+  if (
+    !size ||
+    frames.length !== expected.length ||
+    frames.some((f) => !expected.includes(f.frame))
+  )
+    throw new TeachError(
+      400,
+      "Source images do not match the requested action moments.",
+    );
+  for (const frame of frames)
+    validateJpeg(frame.image, size.width, size.height);
+  return sourceStream(request, async (signal, send) => {
+    const result = await analyseGuide(
+      createMetaClient(),
+      new Blob(),
+      new Blob(),
+      (stage, message, details) =>
+        send({ type: "progress", stage, message, details }),
+      signal,
+      undefined,
+      frames,
+      source.intent,
+      source,
+    );
+    send({
+      type: "draft",
+      guide: result.guide,
+      tracking: result.context.tracking,
+      token: seal(result.guide, "guide-review-v2", owner, 24 * 60 * 60 * 1000),
+      uploadDeleted: true,
+    });
+  });
 }
 export async function approveGuide(request: Request) {
   try {

@@ -10,12 +10,12 @@ export const PerceptionResultSchema = z
       "no_work_area",
       "uncertain",
     ]),
-    objects: z.array(DetectionSchema).max(4),
+    objects: z.array(DetectionSchema).max(6),
     foregrounds: z
       .array(
         z.strictObject({ objectId: z.string(), foreground: ForegroundSchema }),
       )
-      .max(4),
+      .max(6),
     remainingModelRequests: z.number().int().min(0).max(6),
   })
   .superRefine((value, ctx) => {

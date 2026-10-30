@@ -300,3 +300,20 @@ it("validates saved rehearsal outcomes and revision identity before showing the 
   );
   expect(() => parseSavedGuide({ ...row, savedAt: NaN })).toThrow("damaged");
 });
+
+it("does not replace an already verified goal's original before-state when resuming a known aligned view", () => {
+  const guide = fixture();
+  guide.goalStepIds = ["remove-cover", "remove-phone"];
+  const session = createGuideSession(guide, "test");
+  beginGuide(session, obs(0));
+  hold(session, 120, 0.4, 0.1);
+  const original = session.baseline["remove-cover"];
+  expect(session.steps["remove-cover"]).toBe("verified");
+  session.running = false;
+  session.lastObservation = null;
+  beginGuide(session, obs(800, 0.4, 0.1));
+  expect(session.baseline["remove-cover"]).toEqual(original);
+  hold(session, 1000, 0.4, 0.4);
+  hold(session, 1600, 0.4, 0.4);
+  expect(session.finished).toBe(true);
+});

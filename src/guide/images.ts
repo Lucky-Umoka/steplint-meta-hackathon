@@ -40,7 +40,7 @@ export async function prepareGuideImages(
     objects.push({ ...obj, appearance: canvas.toDataURL("image/jpeg", 0.84) });
   }
   const needed = new Set([
-    0,
+    guide.steps[0].evidence.startFrame,
     guide.goalFrame,
     ...guide.steps.flatMap((s) => [
       s.evidence.startFrame,

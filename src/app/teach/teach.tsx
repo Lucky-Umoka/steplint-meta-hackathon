@@ -23,6 +23,7 @@ import {
   type SavedGuide,
 } from "@/guide/storage";
 import { newRevision } from "@/guide/versioning";
+import { SourceFrameRequestSchema } from "@/guide/source-stages";
 import { frameImage } from "@/teach/media";
 import { prepareGuideImages } from "@/guide/images";
 import { readAppJson } from "@/teach/api-response";
@@ -41,6 +42,7 @@ export default function Teach() {
     [code, setCode] = useState(""),
     [prepared, setPrepared] = useState<PreparedLesson | null>(null),
     [preview, setPreview] = useState(""),
+    [intent, setIntent] = useState(""),
     [consent, setConsent] = useState(false),
     [marks, setMarks] = useState<Selection[]>([]);
   const [guide, setGuide] = useState<Guide | null>(null),
@@ -190,13 +192,17 @@ export default function Teach() {
     setMessage("Uploading once and listening to your lesson…");
     const controller = new AbortController();
     request.current = controller;
+    let pendingSource: z.infer<typeof SourceFrameRequestSchema> | null = null;
+    let sourceSubmitted = false;
     try {
       const body = new FormData();
       body.append("video", prepared.video, "lesson.mp4");
       body.append("audio", prepared.audio, "lesson.wav");
       body.append("confirmed", "true");
+      if (intent.trim()) body.append("intent", intent.trim());
       if (marks.length) body.append("marks", JSON.stringify(marks));
       if (!marks.length) {
+        body.append("prepare", "true");
         const frames = [];
         for (const frame of [
           ...new Set(
@@ -233,10 +239,7 @@ export default function Teach() {
         throw Error(
           "The lesson response was empty. No automatic retry was made.",
         );
-      const reader = response.body.getReader(),
-        decoder = new TextDecoder();
-      let pending = "",
-        done = false;
+      let done = false;
       const handle = async (line: string) => {
         if (!line.trim()) return;
         let raw: unknown;
@@ -259,6 +262,20 @@ export default function Teach() {
         if (header.type === "progress") {
           setStage(header.stage ?? "");
           setMessage(header.message ?? "Analysing…");
+        }
+        if (header.type === "source") {
+          if (pendingSource || done)
+            throw Error("Duplicate source preparation response.");
+          const source = SourceFrameRequestSchema.parse(raw);
+          pendingSource = source;
+          if (
+            source.frames.some(
+              (f) => prepared.media.frameTimesMs[f.frame] !== f.timestampMs,
+            )
+          )
+            throw Error(
+              "The requested action moments do not match this recording.",
+            );
         }
         if (header.type === "draft") {
           const result = z
@@ -285,23 +302,58 @@ export default function Teach() {
           done = true;
         }
       };
-      try {
-        for (;;) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          pending += decoder.decode(chunk.value, { stream: true });
-          let end;
-          while ((end = pending.indexOf("\n")) >= 0) {
-            await handle(pending.slice(0, end));
-            pending = pending.slice(end + 1);
+      async function consume(streamResponse: Response) {
+        if (!streamResponse.ok)
+          await readAppJson(streamResponse, "Lesson analysis");
+        if (!streamResponse.body)
+          throw Error(
+            "The analysis response was empty. No automatic retry was made.",
+          );
+        const reader = streamResponse.body.getReader(),
+          decoder = new TextDecoder();
+        let pending = "";
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            pending += decoder.decode(chunk.value, { stream: true });
+            let end;
+            while ((end = pending.indexOf("\n")) >= 0) {
+              await handle(pending.slice(0, end));
+              pending = pending.slice(end + 1);
+            }
+            if (pending.length > 1500000)
+              throw Error("The analysis response exceeded its size limit.");
           }
-          if (pending.length > 1500000)
-            throw Error("The analysis response exceeded its size limit.");
+          pending += decoder.decode();
+          await handle(pending);
+        } finally {
+          reader.releaseLock();
         }
-        pending += decoder.decode();
-        await handle(pending);
-      } finally {
-        reader.releaseLock();
+      }
+      await consume(response);
+      if (pendingSource && !done) {
+        const source = SourceFrameRequestSchema.parse(pendingSource);
+        setStage("discover");
+        setMessage("Preparing the exact action moments…");
+        const frames = [];
+        for (const moment of source.frames) {
+          controller.signal.throwIfAborted();
+          frames.push({
+            frame: moment.frame,
+            image: await frameImage(prepared.video, moment.timestampMs),
+          });
+        }
+        const continuation = new FormData();
+        continuation.append("source", source.token);
+        continuation.append("frames", JSON.stringify(frames));
+        const nextResponse = await fetch("/api/teach/guide/analyse", {
+          method: "POST",
+          body: continuation,
+          signal: controller.signal,
+        });
+        sourceSubmitted = nextResponse.ok; // A successful stream transfers cleanup ownership to the resumed pipeline.
+        await consume(nextResponse);
       }
       if (!done)
         throw Error(
@@ -315,6 +367,26 @@ export default function Teach() {
             : "The returned guide was invalid. No success was assumed.",
         );
     } finally {
+      if (pendingSource && !sourceSubmitted) {
+        const source = SourceFrameRequestSchema.parse(pendingSource),
+          cleanup = new FormData();
+        cleanup.append("source", source.token);
+        cleanup.append("discard", "true");
+        try {
+          await readAppJson(
+            await fetch("/api/teach/guide/analyse", {
+              method: "POST",
+              body: cleanup,
+            }),
+            "Source cleanup",
+          );
+        } catch {
+          setError(
+            (current) =>
+              `${current ? current + " " : ""}Immediate upload deletion was not confirmed; its one-hour expiry remains the fallback.`,
+          );
+        }
+      }
       if (!controller.signal.aborted) {
         latch.current = false;
         setBusy(false);
@@ -482,6 +554,23 @@ export default function Teach() {
                 </p>
               )}
             </>
+            {blockers.length > 0 && (
+              <section className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <h2 className="font-semibold">
+                  This clip needs a clearer view
+                </h2>
+                <p className="mt-1 text-sm">
+                  Review the marked moments below. Keep each moving part in view
+                  from its start through its result; hidden changes cannot be
+                  approved.
+                </p>
+                {prepared && (
+                  <button className="mt-3" onClick={() => void reset()}>
+                    Record a clearer lesson
+                  </button>
+                )}
+              </section>
+            )}
             <VisualReview
               guide={guide}
               onChange={edit}
@@ -611,6 +700,15 @@ export default function Teach() {
                 </p>
                 {!busy && (
                   <>
+                    <label className="my-4 block text-sm">
+                      Guide goal (optional)
+                      <input
+                        value={intent}
+                        maxLength={400}
+                        placeholder="For example, remove the phone from its tray"
+                        onChange={(event) => setIntent(event.target.value)}
+                      />
+                    </label>
                     <ManualMarks
                       video={prepared.video}
                       media={prepared.media}
@@ -627,7 +725,7 @@ export default function Teach() {
                         I previewed this lesson and approve{" "}
                         {marks.length
                           ? "one Voice, one SAM and one Spark"
-                          : "one Voice, one SAM and two Spark"}{" "}
+                          : "one Voice, up to seven SAM and up to ten Spark"}{" "}
                         request{marks.length ? " each" : "s"}. No automatic
                         retries.
                       </span>
@@ -647,13 +745,13 @@ export default function Teach() {
                       <p>
                         Video uploads once, then is deleted after analysis.
                         One-hour provider expiry is the fallback. Reference
-                        images stay in this browser. Estimated SAM cost $
+                        images stay in this browser. Estimated SAM video cost $
                         {(
                           (prepared.media.frameTimesMs.length * 0.2) /
                           1000
                         ).toFixed(4)}
-                        , plus bounded Voice/Spark processing; final cost
-                        varies.
+                        , plus up to $0.015 for image masks and bounded
+                        Voice/Spark processing; final cost varies.
                       </p>
                     </details>
                   </>

@@ -1,3 +1,4 @@
+import { validateGuideSelections } from "../../guide/source-context";
 import "server-only";
 import { reportedConfidence } from "./quality";
 import type OpenAI from "openai";
@@ -93,7 +94,7 @@ const overlap = (
     )
   );
 };
-/** One geometrically prompted SAM image call per part, then one multi-object video call; no failed-call retry. */
+/** One planned SAM image call per selected part. Concept mode does not trust Spark's foreground points. No failed-call retry. */
 export async function groundGuideSeeds(
   client: OpenAI,
   proposals: Selection[],
@@ -102,7 +103,8 @@ export async function groundGuideSeeds(
   media: LessonMedia,
   signal: AbortSignal,
   onResult?: (details: unknown) => void,
-  foregroundPoints?: { x: number; y: number }[][],
+  foregroundPoints?: { x: number; y: number; label?: "negative" }[][],
+  mode: "box" | "concept" = "box",
 ): Promise<Seed[]> {
   const size = media.info.video;
   if (!size) throw new TeachError(422, "Video is missing.");
@@ -117,15 +119,29 @@ export async function groundGuideSeeds(
       );
     if (selection.mark.kind !== "box")
       throw new TeachError(422, "A source object needs a proposed extent.");
-    const imagePrompt = buildObjectPrompt({
-      size: { width: size.width, height: size.height },
-      objects: [
-        {
-          id: 1,
-          prompts: [{ box: selection.mark, points: foregroundPoints?.[i] }],
-        },
-      ],
-    });
+    const concept = concepts[i]?.trim();
+    if (
+      mode === "concept" &&
+      (!concept || concept.length > 80 || /[,;\n]/.test(concept))
+    )
+      throw new TeachError(
+        422,
+        "SAM grounding needs one short object concept.",
+      );
+    const imagePrompt =
+      mode === "concept"
+        ? concept!
+        : buildObjectPrompt({
+            size: { width: size.width, height: size.height },
+            objects: [
+              {
+                id: 1,
+                prompts: [
+                  { box: selection.mark, points: foregroundPoints?.[i] },
+                ],
+              },
+            ],
+          });
     const events = await client.post<Stream<ResponsesEvent>>("/responses", {
       body: {
         model: "sam-3.1",
@@ -295,6 +311,7 @@ export function multiFrameVideoRequest(
   fileId: string,
   anchors: Selection[][],
   media: LessonMedia,
+  foregroundPoints?: { x: number; y: number; label?: "negative" }[][][],
 ) {
   const size = media.info.video;
   if (!size) throw new TeachError(422, "Video is missing.");
@@ -302,22 +319,21 @@ export function multiFrameVideoRequest(
     size: { width: size.width, height: size.height },
     objects: anchors.map((views, i) => ({
       id: i + 1,
-      prompts: views.map((view) => {
-        if (view.mark.kind !== "box")
-          throw new TeachError(
-            422,
-            "An automatic source anchor needs an outline.",
-          );
-        const b = view.mark,
-          px = Math.ceil((b.right - b.left) * 0.12),
-          py = Math.ceil((b.bottom - b.top) * 0.12);
+      prompts: views.map((view, viewIndex) => {
+        if (view.mark.kind === "point")
+          return {
+            frame: view.frame,
+            points: [{ x: view.mark.x, y: view.mark.y }],
+          };
+        const b = view.mark;
         return {
           frame: view.frame,
+          points: foregroundPoints?.[i]?.[viewIndex],
           box: {
-            left: Math.max(0, b.left - px),
-            top: Math.max(0, b.top - py),
-            right: Math.min(size.width, b.right + px),
-            bottom: Math.min(size.height, b.bottom + py),
+            left: b.left,
+            top: b.top,
+            right: b.right,
+            bottom: b.bottom,
           },
         };
       }),
@@ -343,4 +359,18 @@ export function multiFrameVideoRequest(
       propagation_direction: "both",
     },
   };
+}
+
+/** Manual V2 corrections retain the six-part boundary; the legacy four-part route remains unchanged. */
+export function guideSelectionRequest(
+  fileId: string,
+  selections: Selection[],
+  media: LessonMedia,
+) {
+  const chosen = validateGuideSelections(selections, media);
+  return multiFrameVideoRequest(
+    fileId,
+    chosen.map((selection) => [selection]),
+    media,
+  );
 }

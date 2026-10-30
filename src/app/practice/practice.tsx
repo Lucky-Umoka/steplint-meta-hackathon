@@ -24,21 +24,31 @@ import {
   PerceptionSessionSchema,
 } from "@/guide/perception-contract";
 import {
+  createObservationQuality,
+  recordObservationQuality,
+  evidenceAvailability,
+} from "@/guide/observation-quality";
+import {
   createSessionClock,
   clockPhase,
   timingSummary,
   formatDuration,
   localAverage,
 } from "@/guide/timing";
+import { needsStartingView } from "@/guide/perception-gates";
 import { readAppJson } from "@/teach/api-response";
 import {
   groundAppearance,
   groundBackground,
-  trackAppearance,
+  trackPreparedAppearance,
+  prepareTrackingFrame,
+  type TrackingFrame,
   frameQuality,
   type AppearanceTrack,
 } from "@/practice/appearance";
 import type { Pixels } from "@/practice/tracker";
+import { cameraNeedsAlignment } from "@/practice/camera-motion";
+import { sameWorkbenchView } from "@/practice/resume-alignment";
 import { useGuideCamera } from "./use-guide-camera";
 type View =
   | "off"
@@ -79,9 +89,17 @@ export default function Practice() {
     [autoStart, setAutoStart] = useState(true),
     [remaining, setRemaining] = useState(8),
     [latestEvent, setLatestEvent] = useState<PracticeEvent | null>(null);
+  const [perceptionHelp, setPerceptionHelp] = useState("");
+  const resumeContext = useRef<{
+    background: AppearanceTrack | null;
+    baseline: Record<string, GuideObservation>;
+  } | null>(null);
+  const restartRequired = useRef(false);
   const clock = useRef(createSessionClock());
+  const observationQuality = useRef(createObservationQuality());
   const [, refreshClock] = useState(0);
   const recordedCompletion = useRef(false);
+  const timingSessionId = useRef("");
   useEffect(() => {
     const id = window.setInterval(() => refreshClock((tick) => tick + 1), 1000);
     return () => window.clearInterval(id);
@@ -103,7 +121,7 @@ export default function Practice() {
     readyBefore = useRef<GuideObservation | null>(null),
     pendingReady = useRef(false),
     stepChecked = useRef(-1),
-    history = useRef<{ at: number; pixels: Pixels }[]>([]),
+    history = useRef<{ at: number; prepared: TrackingFrame }[]>([]),
     sequence = useRef(0),
     latencies = useRef<{ eventId: string; ms: number }[]>([]),
     currentView = useRef<View>("off"),
@@ -126,8 +144,69 @@ export default function Practice() {
     const utterance = new SpeechSynthesisUtterance(text);
     window.speechSynthesis.speak(utterance);
   }
+  function saveTimingResult(completed: boolean) {
+    const current = session.current;
+    if (!selected || !current || clock.current.startedAt === null) return;
+    const measured = timingSummary(
+      clock.current,
+      current.guide,
+      current.steps,
+      performance.now(),
+    );
+    void guideRepository
+      .recordAttempt(selected.key, {
+        sessionId: timingSessionId.current,
+        at: Date.now(),
+        completed,
+        activeMs: measured.activeMs,
+        pausedMs: measured.pausedMs,
+        verificationMs: measured.verificationMs,
+        elapsedMs: measured.elapsedMs,
+        stepMs: measured.stepMs,
+        corrections: current.events.filter(
+          (event) => event.kind === "violation",
+        ).length,
+        evidence: {
+          checked: observationQuality.current.checked,
+          usable: observationQuality.current.usable,
+          missing: observationQuality.current.missing,
+          ambiguous: observationQuality.current.ambiguous,
+          obstructed: observationQuality.current.obstructed,
+        },
+      })
+      .then(async () => {
+        const updated = (await guideRepository.list()).find(
+          (row) => row.key === selected.key,
+        );
+        if (updated)
+          setSelected((current) =>
+            current?.key === updated.key ? updated : current,
+          );
+      })
+      .catch((error) =>
+        setError(
+          error instanceof Error
+            ? error.message
+            : "The timing result could not be saved.",
+        ),
+      );
+  }
   function pause(reason: string) {
+    const current = session.current;
+    if (
+      current &&
+      !current.finished &&
+      !resumeContext.current &&
+      current.guide.goalStepIds.some((id) => current.steps[id] === "verified")
+    )
+      resumeContext.current = {
+        background: background.current
+          ? structuredClone(background.current)
+          : null,
+        baseline: { ...current.baseline },
+      };
     clockPhase(clock.current, performance.now(), "paused");
+    if (!current?.finished) saveTimingResult(false);
     runGeneration.current++;
     request.current?.abort();
     remote.current = false;
@@ -178,6 +257,10 @@ export default function Practice() {
         ),
       );
     }
+    if (event.kind === "uncertain")
+      speak(
+        "Keep the part in view. If the action was hidden, return to the starting view.",
+      );
     if (event.kind === "verified" || event.kind === "retry") {
       const next = s.guide.steps.find(
         (step) => s.steps[step.id] !== "verified",
@@ -185,37 +268,16 @@ export default function Practice() {
       if (next) {
         setMessage(next.instruction);
         speak(next.instruction);
+      } else if (!s.finished) {
+        setMessage(s.guide.goal);
+        speak(`Match the reviewed final result. ${s.guide.goal}`);
       }
     }
     if (s.finished) {
       clockPhase(clock.current, performance.now(), "complete");
       if (!recordedCompletion.current && selected) {
         recordedCompletion.current = true;
-        const measured = timingSummary(
-          clock.current,
-          s.guide,
-          s.steps,
-          performance.now(),
-        );
-        void guideRepository
-          .recordAttempt(selected.key, {
-            at: Date.now(),
-            completed: true,
-            activeMs: measured.activeMs,
-            pausedMs: measured.pausedMs,
-            verificationMs: measured.verificationMs,
-            elapsedMs: measured.elapsedMs,
-            stepMs: measured.stepMs,
-            corrections: s.events.filter((event) => event.kind === "violation")
-              .length,
-          })
-          .catch((error) =>
-            setError(
-              error instanceof Error
-                ? error.message
-                : "The timing result could not be saved.",
-            ),
-          );
+        saveTimingResult(true);
       }
       setView("complete");
       setMessage(s.guide.goal);
@@ -254,6 +316,7 @@ export default function Practice() {
     const controller = new AbortController();
     request.current = controller;
     if (!s.running) setView("finding");
+    else speak("Hold the next part still while I locate it.");
     try {
       const snap = camera.capture();
       const response = await fetch("/api/teach/guide/perceive", {
@@ -272,6 +335,7 @@ export default function Practice() {
       if (generation !== runGeneration.current) return;
       setRemaining(data.remainingModelRequests);
       phase.current = data.phase;
+      const capturedPrepared = prepareTrackingFrame(captured);
       const next: AppearanceTrack[] = [];
       const found: ObjectDetection[] = [];
       for (const detection of data.objects) {
@@ -286,6 +350,7 @@ export default function Practice() {
             detection.box,
             data.foregrounds.find((f) => f.objectId === detection.objectId)
               ?.foreground,
+            capturedPrepared,
           );
           let updated: ObjectDetection = detection;
           const frames = history.current.filter((f) => f.at > capturedAt);
@@ -299,7 +364,7 @@ export default function Practice() {
           )
             throw Error("The camera moved during setup.");
           for (const f of frames) {
-            updated = trackAppearance(f.pixels, track);
+            updated = trackPreparedAppearance(f.prepared, track);
             if (updated.quality !== "observed") break;
           }
           if (updated.quality === "observed") {
@@ -315,8 +380,95 @@ export default function Practice() {
           });
         }
       }
-      tracks.current = next;
+      const activeStep = s.guide.steps[index];
+      if (
+        s.running &&
+        needsStartingView(data.phase, !!s.baseline[activeStep.id])
+      ) {
+        const activeIndex = found.findIndex(
+          (object) => object.objectId === activeStep.condition.objectId,
+        );
+        if (activeIndex >= 0)
+          found[activeIndex] = {
+            objectId: activeStep.condition.objectId,
+            quality: "ambiguous",
+            box: null,
+            score: null,
+          };
+        tracks.current = next.filter(
+          (track) => track.objectId !== activeStep.condition.objectId,
+        );
+        setPerceptionHelp(activeStep.correction);
+        speak(activeStep.correction);
+      } else {
+        tracks.current = next;
+        setPerceptionHelp("");
+        if (
+          s.running &&
+          found.some(
+            (object) =>
+              object.objectId === activeStep.condition.objectId &&
+              object.quality === "observed",
+          )
+        )
+          speak(activeStep.instruction);
+      }
       const currentImage = pixels.current ?? captured;
+      if (data.phase === "no_work_area") {
+        background.current = null;
+        tracks.current = [];
+        readyBefore.current = null;
+        setDetections([]);
+        setView("setup");
+        setMessage(
+          "Point the camera at your work area and put the starting items in view.",
+        );
+        speak("Point the camera at your work area.");
+        return;
+      }
+      if (resumeContext.current) {
+        const goalMotions = s.guide.steps
+          .filter(
+            (step) =>
+              s.guide.goalStepIds.includes(step.id) &&
+              s.steps[step.id] === "verified",
+          )
+          .map((step) => {
+            const box = resumeContext.current?.baseline[step.id]?.objects.find(
+              (object) => object.objectId === step.condition.objectId,
+            )?.box;
+            return box
+              ? Math.hypot(box.right - box.left, box.bottom - box.top) *
+                  step.condition.minimumChange *
+                  0.25
+              : 0;
+          });
+        if (
+          sameWorkbenchView(
+            resumeContext.current.background,
+            currentImage,
+            Math.min(0.012, ...goalMotions),
+          )
+        ) {
+          for (const step of s.guide.steps)
+            if (
+              s.steps[step.id] === "verified" &&
+              resumeContext.current.baseline[step.id]
+            )
+              s.baseline[step.id] = {
+                ...resumeContext.current.baseline[step.id],
+                cameraEpoch: s.epoch,
+              };
+          resumeContext.current = null;
+        } else {
+          restartRequired.current = true;
+          setView("setup");
+          setMessage(
+            "The camera view changed during the break. Restart to verify the guide from its starting view.",
+          );
+          return;
+        }
+      }
       background.current = groundBackground(
         currentImage,
         found.filter((d) => d.box).map((d) => d.box!),
@@ -324,13 +476,7 @@ export default function Practice() {
       setDetections(found);
       stepChecked.current = index;
       readyBefore.current = null;
-      if (data.phase === "no_work_area") {
-        setView("setup");
-        setMessage(
-          "Point the camera at your work area and put the starting items in view.",
-        );
-        speak("Point the camera at your work area.");
-      } else if (data.phase === "goal" && !s.running) {
+      if (data.phase === "goal" && !s.running) {
         setView("setup");
         setMessage(
           "This looks partly or fully completed. Restore the shown starting view to practice.",
@@ -363,7 +509,8 @@ export default function Practice() {
   }
   function frame(image: Pixels, now: number) {
     pixels.current = image;
-    history.current.push({ at: now, pixels: image });
+    const prepared = prepareTrackingFrame(image);
+    history.current.push({ at: now, prepared });
     if (history.current.length > 70) history.current.shift();
     const fp = fingerprint(image);
     if (
@@ -375,20 +522,55 @@ export default function Practice() {
     const s = session.current;
     if (
       !s ||
+      restartRequired.current ||
       s.finished ||
       currentView.current === "paused" ||
       currentView.current === "off"
     )
       return;
-    const quality = frameQuality(image);
+    const quality = frameQuality(image, prepared);
     if (background.current && !remote.current) {
-      const tracked = trackAppearance(image, background.current);
+      const tracked = trackPreparedAppearance(prepared, background.current);
       const b = tracked.box;
-      const moved =
-        b &&
-        Math.hypot((b.left + b.right) / 2 - 0.5, (b.top + b.bottom) / 2 - 0.5) >
-          0.012;
-      if (moved) {
+      const translation = b
+        ? Math.hypot((b.left + b.right) / 2 - 0.5, (b.top + b.bottom) / 2 - 0.5)
+        : 0;
+      const smallestAction = Math.min(
+        Infinity,
+        ...s.guide.steps
+          .filter(
+            (step) =>
+              s.steps[step.id] !== "verified" ||
+              s.guide.goalStepIds.includes(step.id),
+          )
+          .flatMap((step) => {
+            const track = tracks.current.find(
+              (track) => track.objectId === step.condition.objectId,
+            );
+            return track
+              ? [
+                  Math.hypot(
+                    track.box.right - track.box.left,
+                    track.box.bottom - track.box.top,
+                  ) * step.condition.minimumChange,
+                ]
+              : [];
+          }),
+      );
+      if (
+        cameraNeedsAlignment(
+          translation,
+          background.current.rotation ?? 0,
+          background.current.scale ?? 1,
+          smallestAction,
+        )
+      ) {
+        if (s.guide.goalStepIds.some((id) => s.steps[id] === "verified")) {
+          restartRequired.current = true;
+          setMessage(
+            "The camera view changed. Restart to verify the guide from its starting view.",
+          );
+        }
         s.running = false;
         s.baseline = {};
         s.candidates = {};
@@ -399,20 +581,36 @@ export default function Practice() {
         stepChecked.current = -1;
         lastCheck.current = now - 6001;
         setView("setup");
-        setMessage(
-          "The camera moved. Hold it steady while I align your view again.",
-        );
+        if (!restartRequired.current)
+          setMessage(
+            "The camera moved. Hold it steady while I align your view again.",
+          );
       } else if (tracked.quality !== "observed") {
+        if (s.guide.goalStepIds.some((id) => s.steps[id] === "verified")) {
+          // Once scene alignment is lost, old pixel coordinates cannot prove the final goal.
+          restartRequired.current = true;
+          s.running = false;
+          s.baseline = {};
+          s.candidates = {};
+          setView("setup");
+        }
         background.current = null;
         readyBefore.current = null;
         setMessage(
-          "Keep the work surface visible and hold the camera steady while I realign.",
+          restartRequired.current
+            ? "The work area could no longer be aligned. Restart from the shown starting view."
+            : "Keep the work surface visible and hold the camera steady while I realign.",
         );
       }
     }
-    const aligned = !!background.current && quality.usable;
+    if (restartRequired.current) {
+      clockPhase(clock.current, performance.now(), "verifying");
+      setDetections([]);
+      return;
+    }
+    const aligned = !!background.current && quality.usable && !remote.current;
     const found = tracks.current.map((track) => {
-      const result = trackAppearance(image, track);
+      const result = trackPreparedAppearance(prepared, track);
       return aligned
         ? result
         : {
@@ -476,14 +674,29 @@ export default function Practice() {
       step.id,
     );
     if (s.running) {
+      recordObservationQuality(observationQuality.current, observation, [
+        step.condition.objectId,
+        ...(step.condition.anchorId ? [step.condition.anchorId] : []),
+      ]);
       applyEvents(recoverReturnedObjects(s, observation));
       applyEvents(feedGuideObservation(s, observation));
       if (s.finished) return;
       const active = s.guide.steps[currentIndex(s)];
-      const part = found.find((d) => d.objectId === active.condition.objectId);
       const needsNewStep = stepChecked.current !== currentIndex(s);
+      const before = s.baseline[active.id];
+      const changed = before ? changeMetric(active, before, observation) : null;
+      const needsGrounding = [
+        active.condition.objectId,
+        ...(active.condition.anchorId ? [active.condition.anchorId] : []),
+        ...(changed !== null && changed >= active.condition.minimumChange
+          ? active.condition.requiredVisibleAfter
+          : []),
+      ].some(
+        (id) =>
+          !found.some((d) => d.objectId === id && d.quality === "observed"),
+      );
       if (
-        (needsNewStep || !part || part.quality !== "observed") &&
+        needsGrounding &&
         stable &&
         !remote.current &&
         !blocked.current &&
@@ -571,6 +784,7 @@ export default function Practice() {
   const camera = useGuideCamera(frame, pause);
   const selectInitial = useEffectEvent((row: SavedGuide) => select(row));
   const disposeSession = useEffectEvent(() => {
+    if (session.current && !session.current.finished) saveTimingResult(false);
     runGeneration.current++;
     request.current?.abort();
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
@@ -609,6 +823,7 @@ export default function Practice() {
     };
   }, []);
   function select(row: SavedGuide) {
+    if (session.current && !session.current.finished) saveTimingResult(false);
     camera.stop();
     request.current?.abort();
     runGeneration.current++;
@@ -617,8 +832,13 @@ export default function Practice() {
     tracks.current = [];
     setSelected(row);
     clock.current = createSessionClock();
+    timingSessionId.current = crypto.randomUUID();
+    resumeContext.current = null;
+    restartRequired.current = false;
+    observationQuality.current = createObservationQuality();
     recordedCompletion.current = false;
     setStates({});
+    setPerceptionHelp("");
     setView("off");
     setError("");
     setMessage("");
@@ -642,6 +862,7 @@ export default function Practice() {
       previous.baseline = {};
       previous.candidates = {};
       previous.lastTime = -1;
+      previous.lastObservation = null;
       session.current = previous;
     } else
       session.current = createGuideSession(
@@ -650,6 +871,8 @@ export default function Practice() {
       );
     if (!previous || previous.finished) {
       clock.current = createSessionClock();
+      timingSessionId.current = crypto.randomUUID();
+      observationQuality.current = createObservationQuality();
       recordedCompletion.current = false;
     } else clockPhase(clock.current, performance.now(), "verifying");
     setStates({ ...session.current.steps });
@@ -708,6 +931,32 @@ export default function Practice() {
     step = g?.steps[index],
     violation = s?.guide.steps.find((step) => s.steps[step.id] === "violation"),
     correction = violation?.correction;
+  const needsClearView =
+    view === "practice" && s?.steps[step?.id ?? ""] === "uncertain";
+  const referenceStep = violation ?? step;
+  const referenceFrame = violation
+    ? violation.evidence.startFrame
+    : needsClearView
+      ? (step?.evidence.startFrame ?? 0)
+      : allVerifiedFrame();
+  function allVerifiedFrame() {
+    if (s && s.guide.steps.every((item) => s.steps[item.id] === "verified"))
+      return g?.goalFrame ?? 0;
+    return ["off", "setup", "ready", "finding"].includes(view)
+      ? (step?.evidence.startFrame ?? 0)
+      : (step?.evidence.endFrame ?? 0);
+  }
+  const referenceTitle = violation
+    ? "Correction reference"
+    : needsClearView
+      ? "Restore this starting view"
+      : view === "complete"
+        ? "Expected result"
+        : view === "practice"
+          ? "This step’s result"
+          : "Starting view";
+  const allActionsVerified =
+    !!s && s.guide.steps.every((item) => s.steps[item.id] === "verified");
   const timing = s
     ? timingSummary(
         clock.current,
@@ -716,7 +965,11 @@ export default function Practice() {
         typeof window === "undefined" ? 0 : performance.now(),
       )
     : null;
-  const previousAverage = localAverage(selected?.attempts ?? []);
+  const previousAverage = localAverage(
+    (selected?.attempts ?? []).filter(
+      (attempt) => attempt.sessionId !== timingSessionId.current,
+    ),
+  );
   const debug =
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("debug") === "1";
@@ -728,6 +981,7 @@ export default function Practice() {
       states: { ...session.current?.steps },
       events: session.current?.events,
       latencies: latencies.current,
+      evidenceAvailability: evidenceAvailability(observationQuality.current),
       timing: session.current
         ? timingSummary(
             clock.current,
@@ -755,6 +1009,9 @@ export default function Practice() {
               methodId: s.guide.methodId,
               steps: s.steps,
               events: s.events,
+              evidenceAvailability: evidenceAvailability(
+                observationQuality.current,
+              ),
               timing: timingSummary(
                 clock.current,
                 s.guide,
@@ -898,21 +1155,28 @@ export default function Practice() {
                       ? "Pause and correct"
                       : view === "complete"
                         ? "Goal reached"
-                        : view === "practice"
-                          ? `Step ${index + 1} of ${g.steps.length}`
-                          : busy
-                            ? "Finding your objects"
-                            : view === "ready"
-                              ? "Ready when you are"
-                              : view === "off"
-                                ? "Start with your camera"
-                                : "Getting ready"}
+                        : busy
+                          ? "Finding your objects"
+                          : needsClearView
+                            ? "Need a clear view"
+                            : view === "practice"
+                              ? allActionsVerified
+                                ? "Check the final result"
+                                : `Step ${index + 1} of ${g.steps.length}`
+                              : view === "ready"
+                                ? "Ready when you are"
+                                : view === "off"
+                                  ? "Start with your camera"
+                                  : "Getting ready"}
                   </p>
                   <p className="mt-1 text-lg font-medium">
                     {correction ??
-                      (view === "practice"
-                        ? step?.instruction
-                        : message || g.initialInstruction)}
+                      (busy
+                        ? "Hold the part still and keep it in view while I locate it."
+                        : perceptionHelp ||
+                          (view === "practice"
+                            ? step?.instruction
+                            : message || g.initialInstruction))}
                   </p>
                   {view === "practice" &&
                     s?.steps[step?.id ?? ""] === "uncertain" &&
@@ -924,7 +1188,18 @@ export default function Practice() {
                     )}
                 </div>
                 <div className="flex flex-wrap gap-3">
-                  {view === "ready" && (
+                  {restartRequired.current && (
+                    <button
+                      className="primary"
+                      onClick={() => {
+                        camera.stop();
+                        select(selected);
+                      }}
+                    >
+                      Restart practice
+                    </button>
+                  )}
+                  {view === "ready" && !restartRequired.current && (
                     <button
                       className="primary"
                       onClick={() => {
@@ -938,7 +1213,10 @@ export default function Practice() {
                   {camera.active && (
                     <button
                       onClick={() => {
-                        pause("Practice paused. Your verified steps are kept.");
+                        if (!session.current?.finished)
+                          pause(
+                            "Practice paused. Your verified steps are kept.",
+                          );
                         camera.stop();
                       }}
                     >
@@ -1094,30 +1372,21 @@ export default function Practice() {
                   ))}
                 </ol>
               </section>
-              {step && (
+              {referenceStep && (
                 <GuideFrame
                   guide={g}
-                  frame={
-                    view === "off" ||
-                    view === "setup" ||
-                    view === "ready" ||
-                    view === "finding"
-                      ? step.evidence.startFrame
-                      : step.evidence.endFrame
+                  frame={referenceFrame}
+                  title={referenceTitle}
+                  objectIds={
+                    allActionsVerified && !violation
+                      ? undefined
+                      : [
+                          referenceStep.condition.objectId,
+                          ...(referenceStep.condition.anchorId
+                            ? [referenceStep.condition.anchorId]
+                            : []),
+                        ]
                   }
-                  title={
-                    view === "complete"
-                      ? "Expected result"
-                      : view === "practice"
-                        ? "This step’s result"
-                        : "Starting view"
-                  }
-                  objectIds={[
-                    step.condition.objectId,
-                    ...(step.condition.anchorId
-                      ? [step.condition.anchorId]
-                      : []),
-                  ]}
                 />
               )}
               {timing && (
@@ -1166,11 +1435,20 @@ export default function Practice() {
                     </p>
                   )}
                   <details className="mt-2 text-xs text-slate-500">
-                    <summary>How time is counted</summary>Active session
-                    includes unpaused thinking time. Breaks are explicit pauses;
-                    stillness alone is not a break. Uncertain tracking and AI
-                    checks count as verification waits. Estimates are guidance,
-                    not speed targets.
+                    <summary>Timing and evidence details</summary>
+                    <p className="mb-2">
+                      Usable observations: {observationQuality.current.usable}/
+                      {observationQuality.current.checked}
+                      {observationQuality.current.checked
+                        ? ` (${Math.round((100 * observationQuality.current.usable) / observationQuality.current.checked)}%)`
+                        : ""}
+                      . This measures evidence availability, not accuracy or a
+                      success probability.
+                    </p>
+                    Active session includes unpaused thinking time. Breaks are
+                    explicit pauses; stillness alone is not a break. Uncertain
+                    tracking and AI checks count as verification waits.
+                    Estimates are guidance, not speed targets.
                     <ul>
                       {g.steps.map((item, i) => (
                         <li key={item.id}>

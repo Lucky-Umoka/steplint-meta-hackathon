@@ -46,7 +46,7 @@ export default function ManualMarks({
       <p className="my-2 text-sm text-slate-600">
         Usually automatic. To correct the starting marks, name each relevant
         object and draw around its full visible outline. Use a point on solid
-        material for a thin rim. Up to four objects.
+        material for a thin rim. Up to six objects.
       </p>
       <label className="block">
         Object name
@@ -90,7 +90,7 @@ export default function ManualMarks({
           mode={mode}
           mark={null}
           onMark={(mark) => {
-            if (label.trim() && value.length < 4) {
+            if (label.trim() && value.length < 6) {
               onChange([
                 ...value,
                 {

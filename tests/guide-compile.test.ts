@@ -1,3 +1,4 @@
+import { checkPlannedActions } from "../src/guide/action-plan";
 import { it, expect } from "vitest";
 import { compileGuide, type CompilerOutputSchema } from "../src/guide/compile";
 import type { z } from "zod";
@@ -136,4 +137,73 @@ it("preserves unresolved and outside-goal narration instead of silently calling 
   );
   const g = compileGuide(raw, source());
   expect(g.coverage.filter((c) => c.status !== "included")).toHaveLength(2);
+});
+
+it("excludes unused surrounding proposals without weakening evidence for executable objects", () => {
+  const context = source(),
+    raw = output();
+  context.selections.push({
+    id: "component-2",
+    description: "Background tool",
+    frame: 0,
+    mark: { kind: "point", x: 10, y: 10 },
+  });
+  context.tracking.push({
+    componentId: "component-2",
+    missingFrames: 12,
+    samples: [],
+  });
+  raw.objects.push({
+    id: "component-2",
+    label: "Background tool",
+    description: "Unneeded proposal",
+    initiallyVisible: true,
+  });
+  const guide = compileGuide(raw, context);
+  expect(guide.objects.map((o) => o.id)).toEqual(["component-1"]);
+  expect(guide.steps[0].supported).toBe(true);
+});
+it("rejects an earlier scene masquerading as the final goal", () => {
+  const raw = output();
+  raw.goalFrame = 5;
+  expect(() => compileGuide(raw, source())).toThrow("final goal");
+});
+
+it("uses the first actual step before-state rather than a face/setup frame at recording start", () => {
+  const raw = output(),
+    context = source();
+  raw.steps[0].startFrame = 3;
+  raw.objects[0].initiallyVisible = false;
+  context.tracking[0].samples = context.tracking[0].samples.filter(
+    (sample) => sample.frame >= 3,
+  );
+  const guide = compileGuide(raw, context);
+  expect(guide.objects[0].initiallyVisible).toBe(true);
+  expect(guide.steps[0].evidence.startMs).toBe(300);
+  expect(guide.steps[0].supported).toBe(true);
+});
+
+it("preserves planned action history and its visible references rather than accepting a final-pose shortcut", () => {
+  const raw = output(),
+    plan = [
+      {
+        instruction: "Move package",
+        kind: "movement" as const,
+        objectId: "component-1",
+        anchorId: null,
+        requiredVisibleAfter: ["component-1"],
+      },
+    ];
+  expect(() => checkPlannedActions(raw, plan)).not.toThrow();
+  expect(() => checkPlannedActions(raw, [...plan, ...plan])).toThrow(
+    "required action",
+  );
+  raw.steps[0].requiredVisibleAfter = [];
+  expect(() => checkPlannedActions(raw, plan)).toThrow("visible result");
+  const removal = [
+    { ...plan[0], kind: "separation" as const, anchorId: "component-2" },
+  ];
+  expect(() => checkPlannedActions(output(), removal)).toThrow(
+    "required action",
+  );
 });
