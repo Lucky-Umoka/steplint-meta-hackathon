@@ -138,3 +138,22 @@ One owner-approved MP4 upload, one sam-3.1 video request (prompt selected from a
 - Dynamic discovery reads video and Voice timing without an evenly spaced still-image shortlist. At most eight exact-image localization calls cover root and declared before/after views. One missing root does not cancel valid planned alternates; each image is requested once, never retried automatically. No unavailable view becomes evidence.
 - Spark reasoning counts within the output budget, per [official reasoning documentation](https://dev.meta.ai/docs/reasoning). A real 6,144-token incomplete response justified a finite 12,288 ceiling and concise drafting instructions. Do not claim the limit fix is live-verified until a completed parsed response is received.
 - The owner authorized a third separate five-trial allowance. New planned bound is 12 Teach model requests plus 6 per creator/learner session, 24 maximum per trial; announce purpose/models/cost before each run. Preserve all prior failures and conservative approval/verification gates.
+
+## Retained-failure follow-up
+
+- A real noun-concept request returned no phone for the wrapped object. Use boxed checks for reflective and transparent parts; use noun concepts for small opaque objects. This routing passed SDK/parser simulation, not a subsequent live trial.
+- Check all relevant parts in each already-selected source image; prefer an uncut view when a primary is unavailable/clipped. This does not add image calls or turn a proposal into evidence. Real SAM geometry, source validation and creator review remain necessary.
+- Preserve required planned actions and reference objects. Allow an opening to use observed cover motion plus newly exposed contents when before-state contents are hidden; do not weaken a removal into generic movement. The source action wire uses nested `anyOf`, matching the [official strict schema subset](https://dev.meta.ai/docs/structured-output).
+- First-stage upload carries media once without unused coarse images. Clear short-lived camera frame history/overlays on pause and completion, and skip local tracking once off/paused/finished.
+
+## Fourth acceptance repair
+
+- Remove the clipping heuristic that chose a less useful closed-case seed. Retain the declared valid action view and bounded planned alternates.
+- Pin existing Sharp 0.35.5 directly for native-pixel concept crops (Apache-2.0; Node >=20.9). Translate actual parsed masks back by the crop offset; no resized geometry or invented points.
+- At most six predeclared SAM image views, with unavailable results preserved. Only accepted mask-derived foreground points enter video tracking. Confidence is a provider score, not measured accuracy. Full trial bound remains 30 model requests, no automatic retries.
+
+- After trial 2, reserve unused slots inside the eight-image Spark ceiling for distinct close-up interpretations of difficult parts. Project cropped bounds/points back, then use documented SAM location prompts; no noun guess or failed-call retry. Refined points remain untrusted until accepted real SAM geometry. Full-frame unrefined points stay out of video prompts.
+
+- Image seed checks are optional refinements for automatic video grounding, not procedural observations. Rejected checks return no mask/point; location proposals may still guide the documented multi-frame SAM video call. Final continuous high-confidence geometry, ordered action checks and human review remain unchanged. This avoids equating an image preflight rejection with proof the video cannot be tracked.
+
+- Trial 4 exposed identity drift from incidental still detections. Limit video anchors to declared per-object appearances; still inspect all relevant objects in selected images. Large opaque part location points may guide SAM as proposals, while demonstrated risky small/reflective/transparent guesses stay out unless confirmed. Only parsed video observations feed source verification.

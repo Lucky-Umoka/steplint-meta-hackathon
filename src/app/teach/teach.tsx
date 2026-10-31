@@ -201,33 +201,11 @@ export default function Teach() {
       body.append("confirmed", "true");
       if (intent.trim()) body.append("intent", intent.trim());
       if (marks.length) body.append("marks", JSON.stringify(marks));
-      if (!marks.length) {
-        body.append("prepare", "true");
-        const frames = [];
-        for (const frame of [
-          ...new Set(
-            [0, 1 / 7, 2 / 7, 3 / 7, 4 / 7, 5 / 7, 6 / 7, 1].map((fraction) =>
-              Math.round(fraction * (prepared.media.frameTimesMs.length - 1)),
-            ),
-          ),
-        ])
-          frames.push({
-            frame,
-            image: await frameImage(
-              prepared.video,
-              prepared.media.frameTimesMs[frame],
-            ),
-          });
-        const text = JSON.stringify(frames);
-        if (
-          prepared.video.size + prepared.audio.size + text.length >=
-          3_980_000
-        )
-          throw Error(
-            "This clip leaves too little room for its reference frames. Use a shorter clip or the optional object marks before uploading.",
-          );
-        body.append("frames", text);
-      }
+      if (!marks.length) body.append("prepare", "true");
+      if (prepared.video.size + prepared.audio.size >= 3_980_000)
+        throw Error(
+          "Choose a shorter recording that fits the lesson upload limit.",
+        );
 
       const response = await fetch("/api/teach/guide/analyse", {
         method: "POST",

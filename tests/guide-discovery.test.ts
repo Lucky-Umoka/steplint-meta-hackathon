@@ -32,6 +32,7 @@ function provider(frame = 2, initiallyVisible = false, timed = false) {
             actions: [
               {
                 instruction: "Move the tray",
+                operation: "movement",
                 kind: "movement",
                 objectIndex: 1,
                 anchorIndex: null,
@@ -116,6 +117,8 @@ it("can select the actual action frame between initial preview samples for stage
     true,
   );
   expect(result.selections[0].frame).toBe(1);
+  expect(JSON.stringify(create.mock.calls)).not.toContain('"oneOf"');
+  expect(JSON.stringify(create.mock.calls)).toContain('"anyOf"');
   expect(create).toHaveBeenCalledWith(
     expect.objectContaining({
       input: [

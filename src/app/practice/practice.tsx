@@ -211,6 +211,9 @@ export default function Practice() {
     request.current?.abort();
     remote.current = false;
     tracks.current = [];
+    history.current = [];
+    pixels.current = null;
+    setDetections([]);
     readyBefore.current = null;
     pendingReady.current = false;
     if (session.current) {
@@ -274,6 +277,9 @@ export default function Practice() {
       }
     }
     if (s.finished) {
+      history.current = [];
+      pixels.current = null;
+      setDetections([]);
       clockPhase(clock.current, performance.now(), "complete");
       if (!recordedCompletion.current && selected) {
         recordedCompletion.current = true;
@@ -508,6 +514,15 @@ export default function Practice() {
     }
   }
   function frame(image: Pixels, now: number) {
+    const s = session.current;
+    if (
+      !s ||
+      restartRequired.current ||
+      s.finished ||
+      currentView.current === "paused" ||
+      currentView.current === "off"
+    )
+      return;
     pixels.current = image;
     const prepared = prepareTrackingFrame(image);
     history.current.push({ at: now, prepared });
@@ -519,15 +534,6 @@ export default function Practice() {
     )
       stableSince.current = now;
     lastFingerprint.current = fp;
-    const s = session.current;
-    if (
-      !s ||
-      restartRequired.current ||
-      s.finished ||
-      currentView.current === "paused" ||
-      currentView.current === "off"
-    )
-      return;
     const quality = frameQuality(image, prepared);
     if (background.current && !remote.current) {
       const tracked = trackPreparedAppearance(prepared, background.current);

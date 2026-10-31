@@ -207,3 +207,23 @@ it("preserves planned action history and its visible references rather than acce
     "required action",
   );
 });
+
+it("allows an observable opening refinement while preserving the required exposed container", () => {
+  const raw = output();
+  raw.objects.push({ ...raw.objects[0], id: "component-2" });
+  raw.steps[0].requiredVisibleAfter = ["component-2"];
+  const plan = [
+    {
+      instruction: "Open the package",
+      operation: "opening" as const,
+      kind: "separation" as const,
+      objectId: "component-1",
+      anchorId: "component-2",
+      requiredVisibleAfter: ["component-2"],
+    },
+  ];
+  expect(() => checkPlannedActions(raw, plan)).not.toThrow();
+  expect(() =>
+    checkPlannedActions(raw, [{ ...plan[0], operation: "removal" }]),
+  ).toThrow("required action");
+});

@@ -27,18 +27,20 @@ const proposal: Selection = {
   frame: 0,
   mark: { kind: "box", left: 210, top: 227, right: 272, bottom: 256 },
 };
+function eventStream(text: string) {
+  async function* events(): AsyncIterable<ResponsesEvent> {
+    const lane = { item_id: "mock", output_index: 0, content_index: 0 };
+    yield { type: "response.output_text.delta", ...lane, delta: text };
+    yield { type: "response.output_text.done", ...lane, text };
+    yield { type: "response.completed" };
+  }
+  return events();
+}
 function clientFor(text: string) {
-  const post = vi.fn(async () => {
-    async function* events(): AsyncIterable<ResponsesEvent> {
-      const lane = { item_id: "mock", output_index: 0, content_index: 0 };
-      yield { type: "response.output_text.delta", ...lane, delta: text };
-      yield { type: "response.output_text.done", ...lane, text };
-      yield { type: "response.completed" };
-    }
-    return events();
-  });
+  const post = vi.fn(async () => eventStream(text));
   return { client: { post } as unknown as OpenAI, post };
 }
+
 it("refines a proposed image region once and derives a valid foreground point for the video prompt", async () => {
   const { client, post } = clientFor(
     "<0f>0<|box;x1=211;y1=228;x2=270;y2=254;w=640;h=480;c=0.99|>" + mask,
@@ -219,7 +221,7 @@ it("encodes six manually corrected V2 parts with official prompts without changi
 
 it("uses a single noun concept to get an independent SAM mask instead of reusing a proposed hand point", async () => {
   const { client, post } = clientFor(
-    "<0f>0<|box;x1=211;y1=228;x2=270;y2=254;w=640;h=480;c=0.99|>" + mask,
+    "<0f>0<|box;x1=65;y1=65;x2=124;y2=91;w=190;h=157;c=0.99|>" + mask,
   );
   const seeds = await groundGuideSeeds(
     client,
@@ -252,4 +254,123 @@ it("uses a single noun concept to get an independent SAM mask instead of reusing
     ),
   ).rejects.toThrow("one short object concept");
   expect(invalid.post).not.toHaveBeenCalled();
+});
+
+it("requires a unique semantic match inside the coarse crop even when extents differ", async () => {
+  const token = (id: number, box: string) =>
+    `<0f>${id}<|box;${box};w=190;h=157;c=0.99|>${mask}`;
+  const narrow = "x1=90;y1=61;x2=99;y2=96";
+  const run = (client: OpenAI) =>
+    groundGuideSeeds(
+      client,
+      [proposal],
+      ["screwdriver"],
+      [{ frame: 0, image: fixture().images[0].image }],
+      media,
+      new AbortController().signal,
+      undefined,
+      undefined,
+      "concept",
+    );
+  const single = clientFor(token(0, narrow));
+  const seed = await run(single.client);
+  expect(seed[0].selection.mark).toMatchObject({
+    left: 236,
+    top: 224,
+    right: 246,
+    bottom: 260,
+  });
+  expect(seed[0].point.x).toBeGreaterThanOrEqual(236);
+  expect(seed[0].point.x).toBeLessThan(246);
+  const competing = clientFor(
+    token(0, narrow) + token(1, "x1=65;y1=65;x2=124;y2=91"),
+  );
+  await expect(run(competing.client)).rejects.toThrow("Several similar");
+  expect(competing.post).toHaveBeenCalledTimes(1);
+  const outside = clientFor(token(0, "x1=154;y1=67;x2=173;y2=81"));
+  await expect(run(outside.client)).rejects.toThrow("does not match");
+});
+
+it("runs each predetermined view once and retains only actual reliable masks", async () => {
+  const { groundPlannedGuideViews } = await import(
+    "../src/server/guide/ground-seeds"
+  );
+  const token = (score: number) =>
+    `<0f>0<|box;x1=211;y1=228;x2=270;y2=254;w=640;h=480;c=${score}|>${mask}`;
+  const plan = [0, 1].map((frame) => ({
+    selection: { ...proposal, frame },
+    concept: "object",
+    mode: "box" as const,
+  }));
+  const frames = [0, 1].map((frame) => ({
+    frame,
+    image: fixture().images[0].image,
+  }));
+  const provider = clientFor(token(0.3));
+  provider.post
+    .mockResolvedValueOnce(eventStream(token(0.3)))
+    .mockResolvedValueOnce(eventStream(token(0.99)));
+  const report = vi.fn();
+  const result = await groundPlannedGuideViews(
+    provider.client,
+    plan,
+    frames,
+    media,
+    new AbortController().signal,
+    report,
+  );
+  expect(provider.post).toHaveBeenCalledTimes(2);
+  expect(result[0].views.map((view) => view.selection.frame)).toEqual([1]);
+  expect(report).toHaveBeenCalledWith(
+    expect.objectContaining({ frame: 0, available: false }),
+  );
+  expect(report).toHaveBeenCalledWith(
+    expect.objectContaining({ frame: 1, available: true }),
+  );
+  const bad = clientFor(token(0.3));
+  await expect(
+    groundPlannedGuideViews(
+      bad.client,
+      plan,
+      frames,
+      media,
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("planned views");
+  expect(bad.post).toHaveBeenCalledTimes(2);
+  const unconfirmed = clientFor(token(0.3));
+  const optional = await groundPlannedGuideViews(
+    unconfirmed.client,
+    plan,
+    frames,
+    media,
+    new AbortController().signal,
+    undefined,
+    { requireEveryObject: false },
+  );
+  expect(optional).toEqual([]); // No invented mask, box, point, or observation from rejected checks.
+  expect(unconfirmed.post).toHaveBeenCalledTimes(2);
+  const broken = clientFor("");
+  broken.post.mockRejectedValueOnce(Error("connection failed"));
+  await expect(
+    groundPlannedGuideViews(
+      broken.client,
+      plan,
+      frames,
+      media,
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("connection failed");
+  expect(broken.post).toHaveBeenCalledTimes(1);
+  const duplicate = clientFor("");
+  await expect(
+    groundPlannedGuideViews(
+      duplicate.client,
+      [plan[0], plan[0]],
+      frames,
+      media,
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("bounded");
+  expect(duplicate.post).not.toHaveBeenCalled();
 });

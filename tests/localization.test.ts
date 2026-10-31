@@ -225,3 +225,85 @@ it("can use a valid already-planned alternate when the primary view is hidden, w
   expect(result.selections.map((part) => part.frame)).toEqual([1, 1]);
   expect(result.anchors[0].map((view) => view.selection.frame)).toEqual([1]);
 });
+
+it("retains a valid declared primary instead of replacing its action state solely because it touches an edge", async () => {
+  const full = {
+    visible: true,
+    box: { left: 200, top: 100, right: 700, bottom: 600 },
+    positive: [{ x: 250, y: 500 }],
+    negative: [],
+  };
+  const { client, create } = provider([]);
+  create.mockResolvedValueOnce({
+    status: "completed",
+    output_text: JSON.stringify({
+      objects: [
+        {
+          id: "component-1",
+          ...full,
+          box: { left: 0, top: 100, right: 100, bottom: 300 },
+          positive: [{ x: 50, y: 200 }],
+        },
+        {
+          id: "component-2",
+          visible: false,
+          box: null,
+          positive: [],
+          negative: [],
+        },
+      ],
+    }),
+  });
+  create.mockResolvedValueOnce({
+    status: "completed",
+    output_text: JSON.stringify({
+      objects: [
+        { id: "component-1", ...full },
+        { id: "component-2", ...full },
+      ],
+    }),
+  });
+  const result = await localizeGuideAnchors(
+    client,
+    [
+      { ...proposal, frame: 0 },
+      { ...proposal, id: "component-2", frame: 1 },
+    ],
+    [0, 1].map((frame) => ({ frame, image })),
+    media,
+    new AbortController().signal,
+    () => {},
+  );
+  expect(create).toHaveBeenCalledTimes(2);
+  expect(result.selections[0].frame).toBe(0);
+  expect(result.anchors[0].map((view) => view.selection.frame)).toEqual([0]);
+});
+
+it("does not promote incidental detections in another object's source frame into tracking anchors", async () => {
+  const outline = {
+    visible: true,
+    box: { left: 200, top: 100, right: 700, bottom: 600 },
+    positive: [{ x: 250, y: 500 }],
+    negative: [],
+  };
+  const { client, create } = provider([
+    { id: "component-1", ...outline },
+    { id: "component-2", ...outline },
+  ]);
+  const result = await localizeGuideAnchors(
+    client,
+    [
+      { ...proposal, frame: 0 },
+      { ...proposal, id: "component-2", frame: 1 },
+    ],
+    [0, 1].map((frame) => ({ frame, image })),
+    media,
+    new AbortController().signal,
+    () => {},
+  );
+  expect(create).toHaveBeenCalledTimes(2);
+  expect(result.imageCalls).toBe(2);
+  expect(
+    result.anchors.map((views) => views.map((view) => view.selection.frame)),
+  ).toEqual([[0], [1]]);
+});

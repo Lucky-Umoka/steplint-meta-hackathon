@@ -20,11 +20,13 @@ import {
   DiscoveryResultSchema,
   type NativeFramesSchema,
 } from "./discovery";
+import { refineSourceView } from "./refine-source";
 import { localizeGuideAnchors } from "./localization";
 import {
   multiFrameVideoRequest,
   guideSelectionRequest,
-  groundGuideSeeds,
+  groundPlannedGuideViews,
+  type SeedViewPlan,
 } from "./ground-seeds";
 import { LessonSchema, type Selection } from "../../teach/schema";
 import {
@@ -213,8 +215,23 @@ export async function analyseGuide(
           progress("discover", "Checking precise object positions…", details),
       );
       automatic = proposals;
-      sourcePoints = exact.anchors.map((views) =>
-        views.map((view) => view.points),
+      // Opaque large-part location points remain proposals, not observations. Small/transparent/reflective
+      // parts have demonstrated foreground errors; those get box-only video prompts unless SAM confirms them.
+      sourcePoints = exact.anchors.map((views, index) =>
+        views.map((view) => {
+          const profile = proposals.profiles.find(
+            (p) => p.objectId === exact.selections[index].id,
+          );
+          const box = view.selection.mark;
+          const size = upload.lesson.media.info.video!;
+          return profile?.material === "opaque" &&
+            box.kind === "box" &&
+            ((box.right - box.left) * (box.bottom - box.top)) /
+              (size.width * size.height) >=
+              0.04
+            ? view.points
+            : [];
+        }),
       );
       sourceAnchors = exact.anchors.map((views) =>
         views.map((view) => view.selection),
@@ -236,45 +253,131 @@ export async function analyseGuide(
               0.04)
         );
       });
+      const imageCallsUsed = exact.imageCalls;
+      const closeups = new Map<
+        string,
+        Awaited<ReturnType<typeof refineSourceView>>
+      >();
+      const focusCandidates = needsMask.filter(
+        (part) =>
+          proposals.profiles.find((profile) => profile.objectId === part.id)
+            ?.material !== "reflective",
+      );
+      for (const part of focusCandidates.slice(
+        0,
+        Math.max(0, 8 - imageCallsUsed),
+      )) {
+        const frame = nativeFrames.find((frame) => frame.frame === part.frame)!;
+        const refined = await refineSourceView(
+          client,
+          part,
+          proposals.selections.find((p) => p.id === part.id)!.concept,
+          frame.image,
+          upload.lesson.media,
+          signal,
+          (details) =>
+            progress("discover", "Inspecting a difficult part up close…", {
+              objectId: part.id,
+              frame: part.frame,
+              ...(details as object),
+            }),
+        );
+        closeups.set(part.id, refined);
+        const index = selections.findIndex(
+          (selection) => selection.id === part.id,
+        );
+        selections[index] = refined.selection;
+        sourceAnchors[index] = sourceAnchors[index].map((view) =>
+          view.frame === part.frame ? refined.selection : view,
+        );
+      }
       if (needsMask.length) {
         progress(
           "discover",
           "Checking the foreground of small or reflective parts…",
           { maskRefinements: needsMask.map((part) => part.id) },
         );
-        for (const part of needsMask) {
+        const makeView = (part: Selection, view: Selection): SeedViewPlan => {
           const index = selections.findIndex(
               (selection) => selection.id === part.id,
             ),
             profile = proposals.profiles.find(
               (profile) => profile.objectId === part.id,
-            ),
-            mode = profile?.material === "transparent" ? "box" : "concept";
-          const view = sourceAnchors[index].findIndex(
-              (anchor) => anchor.frame === part.frame,
-            ),
-            points = sourcePoints[index][view];
-          const [seed] = await groundGuideSeeds(
-            client,
-            [part],
-            [
-              proposals.selections.find((proposal) => proposal.id === part.id)!
-                .concept,
-            ],
-            nativeFrames,
-            upload.lesson.media,
-            signal,
-            (details) =>
-              progress("discover", "Checking a precise foreground mask…", {
-                ...(details && typeof details === "object" ? details : {}),
-                promptMode: mode,
-              }),
-            mode === "box" ? [points] : undefined,
-            mode,
+            );
+          const preparedView = exact.anchors[index].find(
+            (anchor) => anchor.selection.frame === view.frame,
           );
-          selections[index] = seed.selection;
-          sourceAnchors[index] = [seed.selection];
-          sourcePoints[index] = [[seed.point]];
+          if (!preparedView)
+            throw new TeachError(
+              422,
+              "The planned foreground view is missing.",
+            );
+          const closeup =
+            view.frame === part.frame ? closeups.get(part.id) : undefined;
+          return {
+            selection: closeup?.selection ?? view,
+            points: closeup?.points,
+            concept: proposals.selections.find(
+              (proposal) => proposal.id === part.id,
+            )!.concept,
+            mode:
+              closeup ||
+              profile?.material === "transparent" ||
+              profile?.material === "reflective"
+                ? "box"
+                : "concept",
+          };
+        };
+        const planned = needsMask.map((part) => makeView(part, part));
+        for (const part of needsMask) {
+          if (planned.length >= 6) break;
+          const index = selections.findIndex(
+              (selection) => selection.id === part.id,
+            ),
+            profile = proposals.profiles.find(
+              (profile) => profile.objectId === part.id,
+            );
+          const declared =
+            profile?.appearances.map((appearance) => appearance.frame) ?? [];
+          const views = sourceAnchors[index].filter(
+            (view) => view.frame !== part.frame,
+          );
+          const alternate =
+            views.find((view) => declared.includes(view.frame)) ?? views[0];
+          if (alternate) planned.push(makeView(part, alternate));
+        }
+        progress("discover", "Checking the planned foreground views…", {
+          seedViews: planned.map((view) => ({
+            objectId: view.selection.id,
+            frame: view.selection.frame,
+            mode: view.mode,
+          })),
+        });
+        const confirmed = await groundPlannedGuideViews(
+          client,
+          planned,
+          nativeFrames,
+          upload.lesson.media,
+          signal,
+          (details) =>
+            progress(
+              "discover",
+              "Checking a precise foreground mask…",
+              details,
+            ),
+          { requireEveryObject: false },
+        );
+        for (const object of confirmed) {
+          const index = selections.findIndex(
+              (part) => part.id === object.objectId,
+            ),
+            preferred =
+              object.views.find(
+                (view) => view.selection.frame === selections[index].frame,
+              ) ?? object.views[0];
+          selections[index] = preferred.selection;
+          sourceAnchors[index] = object.views.map((view) => view.selection);
+          sourcePoints[index] = object.views.map((view) => [view.point]);
         }
       }
       progress(
@@ -396,6 +499,11 @@ export async function analyseGuide(
       { signal, timeout: 120000 },
     );
     const raw = structuredJson(response, "Guide drafting");
+    progress(
+      "draft",
+      "Checking the proposed checklist against the action plan…",
+      { draftProposal: raw },
+    );
     let guide;
     try {
       if (automatic?.actions) checkPlannedActions(raw, automatic.actions);

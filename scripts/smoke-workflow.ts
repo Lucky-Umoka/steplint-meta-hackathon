@@ -65,7 +65,15 @@ if (preflight) {
   process.exit(0);
 }
 const batch = arg("--batch") ?? "repair-live";
-if (!["repair-live", "repair-round2", "repair-round3"].includes(batch))
+if (
+  ![
+    "repair-live",
+    "repair-round2",
+    "repair-round3",
+    "repair-round4",
+    "repair-followup",
+  ].includes(batch)
+)
   throw Error("Unknown approved trial batch.");
 const ledgerPath = `.media-lab/${batch}/ledger.json`,
   ledger = JSON.parse(await readFile(ledgerPath, "utf8")) as {

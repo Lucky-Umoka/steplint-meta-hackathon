@@ -816,6 +816,7 @@ test("Teach automatically extracts requested action frames and reuses one upload
     if (calls === 1) {
       expect(form.get("video")).toBeInstanceOf(File);
       expect(form.get("prepare")).toBe("true");
+      expect(form.get("frames")).toBeNull();
       await route.fulfill({
         contentType: "application/x-ndjson",
         body:

@@ -1,5 +1,6 @@
 import { validateGuideSelections } from "../../guide/source-context";
 import "server-only";
+import { conceptCrop, originalBox } from "./crop";
 import { reportedConfidence } from "./quality";
 import type OpenAI from "openai";
 import type { Stream } from "openai/core/streaming";
@@ -15,6 +16,14 @@ import type { Selection, LessonMedia } from "../../teach/schema";
 import type { z } from "zod";
 import type { NativeFramesSchema } from "./discovery";
 import { TeachError } from "../teach/security";
+export class GroundingUnavailable extends TeachError {
+  constructor(
+    public readonly reason: "empty_or_uncertain" | "ambiguous" | "unmatched",
+    message: string,
+  ) {
+    super(422, message);
+  }
+}
 export type Seed = { selection: Selection; point: { x: number; y: number } };
 function pointFromMask(mask: SegmentationMaskRecord, w: number, h: number) {
   const raster = decodeMaskToRaster(mask.mask),
@@ -128,6 +137,16 @@ export async function groundGuideSeeds(
         422,
         "SAM grounding needs one short object concept.",
       );
+    const view =
+      mode === "concept"
+        ? await conceptCrop(frame.image, selection.mark, size)
+        : {
+            left: 0,
+            top: 0,
+            width: size.width,
+            height: size.height,
+            image: frame.image,
+          };
     const imagePrompt =
       mode === "concept"
         ? concept!
@@ -153,7 +172,7 @@ export async function groundGuideSeeds(
             role: "user",
             content: [
               { type: "input_text", text: imagePrompt },
-              { type: "input_image", image_url: frame.image, detail: "auto" },
+              { type: "input_image", image_url: view.image, detail: "auto" },
             ],
           },
         ],
@@ -183,8 +202,14 @@ export async function groundGuideSeeds(
       concept: concepts[i],
       frame: selection.frame,
       outcome: result.outcome.status,
+      crop: {
+        left: view.left,
+        top: view.top,
+        width: view.width,
+        height: view.height,
+      },
       records: recordsOfKind(result.records, "box").map((b) => ({
-        bounds: { left: b.left, top: b.top, right: b.right, bottom: b.bottom },
+        bounds: originalBox(b, view),
         boxConfidence: b.confidence ?? null,
         maskConfidence:
           masks.find((m) => m.objectId === b.objectId)?.confidence ?? null,
@@ -198,10 +223,10 @@ export async function groundGuideSeeds(
           b.bottom > b.top &&
           b.left >= 0 &&
           b.top >= 0 &&
-          b.right <= size.width &&
-          b.bottom <= size.height &&
+          b.right <= view.width &&
+          b.bottom <= view.height &&
           (b.right - b.left) * (b.bottom - b.top) <
-            size.width * size.height * 0.85,
+            view.width * view.height * 0.85,
       )
       .flatMap((box) => {
         const mask = masks.find((m) => m.objectId === box.objectId);
@@ -214,11 +239,11 @@ export async function groundGuideSeeds(
           !decodeMaskToRaster(mask.mask).some((v) => v === 1)
         )
           return [];
-        return [{ box, mask }];
+        return [{ box: originalBox(box, view), mask }];
       });
     if (!candidates.length)
-      throw new TeachError(
-        422,
+      throw new GroundingUnavailable(
+        "empty_or_uncertain",
         `SAM could not reliably locate ${selection.description}. The mark needs correction before tracking.`,
       );
     const proposed = selection.mark;
@@ -227,27 +252,60 @@ export async function groundGuideSeeds(
         422,
         "Automatic grounding requires a proposed object extent.",
       );
-    candidates.sort(
-      (a, b) => overlap(b.box, proposed) - overlap(a.box, proposed),
-    );
-    if (overlap(candidates[0].box, proposed) < 0.3)
-      throw new TeachError(
-        422,
-        `The SAM outline does not match ${selection.description}. Correct the source mark before tracking.`,
+    let chosen: (typeof candidates)[number];
+    if (mode === "concept") {
+      const matching = candidates.filter((candidate) => {
+        const b = candidate.box,
+          x = (b.left + b.right) / 2,
+          y = (b.top + b.bottom) / 2;
+        return (
+          x >= proposed.left &&
+          x < proposed.right &&
+          y >= proposed.top &&
+          y < proposed.bottom
+        );
+      });
+      if (matching.length !== 1)
+        throw new GroundingUnavailable(
+          matching.length ? "ambiguous" : "unmatched",
+          matching.length
+            ? `Several similar objects match ${selection.description}; no identity was guessed.`
+            : `The SAM outline does not match ${selection.description}. Correct the source mark before tracking.`,
+        );
+      chosen = matching[0];
+    } else {
+      candidates.sort(
+        (a, b) => overlap(b.box, proposed) - overlap(a.box, proposed),
       );
-    if (
-      candidates.length > 1 &&
-      (overlap(candidates[0].box, proposed) < 0.3 ||
+      if (overlap(candidates[0].box, proposed) < 0.3)
+        throw new GroundingUnavailable(
+          "unmatched",
+          `The SAM outline does not match ${selection.description}. Correct the source mark before tracking.`,
+        );
+      if (
+        candidates.length > 1 &&
         overlap(candidates[0].box, proposed) -
           overlap(candidates[1].box, proposed) <
-          0.15)
+          0.15
+      )
+        throw new GroundingUnavailable(
+          "ambiguous",
+          `Several similar objects match ${selection.description}; no identity was guessed.`,
+        );
+      chosen = candidates[0];
+    }
+    const b = chosen.box,
+      point = pointFromMask(chosen.mask, view.width, view.height);
+    if (
+      point.x + view.left < b.left ||
+      point.x + view.left >= b.right ||
+      point.y + view.top < b.top ||
+      point.y + view.top >= b.bottom
     )
       throw new TeachError(
         422,
-        `Several similar objects match ${selection.description}; no identity was guessed.`,
+        "The decoded foreground point is outside its object.",
       );
-    const chosen = candidates[0],
-      b = chosen.box;
     seeds.push({
       selection: {
         ...selection,
@@ -259,7 +317,7 @@ export async function groundGuideSeeds(
           bottom: Math.ceil(b.bottom),
         },
       },
-      point: pointFromMask(chosen.mask, size.width, size.height),
+      point: { x: point.x + view.left, y: point.y + view.top },
     });
   }
   return seeds;
@@ -373,4 +431,72 @@ export function guideSelectionRequest(
     chosen.map((selection) => [selection]),
     media,
   );
+}
+
+export type SeedViewPlan = {
+  selection: Selection;
+  concept: string;
+  mode: "box" | "concept";
+  points?: { x: number; y: number; label?: "negative" }[];
+};
+/** Every distinct view is planned before requests. A missing match is not an observed object. */
+export async function groundPlannedGuideViews(
+  client: OpenAI,
+  plan: SeedViewPlan[],
+  frames: z.infer<typeof NativeFramesSchema>,
+  media: LessonMedia,
+  signal: AbortSignal,
+  onResult?: (details: unknown) => void,
+  options: { requireEveryObject: boolean } = { requireEveryObject: true },
+) {
+  if (
+    !plan.length ||
+    plan.length > 6 ||
+    new Set(plan.map((view) => `${view.selection.id}:${view.selection.frame}`))
+      .size !== plan.length
+  )
+    throw new TeachError(422, "Invalid bounded foreground-view plan.");
+  const accepted = new Map<string, Seed[]>();
+  for (const view of plan) {
+    try {
+      const [seed] = await groundGuideSeeds(
+        client,
+        [view.selection],
+        [view.concept],
+        frames,
+        media,
+        signal,
+        onResult,
+        view.points ? [view.points] : undefined,
+        view.mode,
+      );
+      accepted.set(seed.selection.id, [
+        ...(accepted.get(seed.selection.id) ?? []),
+        seed,
+      ]);
+      onResult?.({
+        objectId: seed.selection.id,
+        frame: seed.selection.frame,
+        available: true,
+      });
+    } catch (error) {
+      if (!(error instanceof GroundingUnavailable)) throw error;
+      onResult?.({
+        objectId: view.selection.id,
+        frame: view.selection.frame,
+        available: false,
+        reason: error.reason,
+      });
+    }
+  }
+  for (const view of plan)
+    if (options.requireEveryObject && !accepted.has(view.selection.id))
+      throw new GroundingUnavailable(
+        "empty_or_uncertain",
+        `SAM could not reliably locate ${view.selection.description} in its planned views. No identity was invented.`,
+      );
+  return [...accepted].map(([objectId, views]) => ({
+    objectId,
+    views: views.sort((a, b) => a.selection.frame - b.selection.frame),
+  }));
 }

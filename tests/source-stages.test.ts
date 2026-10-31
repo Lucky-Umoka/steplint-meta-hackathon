@@ -4,6 +4,7 @@ import {
   PendingGuideSourceSchema,
   sourceFrames,
   analyseGuide,
+  prepareGuideSource,
 } from "../src/server/guide/pipeline";
 import { analyse } from "../src/server/guide/http";
 import { seal } from "../src/server/teach/security";
@@ -20,6 +21,7 @@ vi.mock("../src/server/teach/pipeline", async (original) => ({
 vi.mock("../src/server/guide/pipeline", async (original) => ({
   ...(await original<typeof import("../src/server/guide/pipeline")>()),
   analyseGuide: vi.fn(),
+  prepareGuideSource: vi.fn(),
 }));
 const secret = "source-stage-tests-private-token-32-characters";
 beforeEach(() => {
@@ -184,5 +186,33 @@ it("continues from the signed source upload rather than uploading or transcribin
   expect(vi.mocked(analyseGuide).mock.calls[0][8]?.fileId).toBe(
     "file-one-upload",
   );
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("prepares the upload without unnecessary coarse frame images before selecting actual action moments", async () => {
+  vi.mocked(prepareGuideSource).mockResolvedValue(source());
+  const form = new FormData();
+  form.append(
+    "video",
+    new Blob(["mock-media-validated-by-the-mocked-pipeline"], {
+      type: "video/mp4",
+    }),
+    "clip.mp4",
+  );
+  form.append(
+    "audio",
+    new Blob(["mock-audio"], { type: "audio/wav" }),
+    "clip.wav",
+  );
+  form.append("confirmed", "true");
+  form.append("prepare", "true");
+  const response = await analyse(request(form)),
+    events = (await response.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+  expect(events.at(-1)?.type).toBe("source");
+  expect(prepareGuideSource).toHaveBeenCalledTimes(1);
+  expect(analyseGuide).not.toHaveBeenCalled();
   expect(fetch).not.toHaveBeenCalled();
 });

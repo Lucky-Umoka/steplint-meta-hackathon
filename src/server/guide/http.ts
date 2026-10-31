@@ -131,6 +131,7 @@ export async function analyse(request: Request) {
     }
     if (
       !manual &&
+      form.get("prepare") !== "true" &&
       (!nativeFrames.length || !nativeFrames.some((frame) => frame.frame === 0))
     )
       throw new TeachError(
