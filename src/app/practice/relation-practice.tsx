@@ -18,18 +18,13 @@ import { type Pixels } from "@/practice/tracker";
 import { createSessionClock, clockPhase, timingSummary } from "@/guide/timing";
 import { useGuideCamera } from "./use-guide-camera";
 
-type Snapshot = { frame: number; image: string; width: number; height: number };
-const signature = (p: Pixels) =>
-  Array.from({ length: 192 }, (_, i) => {
-    const x = Math.floor((((i % 16) + 0.5) * p.width) / 16),
-      y = Math.floor(((Math.floor(i / 16) + 0.5) * p.height) / 12),
-      j = (y * p.width + x) * 4;
-    return (p.data[j] + p.data[j + 1] + p.data[j + 2]) / 3;
-  });
-const delta = (a: number[], b: number[]) =>
-  a.length === b.length
-    ? a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length
-    : Infinity;
+import {
+  MotionWindows,
+  motionSignature,
+  signatureDifference,
+  type CameraSnapshot as Snapshot,
+  type CapturedWindow,
+} from "@/practice/motion-windows";
 export default function RelationPractice({
   row,
   onBack,
@@ -49,20 +44,20 @@ export default function RelationPractice({
     [readings, setReadings] = useState<RelationReading[]>([]),
     [finished, setFinished] = useState(false),
     [armed, setArmed] = useState(false),
-    [voice, setVoice] = useState(true);
+    [voice, setVoice] = useState(true),
+    [motion, setMotion] = useState(false),
+    [queued, setQueued] = useState(0),
+    [latencyMs, setLatencyMs] = useState<number | null>(null);
   const session = useRef<RelationSession | null>(null),
     token = useRef(""),
     request = useRef<AbortController | null>(null),
     running = useRef(false),
     checking = useRef(false),
-    baseline = useRef<Snapshot | null>(null),
-    result = useRef<Snapshot | null>(null),
-    motionFrames=useRef<Snapshot[]>([]),
+    collector = useRef(new MotionWindows()),
+    pending = useRef<CapturedWindow[]>([]),
     previous = useRef<number[]>([]),
     checkedSignature = useRef<number[]>([]),
     changedWhileChecking = useRef(false),
-    moving = useRef(false),
-    lastMotion = useRef(0),
     generation = useRef(0),
     clock = useRef(createSessionClock()),
     events = useRef<
@@ -82,15 +77,16 @@ export default function RelationPractice({
   function pause(reason: string) {
     generation.current++;
     request.current?.abort();
-    checking.current=false;
+    checking.current = false;
     setBusy(false);
     clockPhase(clock.current, performance.now(), "paused");
     running.current = false;
     setArmed(false);
-    baseline.current = null;
-    result.current = null;
-    motionFrames.current=[];
-    moving.current = false;
+    collector.current.reset();
+    pending.current = [];
+    setQueued(0);
+    setMotion(false);
+    setReadings([]);
     setMessage(reason);
   }
   const {
@@ -105,57 +101,44 @@ export default function RelationPractice({
     return { frame: Math.round(now), ...capture() };
   }
   function onFrame(p: Pixels, now: number) {
-    const current = signature(p),
-      change = delta(previous.current, current);
+    const current = motionSignature(p);
     previous.current = current;
-    if (checking.current) {
-      if (delta(checkedSignature.current,current)>3) changedWhileChecking.current=true;
-      return;
-    }
     if (!running.current || session.current?.finished) return;
-    if (!baseline.current) {
-      baseline.current = snapshot(now);
-      lastMotion.current = now;
-      return;
-    }
-    if (change > 2.5) {
-      clockPhase(
-        clock.current,
-        now,
-        "active",
-        plan.steps.find((s) => session.current?.states[s.id] !== "verified")
-          ?.id ?? null,
-      );
+    if (
+      checking.current &&
+      signatureDifference(checkedSignature.current, current) > 3
+    ) {
+      changedWhileChecking.current = true;
       setReadings([]);
-      moving.current = true;
-      if(!motionFrames.current.length||now-motionFrames.current.at(-1)!.frame>=350){
-        motionFrames.current.push(snapshot(now));
-        if(motionFrames.current.length>8)motionFrames.current.splice(2,1);
-      }
-      lastMotion.current = now;
-      result.current = null;
-      return;
     }
-    if (!moving.current) {
-      baseline.current = snapshot(now);
-      return;
-    }
-    if (now - lastMotion.current < 700) return;
-    if (!result.current) {
-      result.current = snapshot(now);
-      return;
-    }
-    if (now - result.current.frame < 500) return;
-    const before = baseline.current,
-      after = result.current,
-      last = snapshot(now);
-    if (last.frame - before.frame > 8000) {
-      pause(
-        "That action took longer than the observation window. Restore the starting view and try this step again.",
+    try {
+      const window = collector.current.observe(current, now, () =>
+        snapshot(now),
       );
-      return;
+      setMotion(collector.current.moving);
+      if (collector.current.moving) setReadings([]);
+      if (window) {
+        if (pending.current.length >= 2) {
+          pause(
+            "Verification is behind your actions. Pause work, then restore the current starting view to continue.",
+          );
+          return;
+        }
+        pending.current.push(window);
+        setQueued(pending.current.length);
+      }
+      if (!checking.current && pending.current.length && remaining > 0) {
+        const next = pending.current.shift()!;
+        setQueued(pending.current.length);
+        void check(next.frames, next.contextFrames);
+      }
+    } catch (e) {
+      pause(
+        e instanceof Error
+          ? e.message
+          : "Camera evidence could not be captured.",
+      );
     }
-    void check([before, after, last]);
   }
   async function start() {
     const gen = ++generation.current;
@@ -180,7 +163,11 @@ export default function RelationPractice({
       if (gen !== generation.current) return;
       token.current = opened.token;
       setRemaining(opened.maximumModelRequests);
-      session.current = createRelationSession(plan, crypto.randomUUID(), guide.goalStepIds);
+      session.current = createRelationSession(
+        plan,
+        crypto.randomUUID(),
+        guide.goalStepIds,
+      );
       setStates({ ...session.current.states });
       setFinished(false);
       saved.current = false;
@@ -188,9 +175,10 @@ export default function RelationPractice({
       clock.current = createSessionClock(performance.now());
       await startCamera();
       if (gen !== generation.current) return;
-      baseline.current = null;
+      collector.current.reset();
+      pending.current = [];
+      setQueued(0);
       previous.current = [];
-      moving.current = false;
       running.current = true;
       setArmed(true);
       setMessage(
@@ -202,15 +190,16 @@ export default function RelationPractice({
       setBusy(false);
     }
   }
-  async function check(frames: Snapshot[]) {
+  async function check(frames: Snapshot[], contextFrames: Snapshot[] = []) {
     if (checking.current || !session.current || remaining <= 0) return;
     clockPhase(clock.current, performance.now(), "verifying");
     checking.current = true;
-    checkedSignature.current=previous.current;
-    changedWhileChecking.current=false;
+    checkedSignature.current = previous.current;
+    changedWhileChecking.current = false;
     setBusy(true);
     setError("");
     setMessage("Checking the visible change. Hold the result still…");
+    const startedAt = performance.now();
     const gen = generation.current,
       s = session.current,
       controller = new AbortController();
@@ -227,7 +216,10 @@ export default function RelationPractice({
           width: frames[0].width,
           height: frames[0].height,
           frames: frames.map(({ frame, image }) => ({ frame, image })),
-          contextFrames:motionFrames.current.filter(f=>f.frame>frames[0].frame&&f.frame<frames[2].frame&&!frames.some(p=>p.frame===f.frame)).map(({frame,image})=>({frame,image})),
+          contextFrames: contextFrames.map(({ frame, image }) => ({
+            frame,
+            image,
+          })),
         }),
       });
       const data = z
@@ -237,11 +229,15 @@ export default function RelationPractice({
         })
         .parse(await readAppJson(response, "Camera observation"));
       if (gen !== generation.current) return;
+      setLatencyMs(performance.now() - startedAt);
       setRemaining(data.remainingModelRequests);
-      setReadings(changedWhileChecking.current?[]:data.window.frames[2].readings);
+      setReadings(
+        changedWhileChecking.current ? [] : data.window.frames[2].readings,
+      );
       const recovered = recoverRelation(s, data.window);
       const emitted = evaluateRelationWindow(s, data.window);
-      if (changedWhileChecking.current) s.finished=false;
+      if (changedWhileChecking.current || pending.current.length)
+        s.finished = false;
       events.current.push(...emitted.map((e) => ({ ...e, at: Date.now() })));
       setStates({ ...s.states });
       const active = plan.steps.find(
@@ -303,31 +299,42 @@ export default function RelationPractice({
         );
       }
     } finally {
-      if(gen===generation.current){
+      if (gen === generation.current) {
         checking.current = false;
         setBusy(false);
-        baseline.current = null;
-        result.current = null;
-        moving.current = false;
-        motionFrames.current=[];
+        // Capture continues during this request; do not erase the next action.
+        if (!s.finished && running.current)
+          clockPhase(clock.current, performance.now(), "active");
       }
     }
   }
   async function checkCurrentView() {
-    if(checking.current||!cameraActive||!session.current||remaining<=0)return;
-    const gen=generation.current;
-    checking.current=true;setBusy(true);
-    const frames=[snapshot(performance.now())];
-    try{
-      await new Promise(resolve=>setTimeout(resolve,600));
-      if(gen!==generation.current)return;
+    if (checking.current || !cameraActive || !session.current || remaining <= 0)
+      return;
+    const gen = generation.current;
+    checking.current = true;
+    setBusy(true);
+    const frames = [snapshot(performance.now())];
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      if (gen !== generation.current) return;
       frames.push(snapshot(performance.now()));
-      await new Promise(resolve=>setTimeout(resolve,500));
-      if(gen!==generation.current)return;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (gen !== generation.current) return;
       frames.push(snapshot(performance.now()));
-    }catch(e){if(gen===generation.current)setError(e instanceof Error?e.message:"The camera frame was unavailable.");return;}
-    finally{if(gen===generation.current){checking.current=false;setBusy(false);}}
-    if(gen===generation.current)await check(frames);
+    } catch (e) {
+      if (gen === generation.current)
+        setError(
+          e instanceof Error ? e.message : "The camera frame was unavailable.",
+        );
+      return;
+    } finally {
+      if (gen === generation.current) {
+        checking.current = false;
+        setBusy(false);
+      }
+    }
+    if (gen === generation.current) await check(frames);
   }
   function stop() {
     generation.current++;
@@ -347,8 +354,11 @@ export default function RelationPractice({
     plan.steps.find((step) => states[step.id] !== "verified") ??
     plan.steps.at(-1)!;
   const evidence = guide.steps.find((s) => s.id === active.id)!;
-  const highlightId=plan.steps.find(s=>states[s.id]==="violation")?.id??active.id;
-  const highlighted = readings.find((r) => r.stepId === highlightId && r.visibility==="clear");
+  const highlightId =
+    plan.steps.find((s) => states[s.id] === "violation")?.id ?? active.id;
+  const highlighted = readings.find(
+    (r) => r.stepId === highlightId && r.visibility === "clear",
+  );
   const wrong = Object.values(states).includes("violation");
   return (
     <Workspace mode="practice">
@@ -388,6 +398,7 @@ export default function RelationPractice({
                   fill="none"
                   stroke={wrong ? "#fb7185" : "#facc15"}
                   strokeWidth="5"
+                  className={wrong ? "practice-correction-pulse" : undefined}
                 >
                   {[highlighted.objectBox, highlighted.anchorBox].map(
                     (b, i) =>
@@ -437,26 +448,31 @@ export default function RelationPractice({
               </button>
             ) : (
               <>
-                <button
-                  disabled={busy}
-                  onClick={() => {
-                    running.current = true;
-                    setArmed(true);
-                    baseline.current = null;
-                    moving.current = false;
-                    setMessage(
-                      "Starting view reset. Perform the current instruction and hold the result still.",
-                    );
-                  }}
-                >
-                  {armed
-                    ? "Ready — start practice"
-                    : "Continue from this starting view"}
-                </button>
+                {!armed && !finished && (
+                  <button
+                    disabled={busy}
+                    onClick={() => {
+                      running.current = true;
+                      setArmed(true);
+                      collector.current.reset();
+                      pending.current = [];
+                      setQueued(0);
+                      setMessage(
+                        "Starting view reset. Perform the current instruction and hold the result still.",
+                      );
+                    }}
+                  >
+                    Continue from this starting view
+                  </button>
+                )}
                 <button onClick={stop}>Stop camera</button>
-                <button disabled={busy||remaining<=0} onClick={()=>void checkCurrentView()}>Check current view</button>
                 <button
-                  disabled={busy}
+                  disabled={busy || remaining <= 0}
+                  onClick={() => void checkCurrentView()}
+                >
+                  Check current view
+                </button>
+                <button
                   onClick={() =>
                     pause(
                       "Paused. Restore the current starting view before continuing.",
@@ -476,10 +492,28 @@ export default function RelationPractice({
               Spoken guidance
             </label>
           </div>
+          <p role="status" className="mb-2 text-sm font-medium">
+            {cameraActive
+              ? armed
+                ? motion
+                  ? "Watching movement — correctness not yet verified"
+                  : busy
+                    ? "Camera watching · AI verification pending"
+                    : "Watching automatically"
+                : "Paused"
+              : "Camera off"}
+            {queued > 0
+              ? ` · ${queued} captured action${queued > 1 ? "s" : ""} waiting`
+              : ""}
+            {latencyMs !== null
+              ? ` · Last AI check: ${(latencyMs / 1000).toFixed(1)}s`
+              : ""}
+          </p>
           <p className="text-sm text-slate-600">
             Camera images are sent to Muse Spark only for bounded change checks.{" "}
             {remaining} checks remain. Circles show the last observed locations;
-            an unclear view never counts as success.
+            an unclear view never counts as success. AI feedback is delayed;
+            wait for verification before a dependent or irreversible action.
           </p>
         </section>
         <aside className="space-y-4">

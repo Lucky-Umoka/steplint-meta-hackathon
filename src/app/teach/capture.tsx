@@ -101,6 +101,42 @@ export default function LessonCapture({
       }
     }
   }
+  async function preview() {
+    cancel();
+    const controller = new AbortController();
+    resources.current.abort = controller;
+    setState("permission");
+    try {
+      if (!consent || !navigator.mediaDevices?.getUserMedia)
+        throw new Error(
+          "Consent and camera access are required; use the upload option if unavailable.",
+        );
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640, max: 640 },
+          height: { ideal: 480, max: 480 },
+          frameRate: { ideal: 15, max: 15 },
+        },
+        audio: true,
+      });
+      if (controller.signal.aborted) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      resources.current.stream = stream;
+      if (camera.current) {
+        camera.current.srcObject = stream;
+        await camera.current.play();
+      }
+      setState("preview");
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        stopTracks();
+        setState("idle");
+        fail(e instanceof Error ? e.message : "Permission or camera error.");
+      }
+    }
+  }
   async function record() {
     cancel();
     const controller = new AbortController();
@@ -196,8 +232,11 @@ export default function LessonCapture({
         <input
           type="checkbox"
           checked={consent}
-          disabled={state !== "idle"}
-          onChange={(e) => setConsent(e.target.checked)}
+          disabled={state !== "idle" && state !== "preview"}
+          onChange={(e) => {
+            setConsent(e.target.checked);
+            if (!e.target.checked) cancel();
+          }}
         />
         Everyone visible or audible has agreed to recording and processing.
       </label>
@@ -214,7 +253,9 @@ export default function LessonCapture({
             ? "Waiting for camera/microphone permission…"
             : state === "preparing"
               ? "Camera off. Preparing MP4 and mono PCM WAV locally…"
-              : "Camera and microphone off"}
+              : state === "preview"
+                ? "Camera preview — not recording. Frame your shot, then start recording."
+                : "Camera and microphone off"}
       </p>
       <video
         ref={camera}
@@ -226,7 +267,19 @@ export default function LessonCapture({
       />
       <div className="flex gap-3">
         <button
-          disabled={state !== "idle" || !consent || !support?.h264}
+          disabled={
+            (state !== "idle" && state !== "preview") || !consent || !support
+          }
+          onClick={() => void preview()}
+        >
+          Preview camera
+        </button>
+        <button
+          disabled={
+            (state !== "idle" && state !== "preview") ||
+            !consent ||
+            !support?.h264
+          }
           onClick={() => void record()}
         >
           Start recording

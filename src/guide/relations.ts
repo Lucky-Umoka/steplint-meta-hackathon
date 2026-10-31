@@ -8,6 +8,7 @@ export const RelationSchema = z.enum([
   "contained",
   "separate",
   "touching",
+  "supported_by",
   "aligned",
   "misaligned",
   "unknown",

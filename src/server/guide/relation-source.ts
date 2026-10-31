@@ -42,8 +42,11 @@ export function relationStepFrames(source: RelationSource, index: number) {
       at(Math.max(lo, s.startMs - 400)),
       at(Math.min(hi, s.endMs + 267)),
       at(Math.max(s.changeMs, s.endMs - 267)),
-      ...((source.plan.goalStepIds??[source.plan.steps.at(-1)!.id]).includes(s.id)
-        ? [at(source.plan.steps.at(-1)!.endMs)] : []),
+      ...((source.plan.goalStepIds ?? [source.plan.steps.at(-1)!.id]).includes(
+        s.id,
+      )
+        ? [at(source.plan.steps.at(-1)!.endMs)]
+        : []),
     ]),
   ];
 }
@@ -111,9 +114,9 @@ export async function compileRelations(
     progress(
       `Checking the visible starting state and result: ${step.instruction}`,
     );
-    const needed = relationStepFrames(source, index).filter((frame) =>
-      frames.some((f) => f.frame === frame),
-    ).sort((a,b)=>a-b);
+    const needed = relationStepFrames(source, index)
+      .filter((frame) => frames.some((f) => f.frame === frame))
+      .sort((a, b) => a - b);
     const images = needed.map((frame) => {
       const image = frames.find((f) => f.frame === frame);
       if (!image) throw Error("A requested source image is missing.");
@@ -150,56 +153,61 @@ export async function compileRelations(
       step: plan.steps.find((s) => s.id === stepId)!,
     })),
   );
-  const objects = plan.objects.map((o) => {
-    const sample = samples.find(
-      (s) =>
-        clearRelation(s.reading) &&
-        ((s.step.objectId === o.id && s.reading.objectBox) ||
-          (s.step.anchorId === o.id && s.reading.anchorBox)),
-    );
-    if (!sample)
-      throw Error(
-        `No identifiable source view for ${o.label}. The source remains unapproved.`,
-      );
-    return {
-      ...o,
-      initiallyVisible: samples.some(
+  // Context-only landmarks remain in the perception plan. Only rule operands
+  // require observed geometry and reference crops in the executable guide.
+  const operands = new Set(plan.steps.flatMap((s) => [s.objectId, s.anchorId]));
+  const objects = plan.objects
+    .filter((o) => operands.has(o.id))
+    .map((o) => {
+      const sample = samples.find(
         (s) =>
-          s.frame === at(plan.steps[0].startMs) &&
           clearRelation(s.reading) &&
-          (s.step.objectId === o.id || s.step.anchorId === o.id),
-      ),
-      sourceFrame: sample.frame,
-      sourceBox:
-        sample.step.objectId === o.id
-          ? sample.reading.objectBox
-          : sample.reading.anchorBox,
-      appearance: null,
-    };
-  });
+          ((s.step.objectId === o.id && s.reading.objectBox) ||
+            (s.step.anchorId === o.id && s.reading.anchorBox)),
+      );
+      if (!sample)
+        throw Error(
+          `No identifiable source view for ${o.label}. The source remains unapproved.`,
+        );
+      return {
+        ...o,
+        initiallyVisible: samples.some(
+          (s) =>
+            s.frame === at(plan.steps[0].startMs) &&
+            clearRelation(s.reading) &&
+            (s.step.objectId === o.id || s.step.anchorId === o.id),
+        ),
+        sourceFrame: sample.frame,
+        sourceBox:
+          sample.step.objectId === o.id
+            ? sample.reading.objectBox
+            : sample.reading.anchorBox,
+        appearance: null,
+      };
+    });
   const steps = plan.steps.map((s, i) => {
     const readings = observed.get(s.id)!;
     const preferredBefore = readings.find((f) => f.frame === at(s.startMs))!,
       preferredAfter = readings.find((f) => f.frame === at(s.endMs))!;
     const beforeSample =
       (clearRelation(preferredBefore.reading) &&
-      matchesRelation(s,preferredBefore.reading,"before")
+      matchesRelation(s, preferredBefore.reading, "before")
         ? preferredBefore
         : readings.find(
             (f) =>
               f.frame < at(s.changeMs) &&
               clearRelation(f.reading) &&
-              matchesRelation(s,f.reading,"before"),
+              matchesRelation(s, f.reading, "before"),
           )) ?? preferredBefore;
     const afterSample =
       (clearRelation(preferredAfter.reading) &&
-      matchesRelation(s,preferredAfter.reading,"after")
+      matchesRelation(s, preferredAfter.reading, "after")
         ? preferredAfter
         : readings.find(
             (f) =>
               f.frame > at(s.changeMs) &&
               clearRelation(f.reading) &&
-              matchesRelation(s,f.reading,"after"),
+              matchesRelation(s, f.reading, "after"),
           )) ?? preferredAfter;
     const before = beforeSample.reading,
       after = afterSample.reading;
@@ -207,8 +215,8 @@ export async function compileRelations(
       correspondence.get(s.id) === true &&
       clearRelation(before) &&
       clearRelation(after) &&
-      matchesRelation(s,before,"before") &&
-      matchesRelation(s,after,"after");
+      matchesRelation(s, before, "before") &&
+      matchesRelation(s, after, "after");
     return {
       id: s.id,
       instruction: s.instruction,
@@ -237,13 +245,25 @@ export async function compileRelations(
       supported,
     };
   });
-  const goalFrame=Math.max(at(plan.steps.at(-1)!.endMs),steps.at(-1)!.evidence.endFrame);
-  const goalStepIds=plan.goalStepIds??[steps.at(-1)!.id];
-  const goalSupported=steps.every(s=>s.supported)&&goalStepIds.every(id=>{
-    const rule=plan.steps.find(s=>s.id===id);
-    const reading=observed.get(id)?.find(r=>r.frame===goalFrame)?.reading;
-    return !!rule&&!!reading&&clearRelation(reading)&&matchesRelation(rule,reading,"after");
-  });
+  const goalFrame = Math.max(
+    at(plan.steps.at(-1)!.endMs),
+    steps.at(-1)!.evidence.endFrame,
+  );
+  const goalStepIds = plan.goalStepIds ?? [steps.at(-1)!.id];
+  const goalSupported =
+    steps.every((s) => s.supported) &&
+    goalStepIds.every((id) => {
+      const rule = plan.steps.find((s) => s.id === id);
+      const reading = observed
+        .get(id)
+        ?.find((r) => r.frame === goalFrame)?.reading;
+      return (
+        !!rule &&
+        !!reading &&
+        clearRelation(reading) &&
+        matchesRelation(rule, reading, "after")
+      );
+    });
   return GuideSchema.parse({
     schemaVersion: 2,
     relationPlan: plan,

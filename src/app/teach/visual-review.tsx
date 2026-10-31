@@ -199,8 +199,9 @@ export default function VisualReview({
                 role="status"
                 className="mt-3 rounded-lg bg-amber-50 p-3 text-amber-900"
               >
-                Tracking is not clear enough for this step. Correct the marks or
-                record a clearer view before saving.
+                Tracking is not clear enough for this step, so its checkbox
+                stays off: checking cannot approve unclear evidence. Correct the
+                marks or record a clearer view, then analyse again.
               </p>
             )}
             <label className="mt-4 flex items-start gap-3">

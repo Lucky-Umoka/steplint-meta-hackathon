@@ -41,3 +41,13 @@ body {
 .flow-workspace input[type="checkbox"] {
   @apply h-4 w-4 shrink-0 accent-emerald-700;
 }
+
+/* A slow correction pulse, with a static reduced-motion alternative. */
+@keyframes practice-correction-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+.practice-correction-pulse { animation: practice-correction-pulse 1.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .practice-correction-pulse { animation: none; }
+}

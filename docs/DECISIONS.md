@@ -183,3 +183,29 @@ One owner-approved MP4 upload, one sam-3.1 video request (prompt selected from a
 - Synthetic fixtures added for anchor-endpoint failure, insufficient vs implausible bands, time-ordered multi-object frames, valid adjacency (no false overlap flag) and draft approval rejection.
 - Verified offline only: 314 unit tests plus typecheck, lint, format check and isolated production build. No live Meta request, no commits, no staging changes. Access-token auth, approval signatures, storage and unrelated UI untouched. Round-5 ledger unchanged at 1 of 5.
 - Remaining, explicitly out of scope: opening/exposure condition semantics (needs Teach+Practice contract together), occlusion witness/identity correspondence, targeted reanalysis UI, Guide-blockers detail, physical-camera acceptance.
+
+## Clip trials 2+2, first supported guide (2026-10-31)
+
+- Owner-approved 2 Teach runs each on steplint_video2.mp4 (sha 30ff37e6, 2.53 MB, 18.1 s) and steplint_video3.mp4 (sha 75441cf8, 2.35 MB, 16.7 s). Ledger `.media-lab/repair-clips/ledger.json` is 4/4 used. Direct-pipeline runs, maxRetries 0, 14–16 calls each, ~100 s each, uploads deleted.
+- video2 t1/t2 and video3 t1: guides returned but single steps unsupported (same hand-occlusion pattern). video3 t2 PASSED Teach: step s1 [64→80→88] supported with measured minChange 0.392, no uncertainties, goal supported, bottle tracking 248/248 trusted. Simpler high-contrast scene plus a tight interval inside clean tracking.
+- Status blocked before approval: reference images, human step/goal review and the approval seal all require the browser flow plus the creator; the agent cannot self-approve. No Practice without that. Round-5 still holds 3 unspent trials; no further agent spend without a new notice.
+
+## Replication: video3 passes 2 of 5, intervals decide (2026-10-31)
+
+- Three round-5 replication trials on steplint_video3.mp4 (trials 2–4, 12–14 calls each, ~100 s each, 0 retries). Round-5 ledger is 4/5; clips ledger stays 4/4. Six requested runs exceeded every remaining cap, so only the 3 available ran.
+- r5t2 PASSED Teach again (step-1 [64→80→97] supported, goal supported). r5t3 failed (wide [24→78→104] interval, step and goal unsupported). r5t4 failed (separation step [16→80→105], anchor lid confidence below 0.90 — the anchor-attribution case live).
+- Across five video3 runs: 2 Teach passes, 3 fails. Tracking itself is 248/248 clean; the dominant variable is which interval the model proposes. Passing is not repeatable on demand — re-rolling analysis until a tight clean interval lands is the current mechanism, not a fix.
+- Practice remains gated on a browser approval the creator must perform. Nothing further will be spent without a fresh notice.
+
+## Fresh-grant video2 pair completes 3+3 quota (2026-10-31)
+
+- Owner granted 2 more video2 runs (new cap-2 ledger repair-clips2, now 2/2). Same Teach-only direct path, 12 and 16 calls, ~84–95 s each, 0 retries, uploads deleted.
+- video2-t4: guide, step unsupported on the [99→126→135] interval. video2-t5: reviewable draft — squeeze bottle best provider score 0.894 across 270 samples, six thousandths under the gate, honestly refused.
+- Final per-clip totals: video2 = 5 runs, 0 Teach passes; video3 = 5 runs, 2 Teach passes. All ledgers full (round5 5/5, clips 4/4, clips2 2/2): 11 agent trials, 0 retries, billing never retrieved.
+- The 0.894 near-miss confirms the gate holds where it matters: near-passing scores are refused, not rounded up. No further spend without a fresh grant plus notice.
+
+## Clip quotas complete, all allowances spent (2026-10-31)
+
+- Final trial (round-5 trial 5) gave steplint_video2.mp4 its third run: guide returned, step-1 [108→117→126] unsupported again, goal supported. Approval and Practice not reached. 16 calls, 83.4 s, 0 retries.
+- Per-clip totals: video2 = 3 runs (0 Teach passes), video3 = 5 runs (2 Teach passes). Both ledgers full: repair-round5 5/5, repair-clips 4/4. No agent live trials remain in any allowance.
+- Standing result: the only approved-path candidate remains the video3 supported guide (tight interval inside clean tracking). Everything else fails honestly on occlusion-driven discontinuity. Any further live work needs a fresh owner grant plus the model/count/cost notice.

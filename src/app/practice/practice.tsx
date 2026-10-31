@@ -536,7 +536,7 @@ export default function Practice() {
       stableSince.current = now;
     lastFingerprint.current = fp;
     const quality = frameQuality(image, prepared);
-    if (background.current && !remote.current) {
+    if (background.current) {
       const tracked = trackPreparedAppearance(prepared, background.current);
       const b = tracked.box;
       const translation = b
@@ -615,7 +615,7 @@ export default function Practice() {
       setDetections([]);
       return;
     }
-    const aligned = !!background.current && quality.usable && !remote.current;
+    const aligned = !!background.current && quality.usable;
     const found = tracks.current.map((track) => {
       const result = trackPreparedAppearance(prepared, track);
       return aligned
@@ -1041,7 +1041,13 @@ export default function Practice() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   if (selected?.artifact.guide.relationPlan)
-    return <RelationPractice key={selected.key} row={selected} onBack={() => setSelected(null)} />;
+    return (
+      <RelationPractice
+        key={selected.key}
+        row={selected}
+        onBack={() => setSelected(null)}
+      />
+    );
   return (
     <Workspace mode="practice">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -1320,18 +1326,48 @@ export default function Practice() {
                         const b = d.box!,
                           label = g.objects.find(
                             (o) => o.id === d.objectId,
-                          )?.label;
+                          )?.label,
+                          related = g.steps.filter(
+                            (st) =>
+                              st.condition.objectId === d.objectId ||
+                              st.condition.anchorId === d.objectId,
+                          ),
+                          wrong = related.some(
+                            (st) => states[st.id] === "violation",
+                          ),
+                          verified = related.some(
+                            (st) => states[st.id] === "verified",
+                          ),
+                          color = wrong
+                            ? "#fb7185"
+                            : verified
+                              ? "#34d399"
+                              : "#facc15";
                         return (
-                          <g key={d.objectId}>
+                          <g
+                            key={d.objectId}
+                            className={
+                              wrong ? "practice-correction-pulse" : undefined
+                            }
+                          >
+                            <ellipse
+                              cx={(b.left + b.right) * 500}
+                              cy={(b.top + b.bottom) * 500}
+                              rx={(b.right - b.left) * 500 + 8}
+                              ry={(b.bottom - b.top) * 500 + 8}
+                              fill="none"
+                              stroke={color}
+                              strokeWidth="4"
+                            />
                             <rect
                               x={b.left * 1000}
                               y={b.top * 1000}
                               width={(b.right - b.left) * 1000}
                               height={(b.bottom - b.top) * 1000}
                               rx="5"
-                              fill="#10b981"
+                              fill={color}
                               fillOpacity=".07"
-                              stroke="#34d399"
+                              stroke={color}
                               strokeWidth="3"
                             />
                             <text

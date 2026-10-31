@@ -60,10 +60,11 @@ export function createRelationSession(
   goalStepIds?: string[],
 ): RelationSession {
   const plan = RelationPlanSchema.parse(input);
-  const goals=goalStepIds??plan.goalStepIds??plan.steps.map(s=>s.id);
-  if(!goals.length||goals.some(id=>!plan.steps.some(s=>s.id===id)))throw Error("Unknown final goal relationship.");
+  const goals = goalStepIds ?? plan.goalStepIds ?? plan.steps.map((s) => s.id);
+  if (!goals.length || goals.some((id) => !plan.steps.some((s) => s.id === id)))
+    throw Error("Unknown final goal relationship.");
   return {
-    goalStepIds:goals,
+    goalStepIds: goals,
     plan,
     epoch,
     states: Object.fromEntries(plan.steps.map((s) => [s.id, "waiting"])),
@@ -92,14 +93,40 @@ export function relationTransition(
   const [before, , after] = reads;
   if (!clearRelation(before) || !clearRelation(after))
     return "uncertain" as const;
-  // Require repeated visible result evidence, not an isolated matching pose.
-  if (!clearRelation(reads[1]) || !((matchesRelation(step,reads[1]!,"after")&&matchesRelation(step,after!,"after"))||(matchesRelation(step,reads[1]!,"before")&&matchesRelation(step,after!,"before"))))
+  // A repeated, clearly wrong result is evidence of a violation too.
+  if (
+    !clearRelation(reads[1]) ||
+    reads[1]!.relation !== after!.relation ||
+    window.frames[2].frame - window.frames[1].frame < 400
+  )
     return "uncertain" as const;
-  if (!matchesRelation(step,before!,"before")) return "no_before" as const;
-  if (matchesRelation(step,after!,"before")) return "unchanged" as const;
-  if (!matchesRelation(step,after!,"after")) return "wrong_relation" as const;
-  if (window.frames[2].frame - window.frames[1].frame < 400)
-    return "uncertain" as const;
+  if (!matchesRelation(step, before!, "before")) return "no_before" as const;
+  if (matchesRelation(step, after!, "before")) {
+    // A completed relocation that still misses the designated support is a
+    // wrong destination, not a successful generic movement or an idle scene.
+    if (
+      step.after === "supported_by" &&
+      before!.objectBox &&
+      after!.objectBox &&
+      before!.anchorBox &&
+      after!.anchorBox
+    ) {
+      const position = (r: NonNullable<typeof before>) => ({
+        x:
+          ((r.objectBox!.left + r.objectBox!.right) / 2 - r.anchorBox!.left) /
+          (r.anchorBox!.right - r.anchorBox!.left),
+        y:
+          (r.objectBox!.bottom - r.anchorBox!.top) /
+          (r.anchorBox!.bottom - r.anchorBox!.top),
+      });
+      const a = position(before!),
+        b = position(after!);
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 0.35)
+        return "wrong_relation" as const;
+    }
+    return "unchanged" as const;
+  }
+  if (!matchesRelation(step, after!, "after")) return "wrong_relation" as const;
   return "transition" as const;
 }
 /** Rules, temporal prerequisites, duplicate handling and outcomes stay deterministic. */
@@ -124,7 +151,9 @@ export function evaluateRelationWindow(
   // Evaluate against prerequisite state at the beginning of the window. One
   // window cannot invent the chronology of two concurrent/unseen transitions.
   const prior = { ...session.verifiedAt };
-  const activeAtStart=session.plan.steps.find(s=>session.states[s.id]!=="verified")?.id;
+  const activeAtStart = session.plan.steps.find(
+    (s) => session.states[s.id] !== "verified",
+  )?.id;
   for (const [i, step] of session.plan.steps.entries()) {
     if (
       session.states[step.id] === "verified" ||
@@ -147,9 +176,7 @@ export function evaluateRelationWindow(
         state,
         message: ordered ? step.instruction : step.correction,
       });
-    } else if (
-      activeAtStart === step.id
-    ) {
+    } else if (activeAtStart === step.id) {
       const state =
         outcome === "wrong_relation"
           ? "violation"
@@ -170,14 +197,24 @@ export function evaluateRelationWindow(
     }
   }
   const finalRelations = new Map<string, RelationPlan["steps"][number]>();
-  session.plan.steps.filter(s=>session.goalStepIds.includes(s.id)).forEach((s) =>
-    finalRelations.set(`${s.objectId}:${s.anchorId}`, s),
-  );
+  session.plan.steps
+    .filter((s) => session.goalStepIds.includes(s.id))
+    .forEach((s) => finalRelations.set(`${s.objectId}:${s.anchorId}`, s));
   session.finished =
     session.plan.steps.every((s) => session.states[s.id] === "verified") &&
     [...finalRelations.values()].every((s) => {
-      const r = window.frames[2].readings.find((r) => r.stepId === s.id);
-      return clearRelation(r) && matchesRelation(s,r!,"after");
+      const witness = window.witnesses.find((w) => w.stepId === s.id);
+      return (
+        witness?.objectIdentity === "same" &&
+        witness.anchorIdentity === "same" &&
+        witness.sceneAlignment === "stable" &&
+        !witness.contradictingEvidence &&
+        window.frames[2].frame - window.frames[1].frame >= 400 &&
+        window.frames.slice(1).every((f) => {
+          const r = f.readings.find((r) => r.stepId === s.id);
+          return clearRelation(r) && matchesRelation(s, r!, "after");
+        })
+      );
     });
   return events;
 }
@@ -187,7 +224,15 @@ export function recoverRelation(
   session: RelationSession,
   window: RelationWindow,
 ) {
-  if (window.epoch !== session.epoch) return false;
+  window = RelationWindowSchema.parse(window);
+  if (
+    window.epoch !== session.epoch ||
+    session.seen.has(window.id) ||
+    window.frames[2].frame <= session.lastEnd ||
+    session.finished ||
+    window.frames[2].frame - window.frames[1].frame < 400
+  )
+    return false;
   const index = session.plan.steps.findIndex(
     (s) => session.states[s.id] === "violation",
   );
@@ -196,7 +241,9 @@ export function recoverRelation(
   const reads = window.frames
     .slice(1)
     .map((f) => f.readings.find((r) => r.stepId === step.id));
-  if (!reads.every((r) => clearRelation(r) && matchesRelation(step,r!,"before")))
+  if (
+    !reads.every((r) => clearRelation(r) && matchesRelation(step, r!, "before"))
+  )
     return false;
   const witness = window.witnesses.find((w) => w.stepId === step.id);
   if (
