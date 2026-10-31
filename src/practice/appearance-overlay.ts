@@ -1,0 +1,155 @@
+import type { Box, ObjectDetection } from "../guide/schema";
+import { foregroundPixels, type Foreground } from "../guide/foreground";
+import type { Pixels } from "./tracker";
+type Sample = { x: number; y: number; color: number[]; inside: boolean };
+export type OverlayTrack = {
+  objectId: string;
+  box: Box;
+  width: number;
+  height: number;
+  samples: Sample[];
+  origin: { x: number; y: number };
+  last: { x: number; y: number };
+  palette: number[][];
+};
+const rgb = (p: Pixels, x: number, y: number) => {
+  const j = (Math.round(y) * p.width + Math.round(x)) * 4;
+  return [p.data[j], p.data[j + 1], p.data[j + 2]];
+};
+const distance = (a: number[], b: number[]) =>
+  Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+/** Dense, mask-seeded appearance tracking for advisory overlays only. It cannot
+ * establish contact, procedural correctness or identity after a lost view. */
+export function groundOverlay(
+  p: Pixels,
+  objectId: string,
+  box: Box,
+  foreground?: Foreground,
+): OverlayTrack {
+  const inside = foreground ? foregroundPixels(foreground) : null;
+  const samples: Sample[] = [];
+  for (let y = 0; y < 8; y++)
+    for (let x = 0; x < 8; x++) {
+      const xx =
+          (box.left + ((box.right - box.left) * (x + 0.5)) / 8) * p.width,
+        yy = (box.top + ((box.bottom - box.top) * (y + 0.5)) / 8) * p.height;
+      samples.push({
+        x: xx,
+        y: yy,
+        color: rgb(p, xx, yy),
+        inside: inside ? inside(xx / p.width, yy / p.height) : true,
+      });
+    }
+  const positive = samples.filter((s) => s.inside);
+  if (positive.length < 12)
+    throw Error("Insufficient visible appearance for local highlighting.");
+  const palette = positive
+    .filter((_, i) => i % Math.max(1, Math.floor(positive.length / 6)) === 0)
+    .map((s) => s.color);
+  if (inside) {
+    for (const side of [-0.12, 1.12])
+      for (let i = 0; i < 8; i++) {
+        for (const [x, y] of [
+          [side, (i + 0.5) / 8],
+          [(i + 0.5) / 8, side],
+        ]) {
+          const xx = (box.left + (box.right - box.left) * x) * p.width,
+            yy = (box.top + (box.bottom - box.top) * y) * p.height;
+          if (xx >= 0 && yy >= 0 && xx < p.width - 1 && yy < p.height - 1)
+            samples.push({
+              x: xx,
+              y: yy,
+              color: rgb(p, xx, yy),
+              inside: false,
+            });
+        }
+      }
+  }
+  const center = {
+    x: ((box.left + box.right) * p.width) / 2,
+    y: ((box.top + box.bottom) * p.height) / 2,
+  };
+  return {
+    objectId,
+    box: { ...box },
+    width: p.width,
+    height: p.height,
+    samples,
+    origin: center,
+    last: center,
+    palette,
+  };
+}
+export function trackOverlay(p: Pixels, t: OverlayTrack): ObjectDetection {
+  const unknown = (): ObjectDetection => ({
+    objectId: t.objectId,
+    quality: "ambiguous",
+    box: null,
+    score: null,
+  });
+  if (p.width !== t.width || p.height !== t.height) return unknown();
+  const originDx = t.last.x - t.origin.x,
+    originDy = t.last.y - t.origin.y;
+  const evaluate = (dx: number, dy: number) => {
+    const errors: number[] = [];
+    let negative = 0,
+      negativeCount = 0;
+    for (const s of t.samples) {
+      const x = Math.round(s.x + dx),
+        y = Math.round(s.y + dy);
+      if (x < 0 || y < 0 || x >= p.width || y >= p.height) return Infinity;
+      const c = rgb(p, x, y);
+      if (s.inside) errors.push(distance(c, s.color));
+      else {
+        negativeCount++;
+        const old = Math.min(...t.palette.map((a) => distance(a, s.color))),
+          now = Math.min(...t.palette.map((a) => distance(a, c)));
+        if (old > 35 && now < 25) negative++;
+      }
+    }
+    errors.sort((a, b) => a - b);
+    const retained = errors.slice(0, Math.ceil(errors.length * 0.8));
+    return (
+      retained.reduce((s, v) => s + v, 0) / retained.length +
+      (negativeCount ? (negative / negativeCount) * 120 : 0)
+    );
+  };
+  const candidates: { dx: number; dy: number; cost: number }[] = [];
+  for (let dy = -48; dy <= 48; dy += 4)
+    for (let dx = -48; dx <= 48; dx += 4) {
+      const x = Math.round(originDx + dx),
+        y = Math.round(originDy + dy);
+      candidates.push({ dx: x, dy: y, cost: evaluate(x, y) });
+    }
+  candidates.sort((a, b) => a.cost - b.cost);
+  let best = candidates[0];
+  for (let dy = -3; dy <= 3; dy++)
+    for (let dx = -3; dx <= 3; dx++) {
+      const x = candidates[0].dx + dx,
+        y = candidates[0].dy + dy,
+        cost = evaluate(x, y);
+      if (cost < best.cost) best = { dx: x, dy: y, cost };
+    }
+  const separation = Math.max(
+    8,
+    Math.min(
+      (t.box.right - t.box.left) * p.width,
+      (t.box.bottom - t.box.top) * p.height,
+    ) * 0.5,
+  );
+  const second = candidates.find(
+    (c) => Math.hypot(c.dx - best.dx, c.dy - best.dy) > separation,
+  );
+  if (best.cost > 24 || (second && second.cost - best.cost < 2))
+    return unknown();
+  const box = {
+    left: t.box.left + best.dx / p.width,
+    top: t.box.top + best.dy / p.height,
+    right: t.box.right + best.dx / p.width,
+    bottom: t.box.bottom + best.dy / p.height,
+  };
+  if (box.left < 0 || box.top < 0 || box.right > 1 || box.bottom > 1)
+    return unknown();
+  t.last = { x: t.origin.x + best.dx, y: t.origin.y + best.dy };
+  return { objectId: t.objectId, quality: "observed", box, score: null };
+}

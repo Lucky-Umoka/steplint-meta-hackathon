@@ -1,4 +1,5 @@
 import "server-only";
+import { segmentNamedPart } from "./live-segments";
 import { reportedConfidence } from "./quality";
 import { structuredJson } from "./structured";
 import { z } from "zod";
@@ -45,6 +46,7 @@ const SceneSchema = z.strictObject({
     .array(
       z.strictObject({
         id: z.string(),
+        concept: z.string().min(1).max(80),
         box: GroundingBoxSchema.nullable(),
         candidateCount: z.number().int().min(0).max(20),
       }),
@@ -70,6 +72,12 @@ export async function perceive(request: Request) {
     const guide = lease.guide;
     if (input.stepIndex >= guide.steps.length)
       throw new TeachError(400, "Unknown guide step.");
+    lease.requireBudget(guide.relationPlan ? 3 : 2);
+    const step = guide.steps[input.stepIndex];
+    const relevantIds = new Set([
+      step.condition.objectId,
+      step.condition.anchorId,
+    ]);
     const before = guide.images.find(
       (i) => i.frame === guide.steps[input.stepIndex].evidence.startFrame,
     )?.image;
@@ -80,7 +88,7 @@ export async function perceive(request: Request) {
       signal = AbortSignal.any([request.signal, AbortSignal.timeout(90000)]);
     const content: (
       | { type: "input_text"; text: string }
-      | { type: "input_image"; image_url: string; detail: "auto" }
+      | { type: "input_image"; image_url: string; detail: "auto" | "high" }
     )[] = [
       {
         type: "input_text",
@@ -131,6 +139,27 @@ export async function perceive(request: Request) {
       },
       { type: "input_image", image_url: input.image, detail: "auto" },
     );
+    if (guide.relationPlan) {
+      content.splice(
+        0,
+        content.length,
+        {
+          type: "input_text",
+          text: JSON.stringify({
+            objects: guide.objects
+              .filter((o) => relevantIds.has(o.id))
+              .map((o) => ({
+                id: o.id,
+                label: o.label,
+                description: o.description,
+              })),
+            startingArrangement: guide.initialInstruction,
+            task: "Locate the named objects in this ONE camera image. Include a short literal noun phrase (concept) for each visible part, for example its visible material or shape and noun; do not include actions or abstract roles in this phrase. Return tight full-object boxes on a 0–1000 grid (x left to right, y top to bottom). Include the entire object from its topmost feature to its base. Do not include a gripping hand. Omit hidden or ambiguous objects. candidateCount counts plausible distinct matches. Only mark starting if the visible arrangement matches the described starting arrangement; otherwise in_progress or uncertain. This is localization, never procedural verification.",
+          }),
+        },
+        { type: "input_image", image_url: input.image, detail: "high" },
+      );
+    }
     lease.charge();
     const scene = await client.responses.create(
       {
@@ -181,6 +210,12 @@ export async function perceive(request: Request) {
       (o) => o.box && o.candidateCount === 1,
     );
     const found = new Map<string, ObjectDetection>();
+    const groundingDiagnostics: {
+      objectId: string;
+      reason: string;
+      score: number | null;
+      proposedBox?: z.infer<typeof BoxSchema>;
+    }[] = [];
     const foregrounds: {
       objectId: string;
       foreground: {
@@ -201,7 +236,43 @@ export async function perceive(request: Request) {
         box: null,
         score: null,
       });
-    if (candidates.length && parsed.phase !== "no_work_area") {
+    if (
+      guide.relationPlan &&
+      candidates.length &&
+      parsed.phase !== "no_work_area"
+    ) {
+      const selected = candidates.filter((o) => relevantIds.has(o.id));
+      if (selected.length > 2)
+        throw new TeachError(502, "Unexpected local tracking identities.");
+      const segmented = await Promise.allSettled(
+        selected.map((o) => {
+          lease!.charge();
+          return segmentNamedPart(
+            client,
+            input.image,
+            { width: input.width, height: input.height },
+            { id: o.id, concept: o.concept, box: o.box! },
+            signal,
+          );
+        }),
+      );
+      for (const [i, entry] of segmented.entries()) {
+        if (entry.status === "rejected") {
+          groundingDiagnostics.push({
+            objectId: selected[i].id,
+            reason: "segmentation_unavailable",
+            score: null,
+          });
+          continue;
+        }
+        found.set(selected[i].id, entry.value.detection);
+        if (entry.value.foreground)
+          foregrounds.push({
+            objectId: selected[i].id,
+            foreground: entry.value.foreground,
+          });
+      }
+    } else if (candidates.length && parsed.phase !== "no_work_area") {
       const prompt = buildObjectPrompt({
         size: { width: input.width, height: input.height },
         objects: candidates.map((o, i) => ({
@@ -278,8 +349,17 @@ export async function perceive(request: Request) {
           confidence < 0.9 ||
           (box.data.right - box.data.left) * (box.data.bottom - box.data.top) >
             0.8
-        )
+        ) {
+          groundingDiagnostics.push({
+            objectId: candidates[index].id,
+            reason: !box.success
+              ? "invalid_extent"
+              : "below_evidence_threshold",
+            score: confidence,
+            proposedBox: candidates[index].box!,
+          });
           continue;
+        }
         const raster = decodeMaskToRaster(mask.mask),
           packed = new Uint8Array(Math.ceil(raster.length / 8));
         for (let i = 0; i < raster.length; i++)
@@ -312,6 +392,7 @@ export async function perceive(request: Request) {
         phase: parsed.phase,
         objects: [...found.values()],
         foregrounds,
+        groundingDiagnostics,
         remainingModelRequests: lease.remaining(),
       },
       { headers: { "Cache-Control": "no-store" } },

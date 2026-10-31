@@ -155,12 +155,12 @@ export function evaluateRelationWindow(
     (s) => session.states[s.id] !== "verified",
   )?.id;
   for (const [i, step] of session.plan.steps.entries()) {
-    if (
-      session.states[step.id] === "verified" ||
-      session.states[step.id] === "violation"
-    )
-      continue;
+    if (session.states[step.id] === "verified") continue;
     const outcome = relationTransition(step, window);
+    // A fresh observed before -> correct result can repair a failed attempt.
+    // Wrong order still fails the unchanged prerequisite/chronology check.
+    if (session.states[step.id] === "violation" && outcome !== "transition")
+      continue;
     if (outcome === "transition") {
       const ordered = session.plan.steps
         .slice(0, i)

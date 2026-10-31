@@ -1,0 +1,15 @@
+import {beforeEach,expect,it,vi} from 'vitest';
+import type OpenAI from 'openai';
+import {compileRelations,relationFrames,type RelationSource} from '../src/server/guide/relation-source';
+import {inspectRelationEvidence} from '../src/server/guide/relations';
+import type {RelationReading} from '../src/guide/relations';
+vi.mock('server-only',()=>({}));
+vi.mock('../src/server/guide/relations',()=>({inspectRelationEvidence:vi.fn(),planRelations:vi.fn()}));
+const source=():RelationSource=>({relationSource:true,fileId:'file-test',lesson:{lessonId:'ab86b72d-935c-4bbf-8363-71553ed1893a',media:{info:{container:'mp4',mime:'video/mp4',bytes:100,durationSeconds:1.2,video:{codec:'avc',width:640,height:480,frames:12,fps:10},audio:{codec:'aac',sampleRate:24000,channels:1}},frameTimesMs:Array.from({length:12},(_,i)=>i*100)},transcript:{text:'Place on support',durationMs:1200,turns:[{startMs:0,endMs:1100,text:'Place on support'}]}},plan:{title:'Place part',goal:'Part rests on support',initialInstruction:'Part beside support',goalStepIds:['place'],objects:[{id:'component-1',label:'Part',description:'Distinct part'},{id:'component-2',label:'Support',description:'Destination'},{id:'component-3',label:'Other landmark',description:'Context only'}],steps:[{id:'place',instruction:'Place part on support',explanation:'Base rests on support surface',correction:'Restore part then place on support',objectId:'component-1',anchorId:'component-2',before:'separate',after:'supported_by',startMs:100,changeMs:500,endMs:1000}],coverage:[{instruction:'Place on support',status:'included',reason:'Demonstrated'}]}});
+const box={left:.1,top:.1,right:.3,bottom:.3};
+let result:RelationReading['relation']='supported_by';
+beforeEach(()=>{result='supported_by';vi.mocked(inspectRelationEvidence).mockImplementation(async(_client,plan,frames)=>({witnesses:plan.steps.map(s=>({stepId:s.id,objectIdentity:'same',anchorIdentity:'same',sceneAlignment:'stable',contradictingEvidence:false,description:'Same distinct parts'})),frames:frames.map(f=>({frame:f.frame,readings:plan.steps.map(s=>({stepId:s.id,relation:f.frame<5?'separate':result,visibility:'clear',objectBox:box,anchorBox:box,description:'Visible relationship'}))}))}));});
+const compile=()=>{const s=source();return compileRelations({} as OpenAI,s,relationFrames(s).map(frame=>({frame,image:'mock-only'})),new AbortController().signal,()=>{});};
+it('does not demand outline evidence for non-rule context landmarks',async()=>{const g=await compile();expect(g.objects.map(o=>o.id)).toEqual(['component-1','component-2']);expect(g.relationPlan?.objects).toHaveLength(3);expect(g.goalSupported).toBe(true);});
+it('blocks a placement when observed evidence only shows generic touching',async()=>{result='touching';const g=await compile();expect(g.steps[0].supported).toBe(false);expect(g.goalSupported).toBe(false);});
+it('reserves actual final-goal evidence within the source frame budget',()=>{const s=source();const frames=relationFrames(s);expect(frames).toContain(10);expect(frames.length).toBeLessThanOrEqual(24);expect(new Set(frames).size).toBe(frames.length);});

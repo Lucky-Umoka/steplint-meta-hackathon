@@ -389,7 +389,7 @@ test("Teach previews a local fixture clip and presents clear review without paid
   await page.route("**/api/teach/access", (r) =>
     r.fulfill({ json: { unlocked: true } }),
   );
-  await page.route("**/api/teach/guide/analyse", () => {
+  await page.route("**/api/teach/guide/{analyse,relations}", () => {
     paid++;
     throw Error("Paid route forbidden in this test");
   });
@@ -436,7 +436,7 @@ for (const fault of ["empty", "gateway", "incomplete"]) {
     draft.objects[0].appearance = null;
     let analyses = 0,
       approvals = 0;
-    await page.route("**/api/teach/guide/analyse", (r) => {
+    await page.route("**/api/teach/guide/{analyse,relations}", (r) => {
       analyses++;
       return r.fulfill({
         contentType: "application/x-ndjson",
@@ -805,7 +805,7 @@ test("Teach automatically extracts requested action frames and reuses one upload
   const artifact = await seed(page);
   const draft = { ...artifact.guide, approval: null, images: [] };
   let calls = 0;
-  await page.route("**/api/teach/guide/analyse", async (route) => {
+  await page.route("**/api/teach/guide/{analyse,relations}", async (route) => {
     calls++;
     const req = route.request(),
       form = await new Request("http://fixture", {

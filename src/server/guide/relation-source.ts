@@ -55,6 +55,14 @@ export function relationFrames(source: RelationSource) {
     relationStepFrames(source, i).slice(0, 3),
   );
   const selected = new Set(base);
+  // Reserve final-goal evidence before spending the optional frame budget.
+  for (let i = 0; i < source.plan.steps.length; i++)
+    if (
+      (source.plan.goalStepIds ?? [source.plan.steps.at(-1)!.id]).includes(
+        source.plan.steps[i].id,
+      )
+    )
+      selected.add(relationStepFrames(source, i).at(-1)!);
   for (let offset = 3; offset < 6; offset++)
     for (let i = 0; i < source.plan.steps.length; i++) {
       if (selected.size >= 24) break;

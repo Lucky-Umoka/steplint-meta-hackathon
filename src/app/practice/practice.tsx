@@ -1078,6 +1078,13 @@ export default function Practice() {
           )
         )}
       </div>
+      {selected && (
+        <p className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm">
+          This older guide checks movement or separation. It does not verify a
+          destination or contact state. Rebuild and review the recording in
+          Teach with visible relationships enabled for those checks.
+        </p>
+      )}
       {!selected ? (
         <>
           {loading ? (

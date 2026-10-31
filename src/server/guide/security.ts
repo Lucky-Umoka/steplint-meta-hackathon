@@ -163,7 +163,22 @@ export function acquirePerception(token: string, requestCost: 1 | 2 = 2) {
   s.busy = true;
   return {
     guide: s.guide,
+    requireBudget(count: number) {
+      if (
+        !Number.isInteger(count) ||
+        count < 1 ||
+        count > 3 ||
+        s.used + count > cap ||
+        total.used + count > 32
+      )
+        throw new TeachError(
+          429,
+          "This session has insufficient model requests for another grounding check.",
+        );
+    },
     charge() {
+      if (s.used >= cap || total.used >= 32)
+        throw new TeachError(429, "The model request limit was reached.");
       s.used++;
       total.used++;
       spend.set(key, total);

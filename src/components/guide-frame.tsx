@@ -11,26 +11,9 @@ export default function GuideFrame({
   objectIds?: string[];
 }) {
   const image = guide.images.find((i) => i.frame === frame)?.image;
-  const relationBoxes =
-    guide.relationEvidence
-      ?.filter((f) => f.frame === frame)
-      .flatMap((f) =>
-        f.readings.flatMap((r) => {
-          const step = guide.steps.find((s) => s.id === r.stepId);
-          if (!step || r.visibility !== "clear") return [];
-          return [
-            { objectId: step.condition.objectId, box: r.objectBox },
-            { objectId: step.condition.anchorId, box: r.anchorBox },
-          ].flatMap((o) =>
-            o.box && o.objectId
-              ? [{ frame, objectId: o.objectId, box: o.box }]
-              : [],
-          );
-        }),
-      ) ?? [];
-  const geometry = guide.relationPlan
-    ? [...new Map(relationBoxes.map((b) => [b.objectId, b])).values()]
-    : guide.geometry;
+  // Multi-image language-model locations are approximate and are not SAM
+  // outlines. Show the actual source image without false precision.
+  const geometry = guide.relationPlan ? [] : guide.geometry;
   return (
     <figure className="overflow-hidden rounded-xl border border-slate-200 bg-white">
       <div className="border-b px-3 py-2 text-sm font-semibold">
@@ -43,7 +26,9 @@ export default function GuideFrame({
         <svg
           viewBox={`0 0 ${guide.source.width} ${guide.source.height}`}
           role="img"
-          aria-label={`${title} with labelled objects`}
+          aria-label={
+            guide.relationPlan ? title : `${title} with labelled objects`
+          }
           className="block w-full"
         >
           <image

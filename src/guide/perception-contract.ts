@@ -16,7 +16,18 @@ export const PerceptionResultSchema = z
         z.strictObject({ objectId: z.string(), foreground: ForegroundSchema }),
       )
       .max(6),
-    remainingModelRequests: z.number().int().min(0).max(6),
+    groundingDiagnostics: z
+      .array(
+        z.strictObject({
+          objectId: z.string(),
+          reason: z.string(),
+          score: z.number().min(0).max(1).nullable(),
+          proposedBox: DetectionSchema.shape.box.optional(),
+        }),
+      )
+      .max(6)
+      .optional(),
+    remainingModelRequests: z.number().int().min(0).max(12),
   })
   .superRefine((value, ctx) => {
     const ids = value.foregrounds.map((f) => f.objectId);

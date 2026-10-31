@@ -177,25 +177,41 @@ export function trackPreparedAppearance(
       score: number;
     }[] = [];
   for (const f of track.features) {
-    let best: { x: number; y: number; p: Float32Array; score: number } | null =
-        null,
-      second = -1;
+    type Match = { x: number; y: number; p: Float32Array; score: number };
+    let best: Match | null = null;
+    const candidates: Match[] = [];
+    const sample = (x: number, y: number) => {
+      const p = patch(data, image.width, image.height, x, y);
+      if (!p) return;
+      const candidate = { x, y, p, score: correlation(f.patch, p) };
+      candidates.push(candidate);
+      if (
+        !best ||
+        candidate.score - 0.0005 * Math.hypot(x - f.x, y - f.y) >
+          best.score - 0.0005 * Math.hypot(best.x - f.x, best.y - f.y)
+      )
+        best = candidate;
+    };
     for (let dy = -16; dy <= 16; dy += 2)
-      for (let dx = -16; dx <= 16; dx += 2) {
-        const x = Math.round(f.x + dx),
-          y = Math.round(f.y + dy),
-          p = patch(data, image.width, image.height, x, y);
-        if (!p) continue;
-        const score = correlation(f.patch, p);
-        if (
-          !best ||
-          score - 0.0005 * Math.hypot(x - f.x, y - f.y) >
-            best.score - 0.0005 * Math.hypot(best.x - f.x, best.y - f.y)
-        ) {
-          second = best?.score ?? -1;
-          best = { x, y, p, score };
-        } else if (score > second) second = score;
-      }
+      for (let dx = -16; dx <= 16; dx += 2)
+        sample(Math.round(f.x + dx), Math.round(f.y + dy));
+    // Coarse search alone cannot match one-pixel camera/codec shifts. Refine
+    // its peak, then compare distinct peaks rather than adjacent pixels on
+    // the SAME correlation peak for the ambiguity test.
+    const coarse = best as Match | null;
+    if (coarse)
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) sample(coarse.x + dx, coarse.y + dy);
+    const chosen = best as Match | null;
+    const second = chosen
+      ? Math.max(
+          -1,
+          ...candidates
+            .filter((c) => Math.hypot(c.x - chosen.x, c.y - chosen.y) > 3)
+            .map((c) => c.score),
+        )
+      : -1;
+    best = chosen;
     if (
       best &&
       best.score >= 0.88 &&
@@ -238,12 +254,19 @@ export function trackPreparedAppearance(
   track.corners = corners;
   track.rotation = (track.rotation ?? 0) + pose.rotation;
   track.scale = (track.scale ?? 1) * pose.scale;
-  track.features = consistent.map((m) => ({
-    x: m.x,
-    y: m.y,
-    patch: m.p,
-    reference: m.old.reference ?? m.old.patch,
-  }));
+  // Keep the full seed set. An unmatched feature is a search hypothesis,
+  // never an observed point; dropping it permanently causes cumulative erosion
+  // and eventual failure even on an otherwise unchanged stationary object.
+  track.features = track.features.map((f) => {
+    const match = consistent.find((m) => m.old === f);
+    const expected = transformPoint(pose, f);
+    return {
+      x: match?.x ?? expected.x,
+      y: match?.y ?? expected.y,
+      patch: match?.p ?? f.patch,
+      reference: f.reference ?? f.patch,
+    };
+  });
   return {
     objectId: track.objectId,
     quality: "observed",
@@ -275,9 +298,10 @@ export function groundBackground(
   image: Pixels,
   excluded: Box[],
   prepared?: TrackingFrame,
+  region: Box = { left: 0.06, top: 0.06, right: 0.94, bottom: 0.94 },
 ): AppearanceTrack | null {
   const data = prepared?.values ?? grey(image),
-    box = { left: 0.06, top: 0.06, right: 0.94, bottom: 0.94 };
+    box = region;
   const picked = features(
     data,
     image.width,

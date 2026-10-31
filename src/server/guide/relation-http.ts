@@ -41,7 +41,11 @@ export async function analyseRelations(request: Request) {
         unseal(token, "relation-source-v1", owner),
       );
       if (form.has("discard")) {
-        if (form.get("discard") !== "true" || form.has("frames"))
+        if (
+          form.getAll("discard").length !== 1 ||
+          form.get("discard") !== "true" ||
+          form.has("frames")
+        )
           throw new TeachError(400, "Invalid cleanup request.");
         await deleteLessonFile(client, source.fileId);
         return Response.json({ deleted: true });
@@ -68,6 +72,7 @@ export async function analyseRelations(request: Request) {
         throw new TeachError(400, "Source images do not match this lesson.");
       frames.forEach((f) => validateJpeg(f.image, size.width, size.height));
       return sourceStream(request, randomUUID(), async (signal, send) => {
+        let cleanupAttempted = false;
         try {
           const guide = await compileRelations(
             client,
@@ -76,6 +81,7 @@ export async function analyseRelations(request: Request) {
             signal,
             (message) => send({ type: "progress", stage: "draft", message }),
           );
+          cleanupAttempted = true;
           await deleteLessonFile(client, source.fileId);
           send({
             type: "draft",
@@ -84,7 +90,7 @@ export async function analyseRelations(request: Request) {
             uploadDeleted: true,
           });
         } catch (e) {
-          await deleteLessonFile(client, source.fileId);
+          if (!cleanupAttempted) await deleteLessonFile(client, source.fileId);
           throw e;
         }
       });
@@ -94,7 +100,10 @@ export async function analyseRelations(request: Request) {
         (k) =>
           !["video", "audio", "confirmed", "intent", "prepare"].includes(k),
       ) ||
-      ["video", "audio", "confirmed"].some((k) => form.getAll(k).length !== 1)
+      ["video", "audio", "confirmed"].some(
+        (k) => form.getAll(k).length !== 1,
+      ) ||
+      ["intent", "prepare"].some((k) => form.getAll(k).length > 1)
     )
       throw new TeachError(400, "Send one confirmed lesson.");
     const video = form.get("video"),

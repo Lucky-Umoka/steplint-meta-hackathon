@@ -49,7 +49,7 @@ export default function Teach() {
     [prepared, setPrepared] = useState<PreparedLesson | null>(null),
     [preview, setPreview] = useState(""),
     [intent, setIntent] = useState(""),
-    [relationshipMode, setRelationshipMode] = useState(false),
+    [relationshipMode, setRelationshipMode] = useState(true),
     [consent, setConsent] = useState(false),
     [marks, setMarks] = useState<Selection[]>([]);
   const [guide, setGuide] = useState<Guide | null>(null),
@@ -203,10 +203,9 @@ export default function Teach() {
     setDiagnostic(null);
     setStage("transcribe");
     setMessage("Uploading once and listening to your lesson…");
-    const endpoint =
-      relationshipMode && !marks.length
-        ? "/api/teach/guide/relations"
-        : "/api/teach/guide/analyse";
+    const endpoint = relationshipMode
+      ? "/api/teach/guide/relations"
+      : "/api/teach/guide/analyse";
     const controller = new AbortController();
     request.current = controller;
     let pendingSource: z.infer<typeof SourceFrameRequestSchema> | null = null;
@@ -745,21 +744,24 @@ export default function Teach() {
                         checked={relationshipMode}
                         onChange={(e) => {
                           setRelationshipMode(e.target.checked);
+                          setMarks([]);
                           setConsent(false);
                         }}
                       />
                       <span>
                         Verify visible relationships (opening, removal,
-                        placement and alignment). Experimental: review each
-                        starting state and result before approving.
+                        placement and alignment). Review each starting state and
+                        result before approving.
                       </span>
                     </label>
-                    <ManualMarks
-                      video={prepared.video}
-                      media={prepared.media}
-                      value={marks}
-                      onChange={setMarks}
-                    />
+                    {!relationshipMode && (
+                      <ManualMarks
+                        video={prepared.video}
+                        media={prepared.media}
+                        value={marks}
+                        onChange={setMarks}
+                      />
+                    )}
                     <label className="my-4 flex items-start gap-3">
                       <input
                         type="checkbox"
@@ -792,13 +794,20 @@ export default function Teach() {
                       <p>
                         Video uploads once, then is deleted after analysis.
                         One-hour provider expiry is the fallback. Reference
-                        images stay in this browser. Estimated SAM video cost $
-                        {(
-                          (prepared.media.frameTimesMs.length * 0.2) /
-                          1000
-                        ).toFixed(4)}
-                        , plus up to $0.015 for image masks and bounded
-                        Voice/Spark processing; final cost varies.
+                        images stay in this browser.{" "}
+                        {relationshipMode ? (
+                          "Voice and Spark costs depend on duration and token usage. No SAM video tracking is requested for this mode."
+                        ) : (
+                          <>
+                            Estimated SAM video cost $
+                            {(
+                              (prepared.media.frameTimesMs.length * 0.2) /
+                              1000
+                            ).toFixed(4)}
+                            , plus up to $0.015 for image masks and bounded
+                            Voice/Spark processing; final cost varies.
+                          </>
+                        )}
                       </p>
                     </details>
                   </>

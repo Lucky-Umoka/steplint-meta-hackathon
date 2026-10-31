@@ -94,6 +94,7 @@ describe("visible relationship rules", () => {
     const s = createRelationSession(plan, "camera");
     expect(evaluateRelationWindow(s, window("open"))[0].state).toBe("verified");
     const final = window("remove", 1200);
+    final.witnesses.push(...window("open").witnesses);
     final.frames.forEach((f) =>
       f.readings.push({ ...window("open").frames[2].readings[0] }),
     );
@@ -187,4 +188,33 @@ describe("visible relationship rules", () => {
     r.relation = "contained";
     expect(clearRelation(r)).toBe(false);
   });
+});
+
+it("reports a stable wrong relationship rather than perpetual uncertainty", () => {
+ const s=createRelationSession(plan,"camera"), w=window("open");
+ w.frames.slice(1).forEach(f=>f.readings[0].relation="misaligned");
+ expect(evaluateRelationWindow(s,w)[0].state).toBe("violation");
+});
+it("does not recover from replayed or too-short evidence", () => {
+ const s=createRelationSession(plan,"camera"), w=window("remove");
+ evaluateRelationWindow(s,w);
+ const reset=window("remove",1200);
+ reset.frames.forEach(f=>f.readings[0].relation="contained");
+ reset.frames[2].frame=reset.frames[1].frame+100;
+ expect(recoverRelation(s,reset)).toBe(false);
+ reset.frames[2].frame=2300;
+ s.seen.add(reset.id);
+ expect(recoverRelation(s,reset)).toBe(false);
+});
+it("requires correspondence and repeated final evidence for every goal", () => {
+ const s=createRelationSession(plan,"camera");evaluateRelationWindow(s,window("open"));
+ const w=window("remove",1200);
+ w.frames.forEach(f=>f.readings.push({...window("open").frames[2].readings[0]}));
+ evaluateRelationWindow(s,w);expect(s.finished).toBe(false);
+});
+it("rejects relocation to a wrong support instead of treating any movement as success",()=>{
+ const p=structuredClone(plan);p.steps=[{...p.steps[0],before:"separate",after:"supported_by"}];
+ const s=createRelationSession(p,"camera"),w=window("open");
+ w.frames.forEach((f,i)=>{f.readings[0].relation="separate";f.readings[0].objectBox={left:i?.7:.1,top:.1,right:i?.9:.3,bottom:.3};});
+ expect(evaluateRelationWindow(s,w)[0].state).toBe("violation");expect(s.finished).toBe(false);
 });
