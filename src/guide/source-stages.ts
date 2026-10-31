@@ -11,7 +11,7 @@ export const SourceFrameRequestSchema = z
         }),
       )
       .min(1)
-      .max(8),
+      .max(24),
   })
   .refine(
     (source) =>

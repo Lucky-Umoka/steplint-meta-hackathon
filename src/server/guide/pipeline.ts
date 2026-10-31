@@ -35,8 +35,10 @@ import {
 } from "../../guide/source-context";
 import { checkPlannedActions } from "../../guide/action-plan";
 import { sourceEvidence } from "../../guide/evidence";
-import { GuideSchema } from "../../guide/schema";
+import { GuideSchema, type Guide } from "../../guide/schema";
 import { CompilerOutputSchema, compileGuide } from "../../guide/compile";
+import { AnalysisDraftSchema, type AnalysisDraft } from "../../guide/draft";
+import { classifyError, type Cleanup } from "../../guide/diagnostics";
 import { TeachError, TeachStageError, safeError } from "../teach/security";
 export const PendingGuideSourceSchema = z
   .strictObject({
@@ -145,6 +147,15 @@ export async function prepareGuideSource(
       );
     if (error instanceof StructuredResponseError)
       Object.assign(failure, { diagnostic: error.diagnostic });
+    const preparedCleanup: Cleanup =
+      cleanup === "Temporary upload deleted." ? "deleted" : "expiry_fallback";
+    Object.assign(failure, {
+      analysis: {
+        classification: classifyError(error, "model_output"),
+        cleanup: preparedCleanup,
+        elapsedMs: null,
+      },
+    });
     throw failure;
   }
 }
@@ -171,14 +182,11 @@ export async function analyseGuide(
   const upload = source ?? (await uploadLesson(client, video, audio, signal));
   let stage = "Finding objects";
   let deletionAttempted = false;
+  let selections: Selection[] = [];
   try {
     progress("discover", "Finding the objects and their appearances…");
-    let selections: Selection[],
-      automatic: Awaited<ReturnType<typeof discoverGuideComponents>> | null =
-        null;
-    let sourcePoints:
-      | { x: number; y: number; label?: "negative" }[][][]
-      | undefined;
+    let automatic: Awaited<ReturnType<typeof discoverGuideComponents>> | null =
+      null;
     let sourceAnchors: Selection[][] | undefined;
     if (manual) selections = manual;
     else {
@@ -215,24 +223,10 @@ export async function analyseGuide(
           progress("discover", "Checking precise object positions…", details),
       );
       automatic = proposals;
-      // Opaque large-part location points remain proposals, not observations. Small/transparent/reflective
-      // parts have demonstrated foreground errors; those get box-only video prompts unless SAM confirms them.
-      sourcePoints = exact.anchors.map((views, index) =>
-        views.map((view) => {
-          const profile = proposals.profiles.find(
-            (p) => p.objectId === exact.selections[index].id,
-          );
-          const box = view.selection.mark;
-          const size = upload.lesson.media.info.video!;
-          return profile?.material === "opaque" &&
-            box.kind === "box" &&
-            ((box.right - box.left) * (box.bottom - box.top)) /
-              (size.width * size.height) >=
-              0.04
-            ? view.points
-            : [];
-        }),
-      );
+      // Automatic points can contradict a correct extent (especially a container
+      // surrounding its contents). The owned-frame comparison measured 0.922
+      // box-only versus 0.824 with points. Keep automatic prompts box-only;
+      // explicit creator point marks still use the manual path.
       sourceAnchors = exact.anchors.map((views) =>
         views.map((view) => view.selection),
       );
@@ -316,7 +310,6 @@ export async function analyseGuide(
             view.frame === part.frame ? closeups.get(part.id) : undefined;
           return {
             selection: closeup?.selection ?? view,
-            points: closeup?.points,
             concept: proposals.selections.find(
               (proposal) => proposal.id === part.id,
             )!.concept,
@@ -377,7 +370,6 @@ export async function analyseGuide(
               ) ?? object.views[0];
           selections[index] = preferred.selection;
           sourceAnchors[index] = object.views.map((view) => view.selection);
-          sourcePoints[index] = object.views.map((view) => [view.point]);
         }
       }
       progress(
@@ -397,7 +389,6 @@ export async function analyseGuide(
             upload.fileId,
             sourceAnchors ?? selections.map((selection) => [selection]),
             upload.lesson.media,
-            sourcePoints,
           )
         : guideSelectionRequest(upload.fileId, selections, upload.lesson.media),
       stream: true,
@@ -504,28 +495,23 @@ export async function analyseGuide(
       "Checking the proposed checklist against the action plan…",
       { draftProposal: raw },
     );
-    let guide;
+    let outcome: { guide: Guide } | { draft: AnalysisDraft };
     try {
       if (automatic?.actions) checkPlannedActions(raw, automatic.actions);
       const compiled = compileGuide(raw, context);
-      guide = GuideSchema.parse({
-        ...compiled,
-        source: {
-          ...compiled.source,
-          ...(intent ? { teachingIntent: intent } : {}),
-          tracking: sourceEvidence(tracking)
-            .filter((quality) =>
-              compiled.objects.some((object) => object.id === quality.objectId),
-            )
-            .map((quality) => ({
-              objectId: quality.objectId,
-              observedFrames: quality.observedFrames,
-              trustedFrames: quality.trustedFrames,
-              totalFrames: upload.lesson.media.frameTimesMs.length,
-              longestTrustedRun: quality.longestTrustedRun,
-            })),
-        },
-        objects: compiled.objects.map((object) => {
+      const trackingSummary = sourceEvidence(tracking)
+        .filter((quality) =>
+          compiled.objects.some((object) => object.id === quality.objectId),
+        )
+        .map((quality) => ({
+          objectId: quality.objectId,
+          observedFrames: quality.observedFrames,
+          trustedFrames: quality.trustedFrames,
+          totalFrames: upload.lesson.media.frameTimesMs.length,
+          longestTrustedRun: quality.longestTrustedRun,
+        }));
+      const withProfiles = <T extends { id: string }>(items: T[]) =>
+        items.map((object) => {
           const profile = automatic?.profiles.find(
             (p) => p.objectId === object.id,
           );
@@ -540,19 +526,51 @@ export async function analyseGuide(
                 },
               }
             : object;
-        }),
-      });
+        });
+      const enrichedSource = {
+        ...compiled.source,
+        ...(intent ? { teachingIntent: intent } : {}),
+        tracking: trackingSummary,
+      };
+      if ("draftVersion" in compiled) {
+        outcome = {
+          draft: AnalysisDraftSchema.parse({
+            ...compiled,
+            source: enrichedSource,
+            objects: withProfiles(compiled.objects),
+          }),
+        };
+      } else {
+        outcome = {
+          guide: GuideSchema.parse({
+            ...compiled,
+            source: enrichedSource,
+            objects: withProfiles(compiled.objects),
+          }),
+        };
+      }
     } catch (e) {
-      throw new TeachError(
+      const failure = new TeachError(
         422,
         e instanceof Error && e.name !== "ZodError"
           ? e.message
           : "The proposed guide has malformed rules or source evidence.",
       );
+      Object.assign(failure, {
+        modelIssues:
+          e instanceof z.ZodError
+            ? e.issues
+                .slice(0, 16)
+                .map((issue) =>
+                  (issue.path.join(".") || "(root)").slice(0, 200),
+                )
+            : [],
+      });
+      throw failure;
     }
     deletionAttempted = true;
     await deleteLessonFile(client, upload.fileId);
-    return { guide, context };
+    return { ...outcome, context };
   } catch (error) {
     let cleanup =
       "Immediate deletion was not confirmed; the requested one-hour expiry remains the fallback.";
@@ -571,6 +589,20 @@ export async function analyseGuide(
     );
     if (error instanceof StructuredResponseError)
       Object.assign(failure, { diagnostic: error.diagnostic });
+    const attachedCleanup: Cleanup =
+      cleanup === "Temporary upload deleted." ? "deleted" : "expiry_fallback";
+    Object.assign(failure, {
+      analysis: {
+        classification: classifyError(error, "model_output"),
+        cleanup: attachedCleanup,
+        elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        objectIds: selections.map((s) => s.id).slice(0, 6),
+        frames: selections.slice(0, 12).map((s) => ({
+          frame: s.frame,
+          timestampMs: upload.lesson.media.frameTimesMs[s.frame] ?? null,
+        })),
+      },
+    });
     throw failure;
   }
 }

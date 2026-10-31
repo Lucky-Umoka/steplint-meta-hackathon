@@ -87,6 +87,9 @@ export function changeMetric(
   before: GuideObservation,
   after: GuideObservation,
 ): number | null {
+  // Relationship guides use their explicitly versioned observer/evaluator.
+  // They must never fall through to a displacement metric.
+  if (step.condition.kind === "visual_relation") return null;
   const a = get(before, step.condition.objectId),
     b = get(after, step.condition.objectId);
   if (!clear(a) || !clear(b)) return null;

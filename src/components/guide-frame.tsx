@@ -11,6 +11,26 @@ export default function GuideFrame({
   objectIds?: string[];
 }) {
   const image = guide.images.find((i) => i.frame === frame)?.image;
+  const relationBoxes =
+    guide.relationEvidence
+      ?.filter((f) => f.frame === frame)
+      .flatMap((f) =>
+        f.readings.flatMap((r) => {
+          const step = guide.steps.find((s) => s.id === r.stepId);
+          if (!step || r.visibility !== "clear") return [];
+          return [
+            { objectId: step.condition.objectId, box: r.objectBox },
+            { objectId: step.condition.anchorId, box: r.anchorBox },
+          ].flatMap((o) =>
+            o.box && o.objectId
+              ? [{ frame, objectId: o.objectId, box: o.box }]
+              : [],
+          );
+        }),
+      ) ?? [];
+  const geometry = guide.relationPlan
+    ? [...new Map(relationBoxes.map((b) => [b.objectId, b])).values()]
+    : guide.geometry;
   return (
     <figure className="overflow-hidden rounded-xl border border-slate-200 bg-white">
       <div className="border-b px-3 py-2 text-sm font-semibold">
@@ -31,7 +51,7 @@ export default function GuideFrame({
             width={guide.source.width}
             height={guide.source.height}
           />
-          {guide.geometry
+          {geometry
             .filter(
               (g) =>
                 g.frame === frame &&

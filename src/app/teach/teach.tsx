@@ -24,6 +24,12 @@ import {
 } from "@/guide/storage";
 import { newRevision } from "@/guide/versioning";
 import { SourceFrameRequestSchema } from "@/guide/source-stages";
+import { AnalysisDraftSchema, type AnalysisDraft } from "@/guide/draft";
+import {
+  StreamErrorEventSchema,
+  type DiagnosticBundle,
+} from "@/guide/diagnostics";
+import DraftRepair from "./draft-repair";
 import { frameImage } from "@/teach/media";
 import { prepareGuideImages } from "@/guide/images";
 import { readAppJson } from "@/teach/api-response";
@@ -43,6 +49,7 @@ export default function Teach() {
     [prepared, setPrepared] = useState<PreparedLesson | null>(null),
     [preview, setPreview] = useState(""),
     [intent, setIntent] = useState(""),
+    [relationshipMode, setRelationshipMode] = useState(false),
     [consent, setConsent] = useState(false),
     [marks, setMarks] = useState<Selection[]>([]);
   const [guide, setGuide] = useState<Guide | null>(null),
@@ -55,6 +62,8 @@ export default function Teach() {
     [stage, setStage] = useState(""),
     [message, setMessage] = useState(""),
     [error, setError] = useState(""),
+    [repairDraft, setRepairDraft] = useState<AnalysisDraft | null>(null),
+    [diagnostic, setDiagnostic] = useState<DiagnosticBundle | null>(null),
     [saved, setSaved] = useState<GuideArtifact | null>(null),
     [library, setLibrary] = useState<SavedGuide[]>([]),
     [restoring, setRestoring] = useState(true);
@@ -173,6 +182,8 @@ export default function Teach() {
     setConsent(false);
     setMarks([]);
     setError("");
+    setRepairDraft(null);
+    setDiagnostic(null);
     setStage("");
     if (clip.current) URL.revokeObjectURL(clip.current);
     clip.current = "";
@@ -188,8 +199,14 @@ export default function Teach() {
     latch.current = true;
     setBusy(true);
     setError("");
+    setRepairDraft(null);
+    setDiagnostic(null);
     setStage("transcribe");
     setMessage("Uploading once and listening to your lesson…");
+    const endpoint =
+      relationshipMode && !marks.length
+        ? "/api/teach/guide/relations"
+        : "/api/teach/guide/analyse";
     const controller = new AbortController();
     request.current = controller;
     let pendingSource: z.infer<typeof SourceFrameRequestSchema> | null = null;
@@ -207,7 +224,7 @@ export default function Teach() {
           "Choose a shorter recording that fits the lesson upload limit.",
         );
 
-      const response = await fetch("/api/teach/guide/analyse", {
+      const response = await fetch(endpoint, {
         method: "POST",
         body,
         signal: controller.signal,
@@ -235,8 +252,11 @@ export default function Teach() {
             message: z.string().optional(),
           })
           .parse(raw);
-        if (header.type === "error")
+        if (header.type === "error") {
+          const parsed = StreamErrorEventSchema.safeParse(raw);
+          setDiagnostic(parsed.success ? parsed.data.diagnostic : null);
           throw Error(header.message ?? "Lesson analysis stopped.");
+        }
         if (header.type === "progress") {
           setStage(header.stage ?? "");
           setMessage(header.message ?? "Analysing…");
@@ -256,25 +276,46 @@ export default function Teach() {
             );
         }
         if (header.type === "draft") {
-          const result = z
+          const resolved = z
             .object({
               guide: GuideSchema,
               token: z.string(),
               uploadDeleted: z.literal(true),
             })
-            .parse(raw);
-          setStage("images");
-          setMessage("Preparing your labelled reference images…");
-          const next = await prepareGuideImages(
-            result.guide,
-            prepared.video,
-            controller.signal,
-          );
-          setGuide(next);
-          setToken(result.token);
-          setPrevious(null);
-          setReviewed([]);
-          setGoalReviewed(false);
+            .safeParse(raw);
+          if (resolved.success) {
+            setStage("images");
+            setMessage("Preparing your labelled reference images…");
+            const next = await prepareGuideImages(
+              resolved.data.guide,
+              prepared.video,
+              controller.signal,
+            );
+            setGuide(next);
+            setToken(resolved.data.token);
+            setPrevious(null);
+            setReviewed([]);
+            setGoalReviewed(false);
+            setRepairDraft(null);
+            setDiagnostic(null);
+            setStage("review");
+            setMessage("");
+            done = true;
+            return;
+          }
+          const unresolved = z
+            .object({
+              draft: AnalysisDraftSchema,
+              token: z.null(),
+              uploadDeleted: z.literal(true),
+            })
+            .safeParse(raw);
+          if (!unresolved.success)
+            throw Error(
+              "The returned guide was invalid. No success was assumed.",
+            );
+          setRepairDraft(unresolved.data.draft);
+          setDiagnostic(null);
           setStage("review");
           setMessage("");
           done = true;
@@ -325,7 +366,7 @@ export default function Teach() {
         const continuation = new FormData();
         continuation.append("source", source.token);
         continuation.append("frames", JSON.stringify(frames));
-        const nextResponse = await fetch("/api/teach/guide/analyse", {
+        const nextResponse = await fetch(endpoint, {
           method: "POST",
           body: continuation,
           signal: controller.signal,
@@ -352,7 +393,7 @@ export default function Teach() {
         cleanup.append("discard", "true");
         try {
           await readAppJson(
-            await fetch("/api/teach/guide/analyse", {
+            await fetch(endpoint, {
               method: "POST",
               body: cleanup,
             }),
@@ -445,7 +486,7 @@ export default function Teach() {
     goalReviewed &&
     !!reviewer.trim();
   const stageNames = ["Record", "Build", "Review", "Save"];
-  const active = saved ? 3 : guide ? 2 : busy ? 1 : 0;
+  const active = saved ? 3 : guide ? 2 : busy || repairDraft ? 1 : 0;
   return (
     <Workspace mode="teach">
       <div className="mx-auto max-w-6xl">
@@ -622,6 +663,17 @@ export default function Teach() {
           </>
         ) : (
           <>
+            {repairDraft && (
+              <div className="mb-6">
+                <DraftRepair
+                  draft={repairDraft}
+                  video={prepared?.video}
+                  busy={busy}
+                  onRetry={() => void analyse()}
+                  onDiscard={() => void reset()}
+                />
+              </div>
+            )}
             {!prepared ? (
               <>
                 <LessonCapture onPrepared={accept} />
@@ -687,6 +739,21 @@ export default function Teach() {
                         onChange={(event) => setIntent(event.target.value)}
                       />
                     </label>
+                    <label className="my-4 flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={relationshipMode}
+                        onChange={(e) => {
+                          setRelationshipMode(e.target.checked);
+                          setConsent(false);
+                        }}
+                      />
+                      <span>
+                        Verify visible relationships (opening, removal,
+                        placement and alignment). Experimental: review each
+                        starting state and result before approving.
+                      </span>
+                    </label>
                     <ManualMarks
                       video={prepared.video}
                       media={prepared.media}
@@ -703,7 +770,9 @@ export default function Teach() {
                         I previewed this lesson and approve{" "}
                         {marks.length
                           ? "one Voice, one SAM and one Spark"
-                          : "one Voice, up to seven SAM and up to ten Spark"}{" "}
+                          : relationshipMode
+                            ? "one Voice and up to nine Spark"
+                            : "one Voice, up to seven SAM and up to ten Spark"}{" "}
                         request{marks.length ? " each" : "s"}. No automatic
                         retries.
                       </span>
@@ -778,6 +847,21 @@ export default function Teach() {
             <p role="alert" className="mt-3 text-red-900">
               {error}
             </p>
+            {diagnostic && (
+              <>
+                <p className="mt-2 text-sm text-slate-600">
+                  Reference {diagnostic.analysisId.slice(0, 8)} ·{" "}
+                  {diagnostic.stageLabel} · {diagnostic.failureClass}/
+                  {diagnostic.code}
+                </p>
+                <details className="mt-2 text-sm text-slate-600">
+                  <summary>Diagnostic details</summary>
+                  <pre className="mt-2 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
+                    {JSON.stringify(diagnostic, null, 2)}
+                  </pre>
+                </details>
+              </>
+            )}
             <button className="mt-3" onClick={() => setError("")}>
               Dismiss
             </button>

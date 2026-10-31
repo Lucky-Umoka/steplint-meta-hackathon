@@ -157,3 +157,29 @@ One owner-approved MP4 upload, one sam-3.1 video request (prompt selected from a
 - Image seed checks are optional refinements for automatic video grounding, not procedural observations. Rejected checks return no mask/point; location proposals may still guide the documented multi-frame SAM video call. Final continuous high-confidence geometry, ordered action checks and human review remain unchanged. This avoids equating an image preflight rejection with proof the video cannot be tracked.
 
 - Trial 4 exposed identity drift from incidental still detections. Limit video anchors to declared per-object appearances; still inspect all relevant objects in selected images. Large opaque part location points may guide SAM as proposals, while demonstrated risky small/reflective/transparent guesses stay out unless confirmed. Only parsed video observations feed source verification.
+
+## Stage 1 repair: diagnostics and draft separation (2026-10-31)
+
+- Teach stream failures now carry a typed sanitized diagnostic bundle (`src/guide/diagnostics.ts`): correlation ID, stage, failure class/code, validation paths without values, documented provider status, frame/object references, elapsed time and upload-cleanup state. Creator messages stay authored-safe; raw exception text never reaches the browser. Non-stream JSON errors are byte-identical.
+- `compileGuide` returns an executable `Guide` or a reviewable `AnalysisDraft` (`src/guide/draft.ts`), never a lesson-destroying throw for missing structure. Metric-weak steps keep the existing Guide-with-blockers path; only structurally missing evidence (no geometry, bad intervals/refs/order) becomes a draft. Approval explicitly rejects drafts. No evidence threshold was changed.
+- Verified offline only: 305 unit tests, typecheck, lint, format check and isolated production build. No live Meta request was made for this change; real-recording acceptance remains pending.
+
+## Draft failure attribution follow-up (2026-10-31)
+
+- The first live run against the Stage 1 repair returned a reviewable draft (5 of 6 objects tracked; tray best 0.841) with all five steps unsupported. Code inspection confirmed this is genuine hand-occlusion discontinuity, not a counting bug: SAM emits samples only for segmented frames and the compiler requires every interval frame at ≥0.90.
+- Unresolved draft steps now record failing frames (frame, timestamp, missing/low-score, first 60 plus true total), unobserved endpoints and absent result objects. The repair view shows each step's start/change/result interval. No evidence policy or threshold was changed; weak-but-complete evidence still returns a guide with unsupported steps.
+- Verified offline only: 309 unit tests plus typecheck, lint, format check and isolated production build. No threshold was lowered and no gap-bridging was introduced; the witness contract for occluded actions remains future work.
+
+## Live trial round 5, trial 1 (2026-10-31)
+
+- Owner granted five live Teach trials; the manual baseline run is uncharged. Ledger: `.media-lab/repair-round5/ledger.json` (cap 5, trial 1 recorded failed).
+- Trial 1 ran the owned clip (sha 455dd049, 2.1 MB, 223 frames) through the direct V2 pipeline: 28 model calls (1 Files, 17 SAM/video Responses posts, 10 Spark creates), maxRetries 0, no fallbacks, 188.6 s, upload deleted. A browser-driven run was impossible (agent-sandbox chromium cannot reach any local server; Next cannot enumerate interfaces unsandboxed-only) so the identical paid-call path ran in Node with ffmpeg-extracted source frames (a substitution the earlier FFmpeg audit supports).
+- Outcome: reviewable draft, approval not reached, Practice not reached. Tray best 0.796 (need 0.90). All six steps unsupported. New attribution data shows: per-object clean runs exist but sit outside the action intervals (box clean 101–222 while its step spans 21–71); the tray poisons every interval it touches; s5's intervals genuinely overlap (cover placed 154–161 while screwdriver taken 142–159), which sequential steps cannot represent. Billing was not retrieved. Four trials remain.
+
+## Attribution completion, offline only (2026-10-31)
+
+- `no_measurable_change` is now three typed reasons: `metric_unavailable` (null, with per-dependency endpoint frames tagged by object id, covering anchors as well as primary objects), `insufficient_change` (measured below range, value recorded), `implausible_change` (measured above range, value recorded). Same 0.15/12 bands; no threshold changed. Guide path behavior is byte-identical (codes stripped as before).
+- Failing frames are sorted in time order across involved objects; repair UI shows friendly object labels instead of component ids.
+- Synthetic fixtures added for anchor-endpoint failure, insufficient vs implausible bands, time-ordered multi-object frames, valid adjacency (no false overlap flag) and draft approval rejection.
+- Verified offline only: 314 unit tests plus typecheck, lint, format check and isolated production build. No live Meta request, no commits, no staging changes. Access-token auth, approval signatures, storage and unrelated UI untouched. Round-5 ledger unchanged at 1 of 5.
+- Remaining, explicitly out of scope: opening/exposure condition semantics (needs Teach+Practice contract together), occlusion witness/identity correspondence, targeted reanalysis UI, Guide-blockers detail, physical-camera acceptance.

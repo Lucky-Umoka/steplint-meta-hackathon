@@ -72,6 +72,7 @@ if (
     "repair-round3",
     "repair-round4",
     "repair-followup",
+    "repair-round5",
   ].includes(batch)
 )
   throw Error("Unknown approved trial batch.");

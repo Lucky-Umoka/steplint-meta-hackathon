@@ -1,5 +1,6 @@
 import "server-only";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { boundedBody, responseError } from "../teach/http";
 import {
   authorize,
@@ -9,8 +10,9 @@ import {
   TeachError,
 } from "../teach/security";
 import { createMetaClient } from "../meta/client";
-import { ProviderDiagnosticSchema } from "./structured";
 import { NativeFramesSchema } from "./discovery";
+import { buildStreamErrorEvent } from "../../guide/diagnostics";
+import { looksLikeDraft } from "../../guide/draft";
 import { validateJpeg } from "./jpeg";
 import {
   analyseGuide,
@@ -144,8 +146,9 @@ export async function analyse(request: Request) {
       (preparing !== "true" || form.getAll("prepare").length !== 1 || manual)
     )
       throw new TeachError(400, "Invalid source preparation request.");
+    const analysisId = randomUUID();
     if (preparing === "true")
-      return sourceStream(request, async (signal, send) => {
+      return sourceStream(request, analysisId, async (signal, send) => {
         const source = await prepareGuideSource(
           createMetaClient(),
           video,
@@ -200,30 +203,38 @@ export async function analyse(request: Request) {
               nativeFrames,
               intent,
             );
-            send({
-              type: "draft",
-              guide: result.guide,
-              tracking: result.context.tracking,
-              token: seal(
-                result.guide,
-                "guide-review-v2",
-                owner,
-                24 * 60 * 60 * 1000,
-              ),
-              uploadDeleted: true,
-            });
+            if ("draft" in result)
+              send({
+                type: "draft",
+                draft: result.draft,
+                tracking: result.context.tracking,
+                token: null,
+                uploadDeleted: true,
+              });
+            else
+              send({
+                type: "draft",
+                guide: result.guide,
+                tracking: result.context.tracking,
+                token: seal(
+                  result.guide,
+                  "guide-review-v2",
+                  owner,
+                  24 * 60 * 60 * 1000,
+                ),
+                uploadDeleted: true,
+              });
           } catch (e) {
             const response = responseError(e);
             const error = (await response.json()) as { error: string };
-            const diagnostic =
-              e && typeof e === "object" && "diagnostic" in e
-                ? ProviderDiagnosticSchema.safeParse(e.diagnostic)
-                : null;
-            send({
-              type: "error",
-              message: error.error,
-              ...(diagnostic?.success ? { diagnostic: diagnostic.data } : {}),
-            });
+            send(
+              buildStreamErrorEvent({
+                analysisId,
+                baseMessage: error.error,
+                error: e,
+                origin: "model_output",
+              }),
+            );
           } finally {
             try {
               output.close();
@@ -249,8 +260,9 @@ export async function analyse(request: Request) {
   }
 }
 type SourceSend = (event: unknown) => void;
-function sourceStream(
+export function sourceStream(
   request: Request,
+  analysisId: string,
   job: (signal: AbortSignal, send: SourceSend) => Promise<void>,
 ) {
   const abort = new AbortController(),
@@ -272,15 +284,14 @@ function sourceStream(
         } catch (error) {
           const response = responseError(error),
             body = (await response.json()) as { error: string };
-          const diagnostic =
-            error && typeof error === "object" && "diagnostic" in error
-              ? ProviderDiagnosticSchema.safeParse(error.diagnostic)
-              : null;
-          send({
-            type: "error",
-            message: body.error,
-            ...(diagnostic?.success ? { diagnostic: diagnostic.data } : {}),
-          });
+          send(
+            buildStreamErrorEvent({
+              analysisId,
+              baseMessage: body.error,
+              error,
+              origin: "model_output",
+            }),
+          );
         } finally {
           try {
             output.close();
@@ -340,7 +351,7 @@ async function resumeSource(request: Request, owner: string, form: FormData) {
     );
   for (const frame of frames)
     validateJpeg(frame.image, size.width, size.height);
-  return sourceStream(request, async (signal, send) => {
+  return sourceStream(request, randomUUID(), async (signal, send) => {
     const result = await analyseGuide(
       createMetaClient(),
       new Blob(),
@@ -353,18 +364,43 @@ async function resumeSource(request: Request, owner: string, form: FormData) {
       source.intent,
       source,
     );
-    send({
-      type: "draft",
-      guide: result.guide,
-      tracking: result.context.tracking,
-      token: seal(result.guide, "guide-review-v2", owner, 24 * 60 * 60 * 1000),
-      uploadDeleted: true,
-    });
+    if ("draft" in result)
+      send({
+        type: "draft",
+        draft: result.draft,
+        tracking: result.context.tracking,
+        token: null,
+        uploadDeleted: true,
+      });
+    else
+      send({
+        type: "draft",
+        guide: result.guide,
+        tracking: result.context.tracking,
+        token: seal(
+          result.guide,
+          "guide-review-v2",
+          owner,
+          24 * 60 * 60 * 1000,
+        ),
+        uploadDeleted: true,
+      });
   });
 }
 export async function approveGuide(request: Request) {
   try {
     const owner = authorize(request);
+    const raw = await readGuideJson(request);
+    if (
+      raw &&
+      typeof raw === "object" &&
+      "guide" in raw &&
+      looksLikeDraft((raw as { guide: unknown }).guide)
+    )
+      throw new TeachError(
+        422,
+        "This draft still has unresolved evidence. Fix the listed issue and reanalyse before approving.",
+      );
     const data = z
       .strictObject({
         guide: GuideSchema,
@@ -377,7 +413,7 @@ export async function approveGuide(request: Request) {
         reviewedStepIds: z.array(z.string()).max(12),
         goalReviewed: z.literal(true),
       })
-      .parse(await readGuideJson(request));
+      .parse(raw);
     const base = data.token
       ? GuideSchema.parse(unseal(data.token, "guide-review-v2", owner))
       : verifyArtifact(data.previous).guide;

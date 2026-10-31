@@ -128,10 +128,10 @@ export function openPerceptionSession(input: unknown) {
   sessions.set(id, session);
   return {
     token: seal({ id }, "perception-v2", "practice", 45 * 60 * 1000),
-    maximumModelRequests: 6,
+    maximumModelRequests: artifact.guide.relationPlan ? 12 : 6,
   };
 }
-export function acquirePerception(token: string) {
+export function acquirePerception(token: string, requestCost: 1 | 2 = 2) {
   const proof = unseal(token, "perception-v2", "practice");
   if (
     !proof ||
@@ -144,7 +144,8 @@ export function acquirePerception(token: string) {
   if (!s || s.expiresAt < Date.now())
     throw new TeachError(401, "Camera setup expired. Start the camera again.");
   if (s.busy) throw new TeachError(409, "The camera is already being checked.");
-  if (s.used + 2 > 6)
+  const cap = s.guide.relationPlan ? 12 : 6;
+  if (s.used + requestCost > cap)
     throw new TeachError(
       429,
       "This camera session reached its AI check limit. Pause and start a new session when ready.",
@@ -154,7 +155,7 @@ export function acquirePerception(token: string) {
     used: 0,
     expiresAt: Date.now() + 24 * 60 * 60 * 1000,
   };
-  if (total.used + 2 > 32)
+  if (total.used + requestCost > 32)
     throw new TeachError(
       429,
       "This guide reached the local test spending limit for today.",
@@ -171,7 +172,7 @@ export function acquirePerception(token: string) {
       s.busy = false;
     },
     remaining() {
-      return 6 - s.used;
+      return cap - s.used;
     },
   };
 }

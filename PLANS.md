@@ -6,6 +6,8 @@ Muse Code is the project's only coding agent and must follow [AGENTS.md](AGENTS.
 
 ## Current priority — Teach/Practice workflow and accuracy repair
 
+Read the [2026-10-31 investigation and next-chat handoff](docs/TEACH_PRACTICE_INVESTIGATION_HANDOFF.md) before further implementation or live requests. It records all 20 failed repair trials, two new owner-reported errors, current limitations, zoom analysis and proposed offline/live acceptance gates. It is a proposal, not an implemented fix or a new API-spending approval.
+
 **Status: owner authorized implementation on 2026-10-30 after plan completion; repair implemented with local checks, real-recording acceptance failed and remains pending.** The current learner experience and real-scene grounding have reported acceptance gaps despite prior passing automated checks. Historical phase completion records below do not close these gaps.
 
 - Read [docs/TEACH_PRACTICE_REPAIR_PLAN.md](docs/TEACH_PRACTICE_REPAIR_PLAN.md) for the scoped browser-first repair, intended files, lifecycle, automatic start, evidence/goal review, local guide library, versioning and sequential verification gates.

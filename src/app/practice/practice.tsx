@@ -50,6 +50,7 @@ import type { Pixels } from "@/practice/tracker";
 import { cameraNeedsAlignment } from "@/practice/camera-motion";
 import { sameWorkbenchView } from "@/practice/resume-alignment";
 import { useGuideCamera } from "./use-guide-camera";
+import RelationPractice from "./relation-practice";
 type View =
   | "off"
   | "permission"
@@ -1039,6 +1040,8 @@ export default function Practice() {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+  if (selected?.artifact.guide.relationPlan)
+    return <RelationPractice key={selected.key} row={selected} onBack={() => setSelected(null)} />;
   return (
     <Workspace mode="practice">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">

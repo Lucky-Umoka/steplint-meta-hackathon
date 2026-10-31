@@ -1,13 +1,42 @@
 import { z } from "zod";
 import { TranscriptSchema, RegionSchema } from "../teach/schema";
+import {
+  RelationRuleSchema,
+  RelationPlanSchema,
+  RelationFrameSchema,
+} from "./relations";
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/);
 const text = z.string().trim().min(1).max(1600);
+export const GuideIdSchema = id;
+export const GuideTextSchema = text;
 export const ImageSchema = z
   .string()
   .max(450_000)
   .regex(/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/);
 export const BoxSchema = RegionSchema;
 export type Box = z.infer<typeof BoxSchema>;
+export const GuideObjectProfileSchema = z.strictObject({
+  role: z.enum(["task_part", "reference"]),
+  material: z
+    .enum(["opaque", "transparent", "reflective", "unknown"])
+    .optional(),
+  namesHeard: z
+    .array(
+      z.strictObject({
+        name: z.string().min(1).max(80),
+        turnId: z.number().int().nonnegative(),
+      }),
+    )
+    .max(6),
+  appearances: z
+    .array(
+      z.strictObject({
+        frame: z.number().int().nonnegative(),
+        description: z.string().min(1).max(300),
+      }),
+    )
+    .max(3),
+});
 export const ObjectSchema = z.strictObject({
   id,
   label: z.string().min(1).max(100),
@@ -16,30 +45,7 @@ export const ObjectSchema = z.strictObject({
   sourceFrame: z.number().int().nonnegative(),
   sourceBox: BoxSchema,
   appearance: ImageSchema.nullable(),
-  profile: z
-    .strictObject({
-      role: z.enum(["task_part", "reference"]),
-      material: z
-        .enum(["opaque", "transparent", "reflective", "unknown"])
-        .optional(),
-      namesHeard: z
-        .array(
-          z.strictObject({
-            name: z.string().min(1).max(80),
-            turnId: z.number().int().nonnegative(),
-          }),
-        )
-        .max(6),
-      appearances: z
-        .array(
-          z.strictObject({
-            frame: z.number().int().nonnegative(),
-            description: z.string().min(1).max(300),
-          }),
-        )
-        .max(3),
-    })
-    .optional(),
+  profile: GuideObjectProfileSchema.optional(),
 });
 export const EvidenceSchema = z
   .strictObject({
@@ -60,13 +66,24 @@ export const EvidenceSchema = z
   );
 export const ConditionSchema = z
   .strictObject({
-    kind: z.enum(["movement", "separation"]),
+    kind: z.enum(["movement", "separation", "visual_relation"]),
     objectId: id,
     anchorId: id.nullable(),
     minimumChange: z.number().min(0.15).max(12),
     requiredVisibleAfter: z.array(id).max(6),
+    relation: RelationRuleSchema.optional(),
   })
   .superRefine((c, ctx) => {
+    if (
+      (c.kind === "visual_relation") !== !!c.relation ||
+      (c.kind === "visual_relation" &&
+        (!c.anchorId || c.anchorId === c.objectId))
+    )
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "Visual relations require their own explicit rule and reference.",
+      });
     if (c.kind === "separation" && (!c.anchorId || c.anchorId === c.objectId))
       ctx.addIssue({
         code: "custom",
@@ -89,9 +106,59 @@ export const GuideStepSchema = z.strictObject({
   uncertainties: z.array(text).max(8),
   supported: z.boolean(),
 });
+export const GuideCoverageSchema = z
+  .array(
+    z.strictObject({
+      instruction: text,
+      status: z.enum(["included", "outside_goal", "unresolved"]),
+      reason: text,
+    }),
+  )
+  .min(1)
+  .max(24);
+export const GuideSourceSchema = z.strictObject({
+  durationMs: z.number().positive().max(20500),
+  width: z.number().int().positive().max(1280),
+  height: z.number().int().positive().max(720),
+  frameTimesMs: z.array(z.number().int().nonnegative()).min(2).max(600),
+  transcript: TranscriptSchema,
+  teachingIntent: z.string().trim().min(1).max(400).optional(),
+  tracking: z
+    .array(
+      z.strictObject({
+        objectId: id,
+        observedFrames: z.number().int().nonnegative(),
+        trustedFrames: z.number().int().nonnegative(),
+        totalFrames: z.number().int().positive(),
+        longestTrustedRun: z.number().int().nonnegative(),
+      }),
+    )
+    .max(6)
+    .optional(),
+});
+export const GuideImagesSchema = z
+  .array(
+    z.strictObject({
+      frame: z.number().int().nonnegative(),
+      image: ImageSchema,
+    }),
+  )
+  .max(48);
+export const GuideGeometrySchema = z
+  .array(
+    z.strictObject({
+      frame: z.number().int().nonnegative(),
+      objectId: id,
+      box: BoxSchema,
+      confidence: z.number().min(0).max(1),
+    }),
+  )
+  .max(3600);
 export const GuideSchema = z
   .strictObject({
     schemaVersion: z.literal(2),
+    relationPlan: RelationPlanSchema.optional(),
+    relationEvidence: z.array(RelationFrameSchema).max(48).optional(),
     id: z.string().uuid(),
     revision: z.number().int().positive(),
     parentRevision: z.number().int().positive().nullable(),
@@ -102,57 +169,13 @@ export const GuideSchema = z
     initialInstruction: text,
     objects: z.array(ObjectSchema).min(1).max(6),
     steps: z.array(GuideStepSchema).min(1).max(12),
-    coverage: z
-      .array(
-        z.strictObject({
-          instruction: text,
-          status: z.enum(["included", "outside_goal", "unresolved"]),
-          reason: text,
-        }),
-      )
-      .min(1)
-      .max(24),
+    coverage: GuideCoverageSchema,
     goalFrame: z.number().int().nonnegative(),
     goalStepIds: z.array(id).min(1).max(12),
     goalSupported: z.boolean(),
-    source: z.strictObject({
-      durationMs: z.number().positive().max(20500),
-      width: z.number().int().positive().max(1280),
-      height: z.number().int().positive().max(720),
-      frameTimesMs: z.array(z.number().int().nonnegative()).min(2).max(600),
-      transcript: TranscriptSchema,
-      teachingIntent: z.string().trim().min(1).max(400).optional(),
-      tracking: z
-        .array(
-          z.strictObject({
-            objectId: id,
-            observedFrames: z.number().int().nonnegative(),
-            trustedFrames: z.number().int().nonnegative(),
-            totalFrames: z.number().int().positive(),
-            longestTrustedRun: z.number().int().nonnegative(),
-          }),
-        )
-        .max(6)
-        .optional(),
-    }),
-    images: z
-      .array(
-        z.strictObject({
-          frame: z.number().int().nonnegative(),
-          image: ImageSchema,
-        }),
-      )
-      .max(48),
-    geometry: z
-      .array(
-        z.strictObject({
-          frame: z.number().int().nonnegative(),
-          objectId: id,
-          box: BoxSchema,
-          confidence: z.number().min(0).max(1),
-        }),
-      )
-      .max(3600),
+    source: GuideSourceSchema,
+    images: GuideImagesSchema,
+    geometry: GuideGeometrySchema,
     approval: z
       .strictObject({
         reviewer: z.string().trim().min(1).max(100),
@@ -165,6 +188,25 @@ export const GuideSchema = z
   })
   .superRefine((g, ctx) => {
     const fail = (message: string) => ctx.addIssue({ code: "custom", message });
+    if (g.relationPlan) {
+      if (
+        g.methodId !== "visual-relations-v1" ||
+        g.relationPlan.steps.length !== g.steps.length ||
+        g.steps.some((s, i) => {
+          const p = g.relationPlan!.steps[i];
+          return (
+            s.condition.kind !== "visual_relation" ||
+            p.id !== s.id ||
+            p.objectId !== s.condition.objectId ||
+            p.anchorId !== s.condition.anchorId ||
+            p.before !== s.condition.relation?.before ||
+            p.after !== s.condition.relation?.after
+          );
+        })
+      )
+        fail("Relationship rules must match their reviewed perception plan.");
+    } else if (g.steps.some((s) => s.condition.kind === "visual_relation"))
+      fail("A relationship guide needs its explicit perception plan.");
     const unique = (xs: string[]) => new Set(xs).size === xs.length;
     if (
       !unique(g.objects.map((o) => o.id)) ||
@@ -292,7 +334,7 @@ export function guideBlockers(g: Guide): string[] {
     );
   g.steps.forEach((s, i) => {
     if (!s.supported)
-      issues.push(`Step ${i + 1} needs clearer tracked movement.`);
+      issues.push(g.relationPlan ? `Step ${i + 1} needs a clearly observed starting relationship and result.` : `Step ${i + 1} needs clearer tracked movement.`);
     for (const f of [
       s.evidence.startFrame,
       s.evidence.changeFrame,

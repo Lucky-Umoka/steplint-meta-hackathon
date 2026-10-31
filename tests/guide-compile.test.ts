@@ -92,6 +92,7 @@ function output(): z.infer<typeof CompilerOutputSchema> {
 }
 it("compiles actual frame evidence and derives a measurable condition without approval", () => {
   const g = compileGuide(output(), source());
+  if ("draftVersion" in g) throw new Error("Expected an executable guide.");
   expect(g.approval).toBeNull();
   expect(g.steps[0].supported).toBe(true);
   expect(g.steps[0].condition.minimumChange).toBeGreaterThan(0.15);
@@ -114,9 +115,12 @@ it("rejects invented object identities, nonexistent frames and made-up turn refe
   const raw = output();
   raw.objects[0].id = "invented";
   expect(() => compileGuide(raw, source())).toThrow("untracked");
+  // An unusable step interval no longer destroys the whole lesson: the step
+  // stays visible in a reviewable draft that approval always rejects.
   const time = output();
   time.steps[0].endFrame = 1000;
-  expect(() => compileGuide(time, source())).toThrow("source times");
+  const draft = compileGuide(time, source());
+  expect("draftVersion" in draft).toBe(true);
   const speech = output();
   speech.steps[0].turnIds = [10];
   expect(() => compileGuide(speech, source())).toThrow();
@@ -178,6 +182,7 @@ it("uses the first actual step before-state rather than a face/setup frame at re
     (sample) => sample.frame >= 3,
   );
   const guide = compileGuide(raw, context);
+  if ("draftVersion" in guide) throw new Error("Expected an executable guide.");
   expect(guide.objects[0].initiallyVisible).toBe(true);
   expect(guide.steps[0].evidence.startMs).toBe(300);
   expect(guide.steps[0].supported).toBe(true);

@@ -65,9 +65,12 @@ export function requireSameOrigin(request: Request) {
   if (origin && !allowed.has(origin)) throw new TeachError(403, "Cross-origin Teach requests are not allowed.");
 }
 export class TeachStageError extends TeachError {
+  readonly stage: string;
   constructor(stage: string, error: unknown) {
     const safe = safeError(error);
     super(safe.status, `${stage}: ${safe.message}`);
+    this.stage = stage;
+    this.cause = error;
   }
 }
 export function authorize(request: Request) {
