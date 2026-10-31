@@ -307,6 +307,15 @@ export function feedGuideObservation(s: GuideSession, input: unknown) {
 
   return s.events.slice(offset);
 }
+/**
+ * First unverified step with forming but unconfirmed evidence. Provisional
+ * only: a candidate is never a verdict and must not advance or fail a step.
+ */
+export function hasCandidate(s: GuideSession): string | null {
+  const active = s.guide.steps.find((step) => s.steps[step.id] !== "verified");
+  if (!active || !s.candidates[active.id]) return null;
+  return active.id;
+}
 export function retryGuide(s: GuideSession, at: number) {
   const failed = s.guide.steps.findIndex(
     (step) =>

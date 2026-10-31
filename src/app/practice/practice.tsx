@@ -13,12 +13,14 @@ import {
   beginGuide,
   createGuideSession,
   feedGuideObservation,
+  hasCandidate,
   recoverReturnedObjects,
   shouldAutoStart,
   changeMetric,
   type GuideSession,
   type PracticeEvent,
 } from "@/guide/evaluator";
+import PracticeAlert from "./PracticeAlert";
 import {
   PerceptionResultSchema,
   PerceptionSessionSchema,
@@ -60,6 +62,34 @@ type View =
   | "practice"
   | "paused"
   | "complete";
+import { sameDetections, percentile } from "@/practice/detections";
+function TimingPanel({
+  latencies,
+  camera,
+}: {
+  latencies: { eventId: string; evalMs: number; paintMs: number }[];
+  camera: { frames: number; lastIntervalMs: number; avgProcessMs: number };
+}) {
+  const evals = latencies.map((l) => l.evalMs);
+  const paints = latencies.map((l) => l.paintMs);
+  return (
+    <div className="mt-2 space-y-1">
+      <p>
+        Camera frames processed: {camera.frames} · last interval{" "}
+        {camera.lastIntervalMs} ms · avg process {camera.avgProcessMs} ms.
+      </p>
+      <p>
+        Local evaluator: median {percentile(evals, 50)} ms · p95{" "}
+        {percentile(evals, 95)} ms over {evals.length} warnings.
+      </p>
+      <p>
+        Warning paint: median {percentile(paints, 50)} ms · p95{" "}
+        {percentile(paints, 95)} ms. Paint is measured from React state to
+        pixels; it excludes camera sampling and model time.
+      </p>
+    </div>
+  );
+}
 const fingerprint = (image: Pixels) => {
   const values = [];
   for (let y = 0; y < 12; y++)
@@ -89,7 +119,8 @@ export default function Practice() {
     [testMode, setTestMode] = useState(false),
     [autoStart, setAutoStart] = useState(true),
     [remaining, setRemaining] = useState(8),
-    [latestEvent, setLatestEvent] = useState<PracticeEvent | null>(null);
+    [latestEvent, setLatestEvent] = useState<PracticeEvent | null>(null),
+    [watching, setWatching] = useState<string | null>(null);
   const [perceptionHelp, setPerceptionHelp] = useState("");
   const resumeContext = useRef<{
     background: AppearanceTrack | null;
@@ -124,7 +155,11 @@ export default function Practice() {
     stepChecked = useRef(-1),
     history = useRef<{ at: number; prepared: TrackingFrame }[]>([]),
     sequence = useRef(0),
-    latencies = useRef<{ eventId: string; ms: number }[]>([]),
+    latencies = useRef<{ eventId: string; evalMs: number; paintMs: number }[]>(
+      [],
+    ),
+    watchingRef = useRef<string | null>(null),
+    detectionsRef = useRef<ObjectDetection[]>([]),
     currentView = useRef<View>("off"),
     voiceRef = useRef(true),
     lastSaid = useRef(""),
@@ -207,6 +242,7 @@ export default function Practice() {
         baseline: { ...current.baseline },
       };
     clockPhase(clock.current, performance.now(), "paused");
+    clearWatch();
     if (!current?.finished) saveTimingResult(false);
     runGeneration.current++;
     request.current?.abort();
@@ -214,7 +250,7 @@ export default function Practice() {
     tracks.current = [];
     history.current = [];
     pixels.current = null;
-    setDetections([]);
+    showDetections([]);
     readyBefore.current = null;
     pendingReady.current = false;
     if (session.current) {
@@ -233,7 +269,16 @@ export default function Practice() {
     );
     return i < 0 ? s.guide.steps.length - 1 : i;
   }
-  function applyEvents(events: PracticeEvent[]) {
+  function showDetections(next: ObjectDetection[]) {
+    if (sameDetections(detectionsRef.current, next)) return;
+    detectionsRef.current = next;
+    setDetections(next);
+  }
+  function clearWatch() {
+    watchingRef.current = null;
+    setWatching(null);
+  }
+  function applyEvents(events: PracticeEvent[], evalMs = 0) {
     const s = session.current;
     if (!s || !events.length) return;
     setStates({ ...s.steps });
@@ -251,12 +296,15 @@ export default function Practice() {
             ),
           );
       setMessage(event.message);
+      // SpeechSynthesis queues asynchronously and never blocks the paint below.
       speak(event.message);
+      const painted = performance.now();
       requestAnimationFrame(() =>
         requestAnimationFrame(() =>
           latencies.current.push({
             eventId: event.id,
-            ms: Math.round(performance.now() - event.at),
+            evalMs: Math.round(evalMs * 10) / 10,
+            paintMs: Math.round((performance.now() - painted) * 10) / 10,
           }),
         ),
       );
@@ -280,7 +328,7 @@ export default function Practice() {
     if (s.finished) {
       history.current = [];
       pixels.current = null;
-      setDetections([]);
+      showDetections([]);
       clockPhase(clock.current, performance.now(), "complete");
       if (!recordedCompletion.current && selected) {
         recordedCompletion.current = true;
@@ -425,7 +473,7 @@ export default function Practice() {
         background.current = null;
         tracks.current = [];
         readyBefore.current = null;
-        setDetections([]);
+        showDetections([]);
         setView("setup");
         setMessage(
           "Point the camera at your work area and put the starting items in view.",
@@ -480,7 +528,7 @@ export default function Practice() {
         currentImage,
         found.filter((d) => d.box).map((d) => d.box!),
       );
-      setDetections(found);
+      showDetections(found);
       stepChecked.current = index;
       readyBefore.current = null;
       if (data.phase === "goal" && !s.running) {
@@ -612,7 +660,7 @@ export default function Practice() {
     }
     if (restartRequired.current) {
       clockPhase(clock.current, performance.now(), "verifying");
-      setDetections([]);
+      showDetections([]);
       return;
     }
     const aligned = !!background.current && quality.usable;
@@ -635,7 +683,7 @@ export default function Practice() {
           box: null,
           score: null,
         });
-    setDetections(found);
+    showDetections(found);
     const observation: GuideObservation = {
       id: `camera-${++sequence.current}`,
       timestampMs: Math.floor(now),
@@ -685,8 +733,17 @@ export default function Practice() {
         step.condition.objectId,
         ...(step.condition.anchorId ? [step.condition.anchorId] : []),
       ]);
-      applyEvents(recoverReturnedObjects(s, observation));
-      applyEvents(feedGuideObservation(s, observation));
+      const evalStarted = performance.now();
+      const recovered = recoverReturnedObjects(s, observation);
+      const fed = feedGuideObservation(s, observation);
+      const evalMs = performance.now() - evalStarted;
+      applyEvents(recovered, evalMs);
+      applyEvents(fed, evalMs);
+      const candidate = hasCandidate(s);
+      if (watchingRef.current !== candidate) {
+        watchingRef.current = candidate;
+        setWatching(candidate);
+      }
       if (s.finished) return;
       const active = s.guide.steps[currentIndex(s)];
       const needsNewStep = stepChecked.current !== currentIndex(s);
@@ -764,7 +821,9 @@ export default function Practice() {
             setMessage(step.instruction);
             speak(step.instruction);
             pendingReady.current = false;
-            applyEvents(feedGuideObservation(s, observation));
+            const beginEvalStarted = performance.now();
+            const beginFed = feedGuideObservation(s, observation);
+            applyEvents(beginFed, performance.now() - beginEvalStarted);
           } catch (e) {
             setMessage(
               e instanceof Error ? e.message : "Restore a clear starting view.",
@@ -849,9 +908,10 @@ export default function Practice() {
     setView("off");
     setError("");
     setMessage("");
-    setDetections([]);
+    showDetections([]);
     setLatestEvent(null);
     setShowGoal(false);
+    clearWatch();
   }
   async function start() {
     if (!selected || camera.requesting || camera.active) return;
@@ -1026,6 +1086,7 @@ export default function Practice() {
                 performance.now(),
               ),
               latencies: latencies.current,
+              camera: camera.getStats(),
             },
             null,
             2,
@@ -1168,12 +1229,20 @@ export default function Practice() {
                 </button>
               </div>
               <div className="space-y-3 border-b p-4">
-                <div
-                  aria-live="polite"
-                  className={`rounded-xl p-4 ${correction ? "bg-red-50 text-red-900" : view === "complete" ? "bg-emerald-50 text-emerald-900" : "bg-slate-50"}`}
-                >
-                  <p className="text-sm font-semibold">
-                    {correction
+                <PracticeAlert
+                  tone={
+                    correction
+                      ? "violation"
+                      : view === "complete"
+                        ? "complete"
+                        : needsClearView
+                          ? "uncertain"
+                          : watching && view === "practice"
+                            ? "watching"
+                            : "info"
+                  }
+                  title={
+                    correction
                       ? "Pause and correct"
                       : view === "complete"
                         ? "Goal reached"
@@ -1189,26 +1258,36 @@ export default function Practice() {
                                 ? "Ready when you are"
                                 : view === "off"
                                   ? "Start with your camera"
-                                  : "Getting ready"}
-                  </p>
-                  <p className="mt-1 text-lg font-medium">
-                    {correction ??
-                      (busy
+                                  : "Getting ready"
+                  }
+                  step={correction ? referenceTitle : undefined}
+                  body={
+                    correction ??
+                    (watching && view === "practice" && !correction
+                      ? "Checking movement — hold still."
+                      : busy
                         ? "Hold the part still and keep it in view while I locate it."
                         : perceptionHelp ||
                           (view === "practice"
                             ? step?.instruction
-                            : message || g.initialInstruction))}
-                  </p>
-                  {view === "practice" &&
-                    s?.steps[step?.id ?? ""] === "uncertain" &&
-                    !correction && (
-                      <p className="mt-2 text-sm text-amber-800">
-                        Keep the object in view. Restore this step’s starting
-                        view if the action was hidden.
-                      </p>
-                    )}
-                </div>
+                            : message || g.initialInstruction))
+                  }
+                />
+                {view === "practice" &&
+                  s?.steps[step?.id ?? ""] === "uncertain" &&
+                  !correction && (
+                    <p className="mt-2 text-sm text-amber-800">
+                      Keep the object in view. Restore this step’s starting view
+                      if the action was hidden.
+                    </p>
+                  )}
+                <details className="text-sm text-slate-500">
+                  <summary>Session timing</summary>
+                  <TimingPanel
+                    latencies={latencies.current}
+                    camera={camera.getStats()}
+                  />
+                </details>
                 <div className="flex flex-wrap gap-3">
                   {restartRequired.current && (
                     <button
@@ -1230,6 +1309,15 @@ export default function Practice() {
                       }}
                     >
                       Ready — start practice
+                    </button>
+                  )}
+                  {camera.active && view !== "paused" && (
+                    <button
+                      onClick={() =>
+                        pause("Practice paused. Your verified steps are kept.")
+                      }
+                    >
+                      Pause
                     </button>
                   )}
                   {camera.active && (

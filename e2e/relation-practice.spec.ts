@@ -252,7 +252,9 @@ test("automatically checks a wrong result, pulses correction, observes recovery 
     ),
   ).toBeVisible();
   await move(page, 170);
-  await expect(page.getByText("Goal reached", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("strong").filter({ hasText: "Goal reached" }),
+  ).toBeVisible();
   expect(calls).toBe(3);
   await page.getByRole("button", { name: "Stop camera" }).click();
   expect(
@@ -289,11 +291,15 @@ test("keeps automatic evidence capture alive during a delayed AI response", asyn
   await expect.poll(() => requests.length).toBe(1);
   await move(page, 180);
   await expect(page.getByText(/1 captured action waiting/)).toBeVisible();
-  await expect(page.getByText("Goal reached", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("strong").filter({ hasText: "Goal reached" }),
+  ).toHaveCount(0);
   release();
   await expect.poll(() => requests.length).toBe(2);
   expect(requests[1].frames[0].frame).toBeGreaterThanOrEqual(
     requests[0].frames[2].frame,
   );
-  await expect(page.getByText("Goal reached", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("strong").filter({ hasText: "Goal reached" }),
+  ).toBeVisible();
 });

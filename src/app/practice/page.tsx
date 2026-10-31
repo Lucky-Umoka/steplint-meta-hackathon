@@ -1,2 +1,4 @@
 import Practice from "./practice";
-export default function Page() { return <Practice />; }
+export default function Page() {
+  return <Practice />;
+}

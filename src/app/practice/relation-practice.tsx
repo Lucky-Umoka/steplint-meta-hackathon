@@ -26,6 +26,8 @@ import { cameraNeedsAlignment } from "@/practice/camera-motion";
 import { outsidePlacementTarget } from "@/practice/target-feedback";
 import { createSessionClock, clockPhase, timingSummary } from "@/guide/timing";
 import { useGuideCamera } from "./use-guide-camera";
+import PracticeAlert from "./PracticeAlert";
+import { percentile } from "@/practice/detections";
 
 import {
   MotionWindows,
@@ -70,7 +72,8 @@ export default function RelationPractice({
     [localWarning, setLocalWarning] = useState(false),
     [locating, setLocating] = useState(false),
     [queued, setQueued] = useState(0),
-    [latencyMs, setLatencyMs] = useState<number | null>(null);
+    [latencyMs, setLatencyMs] = useState<number | null>(null),
+    [checkHistory, setCheckHistory] = useState<number[]>([]);
   const session = useRef<RelationSession | null>(null),
     token = useRef(""),
     request = useRef<AbortController | null>(null),
@@ -101,11 +104,19 @@ export default function RelationPractice({
   useEffect(() => {
     voiceRef.current = voice;
   }, [voice]);
+  const lastSaid = useRef("");
   function say(text: string) {
-    if (voiceRef.current && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
-    }
+    // Speech queues asynchronously and never blocks paint; identical
+    // repeats are dropped so a held state speaks once.
+    if (!voiceRef.current || !("speechSynthesis" in window)) return;
+    if (
+      lastSaid.current === text &&
+      (window.speechSynthesis.speaking || window.speechSynthesis.pending)
+    )
+      return;
+    lastSaid.current = text;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
   }
   function pause(reason: string) {
     generation.current++;
@@ -443,7 +454,9 @@ export default function RelationPractice({
         })
         .parse(await readAppJson(response, "Camera observation"));
       if (gen !== generation.current) return;
-      setLatencyMs(performance.now() - startedAt);
+      const checkMs = performance.now() - startedAt;
+      setLatencyMs(checkMs);
+      setCheckHistory((h) => [...h.slice(-19), Math.round(checkMs)]);
       setRemaining(data.remainingModelRequests);
       setReadings(
         changedWhileChecking.current ? [] : data.window.frames[2].readings,
@@ -737,12 +750,20 @@ export default function RelationPractice({
                 >
                   Locate items again
                 </button>
-                <button
-                  disabled={busy || remaining <= 0}
-                  onClick={() => void checkCurrentView()}
-                >
-                  Check current view
-                </button>
+                <details>
+                  <summary>Troubleshoot</summary>
+                  <p className="mt-2 text-sm text-slate-600">
+                    Watching and verification run automatically. Use this only
+                    when the view looks settled but nothing is happening.
+                  </p>
+                  <button
+                    className="mt-2"
+                    disabled={busy || remaining <= 0}
+                    onClick={() => void checkCurrentView()}
+                  >
+                    Check current view
+                  </button>
+                </details>
                 <button
                   onClick={() =>
                     pause(
@@ -779,7 +800,9 @@ export default function RelationPractice({
               ? ` · ${queued} captured action${queued > 1 ? "s" : ""} waiting`
               : ""}
             {latencyMs !== null
-              ? ` · Last AI check: ${(latencyMs / 1000).toFixed(1)}s`
+              ? ` · Last AI check: ${(latencyMs / 1000).toFixed(1)}s (median ${(
+                  percentile(checkHistory, 50) / 1000
+                ).toFixed(1)}s over ${checkHistory.length})`
               : ""}
           </p>
           <p className="text-sm text-slate-600">
@@ -791,6 +814,26 @@ export default function RelationPractice({
           </p>
         </section>
         <aside className="space-y-4">
+          {(() => {
+            const failed = plan.steps.find((s) => states[s.id] === "violation");
+            if (finished)
+              return (
+                <PracticeAlert
+                  tone="complete"
+                  title="Goal reached"
+                  body="Every step and the final visible relationships were verified."
+                />
+              );
+            if (!failed) return null;
+            return (
+              <PracticeAlert
+                tone="violation"
+                title="Pause and correct"
+                step={failed.instruction}
+                body={failed.correction}
+              />
+            );
+          })()}
           <ol className="space-y-3">
             {guide.steps.map((s, i) => (
               <li key={s.id} className="rounded-xl border bg-white p-3">

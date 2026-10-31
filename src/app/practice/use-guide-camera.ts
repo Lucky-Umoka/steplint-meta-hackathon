@@ -95,36 +95,85 @@ export function useGuideCamera(
       height: c.height,
     };
   }, []);
+  const stats = useRef({ frames: 0, lastIntervalMs: 0, avgProcessMs: 0 });
+  const getStats = useCallback(() => ({ ...stats.current }), []);
   useEffect(() => {
     if (!active) return;
     let last = -1,
-      fresh = performance.now();
-    const timer = setInterval(() => {
-      const v = video.current;
-      if (!v) return;
+      fresh = performance.now(),
+      lastProcess = 0,
+      lastStamp = 0,
+      processing = false,
+      rvfc = 0,
+      raf = 0,
+      timer = 0,
+      stopped = false;
+    const tick = () => {
+      if (stopped) return;
+      const v = video.current,
+        now = performance.now();
+      if (!v) return schedule();
       if (v.readyState < 2 || v.currentTime === last) {
-        if (performance.now() - fresh > 1800) {
+        if (now - fresh > 1800) {
           callbacks.current.onPause(
             "The camera paused. Keep this tab open and restart when ready.",
           );
           stop();
         }
-        return;
+        return schedule();
       }
       last = v.currentTime;
-      fresh = performance.now();
-      const c = (surface.current ??= document.createElement("canvas"));
-      const scale = Math.min(1, 640 / v.videoWidth, 480 / v.videoHeight);
-      c.width = Math.max(1, Math.round(v.videoWidth * scale));
-      c.height = Math.max(1, Math.round(v.videoHeight * scale));
-      const context = c.getContext("2d", { willReadFrequently: true });
-      if (!context) return;
-      context.drawImage(v, 0, 0, c.width, c.height);
-      callbacks.current.onFrame(
-        context.getImageData(0, 0, c.width, c.height),
-        fresh,
-      );
-    }, 120);
+      fresh = now;
+      // Adaptive ~12fps target with an overlap guard: a slow tick never
+      // queues behind itself, and duplicate frames are never processed.
+      if (processing || now - lastProcess < 66) return schedule();
+      processing = true;
+      lastProcess = now;
+      const started = performance.now();
+      try {
+        const c = (surface.current ??= document.createElement("canvas"));
+        const scale = Math.min(1, 640 / v.videoWidth, 480 / v.videoHeight);
+        c.width = Math.max(1, Math.round(v.videoWidth * scale));
+        c.height = Math.max(1, Math.round(v.videoHeight * scale));
+        const context = c.getContext("2d", { willReadFrequently: true });
+        if (!context) return schedule();
+        context.drawImage(v, 0, 0, c.width, c.height);
+        callbacks.current.onFrame(
+          context.getImageData(0, 0, c.width, c.height),
+          fresh,
+        );
+        const elapsed = performance.now() - started,
+          s = stats.current;
+        s.frames++;
+        s.lastIntervalMs = lastStamp ? Math.round(now - lastStamp) : 0;
+        lastStamp = now;
+        s.avgProcessMs =
+          Math.round((s.avgProcessMs * (s.frames - 1) + elapsed) * 10) /
+          (s.frames * 10);
+      } finally {
+        processing = false;
+      }
+      schedule();
+    };
+    function schedule() {
+      if (stopped) return;
+      const v = video.current as
+        | (HTMLVideoElement & {
+            requestVideoFrameCallback?: (cb: () => void) => number;
+            cancelVideoFrameCallback?: (handle: number) => void;
+          })
+        | null;
+      if (v && typeof v.requestVideoFrameCallback === "function") {
+        rvfc = v.requestVideoFrameCallback(() => tick());
+        return;
+      }
+      if (typeof requestAnimationFrame === "function") {
+        raf = requestAnimationFrame(() => tick());
+        return;
+      }
+      timer = window.setTimeout(() => tick(), 80);
+    }
+    schedule();
     const hide = () => {
       if (document.hidden) {
         callbacks.current.onPause("Practice paused while this tab was hidden.");
@@ -133,7 +182,16 @@ export function useGuideCamera(
     };
     document.addEventListener("visibilitychange", hide);
     return () => {
-      clearInterval(timer);
+      stopped = true;
+      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+      const v = video.current as
+        | (HTMLVideoElement & {
+            cancelVideoFrameCallback?: (handle: number) => void;
+          })
+        | null;
+      if (rvfc && typeof v?.cancelVideoFrameCallback === "function")
+        v.cancelVideoFrameCallback(rvfc);
       document.removeEventListener("visibilitychange", hide);
     };
   }, [active, stop]);
@@ -144,5 +202,5 @@ export function useGuideCamera(
     },
     [],
   );
-  return { video, active, requesting, size, start, stop, capture };
+  return { video, active, requesting, size, start, stop, capture, getStats };
 }
