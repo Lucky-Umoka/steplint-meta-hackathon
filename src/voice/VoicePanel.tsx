@@ -46,7 +46,11 @@ export default function VoicePanel({ events }: { events: VoiceEvent[] }) {
                 ? "You said"
                 : event.source === "steplint"
                   ? "StepLint said"
-                  : "Verification"}
+                  : event.source === "verdict"
+                    ? "Verification"
+                    : event.source === "control"
+                      ? "Control"
+                      : "Guidance"}
               :{" "}
             </span>
             {event.text}

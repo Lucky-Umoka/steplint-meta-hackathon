@@ -9,6 +9,7 @@ export default defineConfig([
     ".next/**",
     ".next-production/**",
     ".next-verify/**",
+    ".next-local-qa/**",
     "next-env.d.ts",
     "coverage/**",
     ".media-lab/**",

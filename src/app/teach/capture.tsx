@@ -409,8 +409,9 @@ export default function LessonCapture({
     <section className="space-y-4 rounded border p-4">
       <h2 className="text-xl font-bold">1. Record or choose a lesson</h2>
       <p>
-        Record 10–20 seconds. Name each part, keep it in frame, and pause
-        briefly before and after each movement.
+        Record 10–20 seconds. Name each part and keep the complete movement,
+        starting state and final result visible. Continuous movements are
+        welcome.
       </p>
       <label className="flex gap-2">
         <input

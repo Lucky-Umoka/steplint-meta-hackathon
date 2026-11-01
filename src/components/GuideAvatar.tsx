@@ -106,7 +106,7 @@ export default function GuideAvatar({
   return (
     <section
       aria-label="StepLint Guide"
-      className="overflow-hidden rounded-2xl border bg-slate-950 p-4 text-center"
+      className="overflow-hidden rounded-2xl border border-cyan-200 bg-white p-4 text-center"
     >
       <style>{`
         @keyframes guide-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.02); } }
@@ -222,11 +222,11 @@ export default function GuideAvatar({
           </g>
         </svg>
       </div>
-      <p className="mt-1 text-sm font-semibold text-cyan-100">
+      <p className="mt-1 text-sm font-semibold text-cyan-900">
         StepLint Guide · {label.replace("StepLint Guide, ", "")}
       </p>
       {caption && (
-        <p className="mt-1 min-h-10 text-sm text-slate-200">{caption}</p>
+        <p className="mt-1 min-h-10 text-sm text-slate-700">{caption}</p>
       )}
       <span className="sr-only" role="status">
         {label}

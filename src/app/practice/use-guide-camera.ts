@@ -4,17 +4,20 @@ import type { Pixels } from "@/practice/tracker";
 export function useGuideCamera(
   onFrame: (image: Pixels, now: number) => void,
   onPause: (reason: string) => void,
+  options?: { width: number; height: number; intervalMs: number },
 ) {
   const video = useRef<HTMLVideoElement>(null),
     surface = useRef<HTMLCanvasElement | null>(null),
     stream = useRef<MediaStream | null>(null),
     generation = useRef(0),
-    callbacks = useRef({ onFrame, onPause });
+    callbacks = useRef({ onFrame, onPause }),
+    limits = useRef(options);
   const [active, setActive] = useState(false),
     [requesting, setRequesting] = useState(false),
     [size, setSize] = useState({ width: 640, height: 480 });
   useEffect(() => {
     callbacks.current = { onFrame, onPause };
+    limits.current = options;
   });
   const stop = useCallback(() => {
     generation.current++;
@@ -127,13 +130,18 @@ export function useGuideCamera(
       fresh = now;
       // Adaptive ~12fps target with an overlap guard: a slow tick never
       // queues behind itself, and duplicate frames are never processed.
-      if (processing || now - lastProcess < 83) return schedule();
+      if (processing || now - lastProcess < (limits.current?.intervalMs ?? 83))
+        return schedule();
       processing = true;
       lastProcess = now;
       const started = performance.now();
       try {
         const c = (surface.current ??= document.createElement("canvas"));
-        const scale = Math.min(1, 640 / v.videoWidth, 480 / v.videoHeight);
+        const scale = Math.min(
+          1,
+          (limits.current?.width ?? 640) / v.videoWidth,
+          (limits.current?.height ?? 480) / v.videoHeight,
+        );
         c.width = Math.max(1, Math.round(v.videoWidth * scale));
         c.height = Math.max(1, Math.round(v.videoHeight * scale));
         const context = c.getContext("2d", { willReadFrequently: true });

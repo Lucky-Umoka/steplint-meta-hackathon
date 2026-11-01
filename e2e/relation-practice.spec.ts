@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./safe-test";
 import type { RelationPlan } from "../src/guide/relations";
 const plan: RelationPlan = {
   title: "Place part on support",
@@ -70,7 +70,7 @@ async function setup(page: Page, startCamera = true) {
       },
     }),
   );
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   await page.evaluate(async (plan) => {
     const c = document.createElement("canvas");
     c.width = 320;

@@ -18,7 +18,7 @@ export type VoiceStatus =
   | "error";
 export type VoiceEvent = {
   at: number;
-  source: "you" | "steplint" | "verdict";
+  source: "you" | "steplint" | "verdict" | "control" | "guidance";
   text: string;
 };
 type RecognitionInstance = {
@@ -63,7 +63,7 @@ export function useVoiceControl({
   enabled: boolean;
   /** Host-driven pause (e.g. while a confirmation dialog owns the mic). */
   paused?: boolean;
-  onAction: (id: string, disposition: CommandDisposition) => void;
+  onAction: (id: string, disposition: CommandDisposition) => void | boolean;
   onEvent?: (event: VoiceEvent) => void;
 }) {
   const [status, setStatus] = useState<VoiceStatus>("off");
@@ -132,8 +132,19 @@ export function useVoiceControl({
       setPending(null);
     }
     try {
-      L.onAction(decision.command.id, decision.kind);
+      const applied = L.onAction(decision.command.id, decision.kind);
+      if (applied === false && decision.kind === "executed") {
+        L.lastFinal = "";
+        L.lastFinalAt = 0;
+        setLastDisposition("rejected");
+        setFeedback(
+          "The action is not available in this state. No command was applied.",
+        );
+      }
     } catch {
+      L.lastFinal = "";
+      L.lastFinalAt = 0;
+      setLastDisposition("rejected");
       setFeedback(
         "The command could not be applied. Use the on-screen control and check the current state.",
       );

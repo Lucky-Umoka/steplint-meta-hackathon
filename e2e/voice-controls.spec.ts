@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./safe-test";
 test("voice controls release the recognizer, cancel stale confirmations and do not restart after permission denial", async ({
   page,
 }) => {
@@ -45,7 +45,7 @@ test("voice controls release the recognizer, cancel stale confirmations and do n
   await page.route("**/api/teach/access", (r) =>
     r.fulfill({ json: { unlocked: true } }),
   );
-  await page.goto("/teach");
+  await page.goto("/teach?legacy=1");
   await page.getByLabel("Enable voice control", { exact: true }).check();
   const utter = async (text: string) =>
     page.evaluate((text) => {
@@ -187,7 +187,7 @@ test("Teach voice commands drive the real recorder through recording, pause, res
   await page.route("**/api/teach/access", (r) =>
     r.fulfill({ json: { unlocked: true } }),
   );
-  await page.goto("/teach");
+  await page.goto("/teach?legacy=1");
   await page.getByLabel(/Everyone visible or audible/).check();
   await expect(
     page.getByRole("button", { name: "Start recording", exact: true }),

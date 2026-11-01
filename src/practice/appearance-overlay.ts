@@ -4,6 +4,8 @@ import type { Pixels } from "./tracker";
 type Sample = { x: number; y: number; color: number[]; inside: boolean };
 export type OverlayTrack = {
   objectId: string;
+  measurement?: { cost: number; alternativeGap: number | null };
+  scale?: number;
   box: Box;
   width: number;
   height: number;
@@ -80,7 +82,12 @@ export function groundOverlay(
     palette,
   };
 }
-export function trackOverlay(p: Pixels, t: OverlayTrack): ObjectDetection {
+export function trackOverlay(
+  p: Pixels,
+  t: OverlayTrack,
+  options?: { multiscale: boolean; retainFraction?: number },
+): ObjectDetection {
+  t.measurement = undefined;
   const unknown = (): ObjectDetection => ({
     objectId: t.objectId,
     quality: "ambiguous",
@@ -90,13 +97,14 @@ export function trackOverlay(p: Pixels, t: OverlayTrack): ObjectDetection {
   if (p.width !== t.width || p.height !== t.height) return unknown();
   const originDx = t.last.x - t.origin.x,
     originDy = t.last.y - t.origin.y;
-  const evaluate = (dx: number, dy: number) => {
+  const currentScale = t.scale ?? 1;
+  const evaluate = (dx: number, dy: number, scale = currentScale) => {
     const errors: number[] = [];
     let negative = 0,
       negativeCount = 0;
     for (const s of t.samples) {
-      const x = Math.round(s.x + dx),
-        y = Math.round(s.y + dy);
+      const x = Math.round(t.origin.x + (s.x - t.origin.x) * scale + dx),
+        y = Math.round(t.origin.y + (s.y - t.origin.y) * scale + dy);
       if (x < 0 || y < 0 || x >= p.width || y >= p.height) return Infinity;
       const c = rgb(p, x, y);
       if (s.inside) errors.push(distance(c, s.color));
@@ -108,7 +116,10 @@ export function trackOverlay(p: Pixels, t: OverlayTrack): ObjectDetection {
       }
     }
     errors.sort((a, b) => a - b);
-    const retained = errors.slice(0, Math.ceil(errors.length * 0.8));
+    const retained = errors.slice(
+      0,
+      Math.ceil(errors.length * (options?.retainFraction ?? 0.8)),
+    );
     return (
       retained.reduce((s, v) => s + v, 0) / retained.length +
       (negativeCount ? (negative / negativeCount) * 120 : 0)
@@ -121,6 +132,13 @@ export function trackOverlay(p: Pixels, t: OverlayTrack): ObjectDetection {
         y = Math.round(originDy + dy);
       candidates.push({ dx: x, dy: y, cost: evaluate(x, y) });
     }
+  if (options?.multiscale)
+    for (let dy = -8; dy <= 8; dy++)
+      for (let dx = -8; dx <= 8; dx++) {
+        const x = Math.round(originDx + dx),
+          y = Math.round(originDy + dy);
+        candidates.push({ dx: x, dy: y, cost: evaluate(x, y) });
+      }
   candidates.sort((a, b) => a.cost - b.cost);
   let best = candidates[0];
   for (let dy = -3; dy <= 3; dy++)
@@ -130,6 +148,24 @@ export function trackOverlay(p: Pixels, t: OverlayTrack): ObjectDetection {
         cost = evaluate(x, y);
       if (cost < best.cost) best = { dx: x, dy: y, cost };
     }
+  let bestScale = currentScale;
+  if (options?.multiscale) {
+    const center = { ...best };
+    for (const ratio of [0.85, 0.925, 1, 1.075, 1.15]) {
+      const scale = currentScale * ratio;
+      if (scale < 0.5 || scale > 2) continue;
+      for (let dy = -4; dy <= 4; dy += 2)
+        for (let dx = -4; dx <= 4; dx += 2) {
+          const x = center.dx + dx,
+            y = center.dy + dy,
+            cost = evaluate(x, y, scale);
+          if (cost < best.cost) {
+            best = { dx: x, dy: y, cost };
+            bestScale = scale;
+          }
+        }
+    }
+  }
   const separation = Math.max(
     8,
     Math.min(
@@ -143,13 +179,30 @@ export function trackOverlay(p: Pixels, t: OverlayTrack): ObjectDetection {
   if (best.cost > 24 || (second && second.cost - best.cost < 2))
     return unknown();
   const box = {
-    left: t.box.left + best.dx / p.width,
-    top: t.box.top + best.dy / p.height,
-    right: t.box.right + best.dx / p.width,
-    bottom: t.box.bottom + best.dy / p.height,
+    left:
+      (t.origin.x + (t.box.left * p.width - t.origin.x) * bestScale + best.dx) /
+      p.width,
+    top:
+      (t.origin.y + (t.box.top * p.height - t.origin.y) * bestScale + best.dy) /
+      p.height,
+    right:
+      (t.origin.x +
+        (t.box.right * p.width - t.origin.x) * bestScale +
+        best.dx) /
+      p.width,
+    bottom:
+      (t.origin.y +
+        (t.box.bottom * p.height - t.origin.y) * bestScale +
+        best.dy) /
+      p.height,
   };
   if (box.left < 0 || box.top < 0 || box.right > 1 || box.bottom > 1)
     return unknown();
+  t.measurement = {
+    cost: best.cost,
+    alternativeGap: second ? second.cost - best.cost : null,
+  };
+  t.scale = bestScale;
   t.last = { x: t.origin.x + best.dx, y: t.origin.y + best.dy };
   return { objectId: t.objectId, quality: "observed", box, score: null };
 }

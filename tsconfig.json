@@ -37,7 +37,9 @@
     ".next-production/types/**/*.ts",
     ".next-production/dev/types/**/*.ts",
     ".next-verify/types/**/*.ts",
-    ".next-verify/dev/types/**/*.ts"
+    ".next-verify/dev/types/**/*.ts",
+    ".next-local-qa/types/**/*.ts",
+    ".next-local-qa/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

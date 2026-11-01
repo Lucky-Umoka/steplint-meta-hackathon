@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./safe-test";
 
 declare global {
   interface Window {
@@ -218,7 +218,7 @@ async function setup(page: import("@playwright/test").Page) {
     savedAt: 1,
     rehearsal: null,
   };
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   await page.evaluate(async (seed: unknown) => {
     const open = indexedDB.open("steplint-guides", 2);
     open.onupgradeneeded = () => {

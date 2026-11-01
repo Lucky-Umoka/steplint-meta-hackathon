@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./safe-test";
 import type { GuideArtifact } from "../src/guide/schema";
 declare global {
   interface Window {
@@ -249,7 +249,7 @@ async function mocks(page: Page) {
 test("empty library has one useful next action and no fixture or premature warning", async ({
   page,
 }) => {
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   await expect(
     page.getByRole("heading", { name: "Your first guide starts in Teach" }),
   ).toBeVisible();
@@ -267,7 +267,7 @@ test("local guide selection, automatic grounding and Ready require no marking co
 }) => {
   await camera(page);
   await mocks(page);
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   await seed(page);
   await page.reload();
   await page
@@ -330,7 +330,7 @@ test("camera denial is setup guidance rather than a false procedural failure", a
       throw new DOMException("Denied", "NotAllowedError");
     };
   });
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   await seed(page);
   await page.reload();
   await page
@@ -363,7 +363,7 @@ test("face/empty scene stays in setup and does not invent scoring", async ({
       },
     });
   });
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   await seed(page);
   await page.reload();
   await page
@@ -393,7 +393,7 @@ test("Teach previews a local fixture clip and presents clear review without paid
     paid++;
     throw Error("Paid route forbidden in this test");
   });
-  await page.goto("/teach");
+  await page.goto("/teach?legacy=1");
   await page.getByLabel("Everyone visible or audible").check();
   await page.getByLabel("Existing lesson MP4").setInputFiles(clip);
   await expect(
@@ -415,7 +415,7 @@ for (const fault of ["empty", "gateway", "incomplete"]) {
     await page.route("**/api/teach/access", (r) =>
       r.fulfill({ json: { unlocked: true } }),
     );
-    await page.goto("/practice");
+    await page.goto("/practice?legacy=1");
     const artifact = await seed(page);
     await page.evaluate(async () => {
       const req = indexedDB.open("steplint-guides", 2);
@@ -489,7 +489,7 @@ for (const fault of ["empty", "gateway", "incomplete"]) {
         },
       });
     });
-    await page.goto("/teach");
+    await page.goto("/teach?legacy=1");
     await page.getByLabel("Everyone visible or audible").check();
     await page.getByLabel("Existing lesson MP4").setInputFiles(clip);
     await page.getByLabel("I previewed this lesson").check();
@@ -542,7 +542,7 @@ test("an untrackable work surface cannot enable Ready or score object movement",
 }) => {
   await camera(page, false);
   await mocks(page);
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   await seed(page);
   await page.reload();
   await page
@@ -570,7 +570,7 @@ test("a private rehearsal preserves active time, explicit breaks and its complet
 }) => {
   await camera(page);
   await mocks(page);
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   const artifact = await seed(page, "rehearsal"),
     key = `${artifact.guide.id}:1:one:rehearsal`;
   await page.goto(`/practice?test=${encodeURIComponent(key)}&debug=1`);
@@ -672,7 +672,7 @@ test("a pre-existing goal scene cannot manufacture action history or enable Read
     };
     await route.fulfill({ json: response });
   });
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   await seed(page);
   await page.reload();
   await page
@@ -725,7 +725,7 @@ test("resuming the same workbench preserves verified goal references instead of 
       },
     });
   });
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   await seed(page, "published", true);
   await page.reload();
   await page
@@ -768,7 +768,7 @@ test("a new step with a continuously tracked part does not spend another remote 
     if (new URL(request.url()).pathname === "/api/teach/guide/perceive")
       calls++;
   });
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   await seed(page, "published", true);
   await page.reload();
   await page
@@ -801,7 +801,7 @@ test("Teach automatically extracts requested action frames and reuses one upload
   await page.route("**/api/teach/access", (r) =>
     r.fulfill({ json: { unlocked: true } }),
   );
-  await page.goto("/practice");
+  await page.goto("/practice?legacy=1");
   const artifact = await seed(page);
   const draft = { ...artifact.guide, approval: null, images: [] };
   let calls = 0;
@@ -853,7 +853,7 @@ test("Teach automatically extracts requested action frames and reuses one upload
       });
     }
   });
-  await page.goto("/teach");
+  await page.goto("/teach?legacy=1");
   await page.getByLabel("Everyone visible or audible").check();
   await page.getByLabel("Existing lesson MP4").setInputFiles(clip);
   await page.getByLabel("I previewed this lesson").check();

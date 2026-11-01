@@ -3,6 +3,8 @@ export type Point = { x: number; y: number };
 export type ColourProfile = { componentId: string; hue: number; area: number };
 export type Detection = {
   componentId: string;
+  identityOnly?: boolean;
+  visibleFraction?: number;
   quality: "observed" | "missing" | "ambiguous" | "obstructed";
   center: Point | null;
   score: number | null;
