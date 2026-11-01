@@ -45,10 +45,10 @@ export default function ComponentPicker({
     <section className="space-y-4 rounded border p-4">
       <h2 className="text-xl font-bold">3. Create your lesson automatically</h2>
       <p>
-        AI will identify up to four task components, propose their marks, track
-        them through the clip and draft steps with suggested starting/target
-        zones. You review, edit and approve the result before Practice can use
-        it.
+        AI will identify up to four task objects and needed source/destination
+        references, propose their marks, track them through the clip and draft
+        steps with suggested starting/target zones. You review, edit and approve
+        the result before Practice can use it.
       </p>
       <label className="flex gap-2">
         <input
@@ -62,14 +62,17 @@ export default function ComponentPicker({
         Two analysis requests and one video-tracking request; no automatic
         retries.
       </label>
-      <p>
-        Estimated video-tracking cost: $
-        {((lesson.media.frameTimesMs.length * 0.2) / 1000).toFixed(4)}. Analysis
-        adds video understanding, bounded text processing and up to 13,800
-        output tokens across two calls. Total cost varies; the earlier
-        one-request estimate does not apply. Models: Muse Spark and SAM; details
-        in the project docs.
-      </p>
+      <details>
+        <summary>Cost and models for automatic analysis</summary>
+        <p>
+          Estimated video-tracking cost: $
+          {((lesson.media.frameTimesMs.length * 0.2) / 1000).toFixed(4)}.
+          Analysis adds video understanding, bounded text processing and up to
+          13,800 output tokens across two calls. Total cost varies; the earlier
+          one-request estimate does not apply. Models: Muse Spark and SAM;
+          details in the project docs.
+        </p>
+      </details>
       <button disabled={busy || !automaticConsent} onClick={onAutomatic}>
         Automatically create my lesson
       </button>
@@ -208,13 +211,16 @@ export default function ComponentPicker({
           with paid AI procedure analysis. This makes one request for each; no
           automatic retries.
         </label>
-        <p>
-          Tracking estimate: $
-          {((lesson.media.frameTimesMs.length * 0.2) / 1000).toFixed(4)}.
-          Analysis adds bounded text processing and up to 12,000 output tokens;
-          normal short-lesson inference is expected below $0.20 combined, not a
-          billing guarantee. Models: SAM and Muse Spark.
-        </p>
+        <details>
+          <summary>Cost and models for manual marks</summary>
+          <p>
+            Tracking estimate: $
+            {((lesson.media.frameTimesMs.length * 0.2) / 1000).toFixed(4)}.
+            Analysis adds bounded text processing and up to 12,000 output
+            tokens; normal short-lesson inference is expected below $0.20
+            combined, not a billing guarantee. Models: SAM and Muse Spark.
+          </p>
+        </details>
         <button
           disabled={busy || !consent || !selections.length}
           onClick={() => onCompile(selections)}

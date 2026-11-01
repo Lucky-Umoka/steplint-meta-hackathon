@@ -1,4 +1,10 @@
 import {
+  alignStartingView,
+  translateBox,
+  alignFixedObjects,
+  chooseLiveWorkspace,
+} from "./automatic-alignment";
+import {
   groundAppearance,
   prepareTrackingFrame,
   trackPreparedAppearance,
@@ -316,4 +322,132 @@ export function trackingMeasurements(state: LocalTrackingState) {
         ? (profile.track.measurement?.pixels ?? null)
         : null,
   }));
+}
+
+/** Ground identity from signed, human-reviewed Teach pixels, then match the live
+ * view. Automatic setup never learns an arbitrary live object as the target. */
+export function bootstrapLocal(
+  image: Pixels,
+  source: {
+    scene: Pixels;
+    zones?: Box[];
+    objects: {
+      id: string;
+      box: Box;
+      fixed: boolean;
+      image: Pixels;
+      expectedBox?: Box;
+    }[];
+  },
+) {
+  const frame = prepareTrackingFrame(image);
+  const anchors = source.objects
+    .filter((object) => object.fixed)
+    .flatMap((object) => {
+      if (
+        object.image.width !== image.width ||
+        object.image.height !== image.height
+      )
+        return [];
+      const profile = groundNative(object.image, object.id, object.box, true);
+      const detection = measureNative(image, frame, profile);
+      return detection.quality === "observed" &&
+        detection.box &&
+        detection.score !== null &&
+        detection.score >= 0.9
+        ? [{ source: object.box, observed: detection.box }]
+        : [];
+    });
+  const anchored = alignFixedObjects(anchors);
+  const alignment = anchored
+    ? { ...anchored, workspace: null }
+    : alignStartingView(
+        source.scene,
+        image,
+        source.objects.map((object) => object.box),
+      );
+  const profiles = source.objects.map((object) => {
+    const profile = groundNative(
+      object.image,
+      object.id,
+      object.box,
+      object.fixed,
+    );
+    // The three measured stationary patches establish the shared camera translation.
+    const expected = object.expectedBox ?? object.box;
+    const dx =
+      ((expected.left + expected.right - object.box.left - object.box.right) /
+        2 +
+        alignment.x) *
+      image.width;
+    const dy =
+      ((expected.top + expected.bottom - object.box.top - object.box.bottom) /
+        2 +
+        alignment.y) *
+      image.height;
+    if (profile.method !== "features") {
+      profile.track.last.x += dx;
+      profile.track.last.y += dy;
+    } else if (dx || dy) {
+      profile.track.box = translateBox(
+        profile.track.box,
+        dx / image.width,
+        dy / image.height,
+      );
+      profile.track.features = profile.track.features.map((feature) => ({
+        ...feature,
+        x: feature.x + dx,
+        y: feature.y + dy,
+      }));
+      profile.track.corners = profile.track.corners?.map((point) => ({
+        x: point.x + dx,
+        y: point.y + dy,
+      }));
+    }
+    const detection = measureNative(image, frame, profile);
+    if (
+      detection.quality !== "observed" ||
+      !detection.box ||
+      detection.score === null ||
+      detection.score < 0.9
+    )
+      throw Error(
+        `Finding ${object.id}. Show its demonstrated starting position clearly.`,
+      );
+    if (object.fixed) {
+      const expected = translateBox(object.box, alignment.x, alignment.y);
+      if (
+        Math.max(
+          ...(["left", "top", "right", "bottom"] as const).map((key) =>
+            Math.abs(expected[key] - detection.box![key]),
+          ),
+        ) > 0.015
+      )
+        throw Error(
+          "A fixed destination does not match the demonstrated work area. Restore its starting position.",
+        );
+    }
+    return { profile, box: detection.box };
+  });
+  const workspace =
+    alignment.workspace ??
+    chooseLiveWorkspace(image, [
+      ...profiles.map((item) => item.box),
+      ...(source.zones ?? []).map((box) =>
+        translateBox(box, alignment.x, alignment.y),
+      ),
+    ]);
+  const calibration = {
+    workspace,
+    objects: profiles.map(({ profile, box }) => ({
+      id: profile.objectId,
+      box,
+      fixed: profile.fixed,
+    })),
+  };
+  const state = calibrateLocal(image, calibration);
+  // Retain the source-grounded object identities; the current view only grounds
+  // the already-matched workspace for subsequent camera movement checks.
+  state.objects = profiles.map((item) => item.profile);
+  return { state, translation: { x: alignment.x, y: alignment.y } };
 }

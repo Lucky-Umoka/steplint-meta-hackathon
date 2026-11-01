@@ -26,8 +26,8 @@ export default function CommandFeedback({
       <details className="mt-2 text-xs text-slate-600">
         <summary>Voice commands for this screen</summary>
         <p className="mt-1">
-          Begin with “Guide” or “StepLint” (including “step lint”). Commands
-          control the interface; they never verify a step.
+          Begin with “Muse”, “Guide” or “StepLint” (including “step lint”).
+          Commands control the interface; they never verify a step.
         </p>
         <ul className="mt-1 list-inside list-disc">
           {commands.map((c) => (

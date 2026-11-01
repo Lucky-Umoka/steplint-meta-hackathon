@@ -41,6 +41,10 @@ body {
 .flow-workspace input[type="checkbox"] {
   @apply h-4 w-4 shrink-0 accent-emerald-700;
 }
+.flow-workspace select,
+.flow-workspace input[type="file"] {
+  @apply max-w-full min-w-0;
+}
 
 /* A slow correction pulse, with a static reduced-motion alternative. */
 @keyframes practice-correction-pulse {
@@ -50,4 +54,14 @@ body {
 .practice-correction-pulse { animation: practice-correction-pulse 1.2s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
   .practice-correction-pulse { animation: none; }
+}
+
+/* Pulse the warning outline without dimming or obscuring live camera pixels. */
+@keyframes practice-frame-warning {
+  0%, 100% { box-shadow: 0 0 0 2px rgb(220 38 38 / .75); }
+  50% { box-shadow: 0 0 0 7px rgb(220 38 38 / .2); }
+}
+.practice-frame-warning { animation: practice-frame-warning 1.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .practice-frame-warning { animation: none; }
 }

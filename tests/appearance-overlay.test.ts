@@ -53,3 +53,42 @@ it("does not ground an empty foreground or accept resized frames", () => {
   const t = groundOverlay(frame(), "part", box, mask);
   expect(trackOverlay({ ...frame(), width: 80 }, t).box).toBeNull();
 });
+it.each([0.8, 1])(
+  "preserves the exact residual trimmed-mean definition at retention %s",
+  (fraction) => {
+    const source = frame(),
+      target = frame();
+    const track = groundOverlay(source, "part", box);
+    for (let y = 30; y < 66; y++)
+      for (let x = 20; x < 44; x++) {
+        const i = (y * target.width + x) * 4,
+          delta = (x * 7 + y * 3) % 31;
+        for (let c = 0; c < 3; c++) target.data[i + c] += delta;
+      }
+    expect(
+      trackOverlay(target, track, {
+        multiscale: false,
+        retainFraction: fraction,
+      }).quality,
+    ).toBe("observed");
+    const dx = track.last.x - track.origin.x,
+      dy = track.last.y - track.origin.y;
+    const errors = track.samples
+      .filter((s) => s.inside)
+      .map((sample) => {
+        const x = Math.round(sample.x + dx),
+          y = Math.round(sample.y + dy),
+          i = (y * target.width + x) * 4;
+        return Math.max(
+          ...sample.color.map((value, c) =>
+            Math.abs(value - target.data[i + c]),
+          ),
+        );
+      })
+      .sort((a, b) => a - b);
+    const retained = errors.slice(0, Math.ceil(errors.length * fraction));
+    expect(track.measurement?.cost).toBe(
+      retained.reduce((a, b) => a + b, 0) / retained.length,
+    );
+  },
+);

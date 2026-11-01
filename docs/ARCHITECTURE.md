@@ -2,6 +2,16 @@
 
 **Status:** Phases 1–4 and the Phase 5 controlled-scene Practice implementation are present. See PHASE1.md–PHASE5.md for separate automated, real API and manual verification records. Physical-camera acceptance remains pending; successful model requests alone do not prove complete Teach-to-Practice reliability.
 
+## Current local execution path (2026-11-01)
+
+The default pages now compose `local-teach.tsx` and `local-practice.tsx`. Teach uses the existing authenticated lesson/compile/approve routes and human `Review`; local compiler mode includes explicit goal coverage and repeated-object transfers. Unsupported required work blocks approval. Approved raw JSON is saved unchanged in a dedicated IndexedDB store and authenticated by `/api/teach/practice-lesson` before execution.
+
+Fresh Teach approval includes bounded JPEG source frames and object geometry derived from its sealed review context; both are bound by the unchanged approval digest mechanism. Practice automatically opens the camera after lesson selection, matches source identities and establishes scene alignment before bounded worker tracking. Two agreeing fixed-object references can establish translation on a different table; otherwise three agreeing stationary source patches are required. Significant perspective/scale/rotation changes remain unsupported. Manual region marking is optional recovery, and older exports without visual references require a fresh Teach approval for the automatic path. `feedTrackingFrame` → `feedDetection` → incremental `createVerifier` is the normal decision path. Full replay calls the same reducer. No relationship/Spark request is made for normal local verification. The UI, voice, companion and gesture controls consume results; controls cannot verify actions.
+
+Observed transit, endpoint occurrence, confirmation and render estimates are distinct. Endpoint dwell is per object, not whole-scene settling. Identity-only partial visibility cannot provide endpoint geometry. Required persistent states remain monitored after completion; unknown geometry gives uncertainty and a measured unauthorized reversal gives correction. Pause/resume revalidates current states under a fresh measured-alignment or manually confirmed epoch while retaining completed-action history.
+
+Existing Guide libraries are preserved at explicit legacy links; existing guide/test deep links retain their previous path. Old signed approvals are not silently converted into local V2 approvals. Current limitations and measured checks are recorded in LOCAL_PRACTICE_IMPLEMENTATION_LOG.md and LOCAL_PRACTICE_IMPLEMENTATION_REPORT.md. The historical sections below describe their original checkpoints, not current physical acceptance.
+
 ## System boundaries
 
 Plan one TypeScript application using Next.js App Router, React, strict TypeScript, Node.js (Node 22 if verified compatible), npm, Route Handlers, Zod, and Vitest. Keep UI, media handling, provider clients, perception, procedure schema, and deterministic evaluation in separate testable modules. Do not add a second application stack or infrastructure without a demonstrated requirement.

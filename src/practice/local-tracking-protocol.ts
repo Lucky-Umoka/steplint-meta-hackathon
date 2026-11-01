@@ -13,6 +13,27 @@ const image = z
   );
 export const LocalWorkerInputSchema = z.discriminatedUnion("type", [
   z.strictObject({
+    type: z.literal("bootstrap"),
+    generation,
+    image,
+    source: z.strictObject({
+      scene: image,
+      zones: z.array(BoxSchema).max(100).optional(),
+      objects: z
+        .array(
+          z.strictObject({
+            id: z.string().min(1).max(100),
+            box: BoxSchema,
+            fixed: z.boolean(),
+            expectedBox: BoxSchema.optional(),
+            image,
+          }),
+        )
+        .min(1)
+        .max(4),
+    }),
+  }),
+  z.strictObject({
     type: z.literal("calibrate"),
     image,
     generation,
@@ -50,6 +71,9 @@ export const LocalWorkerReplySchema = z.discriminatedUnion("type", [
     type: z.literal("calibrated"),
     generation,
     measurements: z.array(TrackingMeasurementSchema).max(4),
+    translation: z
+      .strictObject({ x: z.number().finite(), y: z.number().finite() })
+      .optional(),
   }),
   z.object({ type: z.literal("error"), generation, message: z.string() }),
   z.object({

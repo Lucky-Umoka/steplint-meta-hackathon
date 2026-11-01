@@ -6,6 +6,7 @@ import { approveDraft } from "../src/teach/schema";
 import {
   createSession,
   feedDetection,
+  feedTrackingFrame,
   resumeSession,
 } from "../src/practice/pipeline";
 function session() {
@@ -215,4 +216,81 @@ it("rejects invalid resume mappings before changing session state", () => {
   expect(() => resumeSession(s, [], 1000)).toThrow();
   expect(s.calibrations).toHaveLength(1);
   expect(s.stopped).toBe(true);
+});
+it("the shared frame adapter rejects empty, duplicate and contradictory identity sets", () => {
+  const s = session(),
+    reading = {
+      objectId: "component-1",
+      quality: "observed" as const,
+      score: 0.99,
+      box: { left: 0.15, top: 0.4, right: 0.25, bottom: 0.6 },
+    };
+  const frame = {
+    timestampMs: 0,
+    frameId: "f",
+    calibrationValid: true,
+    detections: [reading],
+    partialIdentities: [],
+  };
+  expect(() => feedTrackingFrame(s, { ...frame, detections: [] })).toThrow(
+    "every approved identity",
+  );
+  expect(() =>
+    feedTrackingFrame(s, { ...frame, detections: [reading, reading] }),
+  ).toThrow("every approved identity");
+  expect(() =>
+    feedTrackingFrame(s, {
+      ...frame,
+      partialIdentities: [
+        { objectId: "component-1", score: 0.99, visibleFraction: 0.7 },
+      ],
+    }),
+  ).toThrow("partial identity");
+});
+it("the shared browser/replay adapter uses the approved base point and fails closed on unavailable calibration", () => {
+  const fixture = session(),
+    p = structuredClone(fixture.procedure);
+  p.steps[0].measurement!.point = "bottom_center";
+  const bindings = structuredClone(fixture.bindings);
+  bindings.find((b) => b.zoneId === "destination")!.region = {
+    left: 0.7,
+    top: 0.65,
+    right: 0.9,
+    bottom: 0.8,
+  };
+  const s = createSession(p, bindings);
+  for (let t = 0; t <= 900; t += 100)
+    feedTrackingFrame(s, {
+      timestampMs: t,
+      frameId: `f-${t}`,
+      calibrationValid: true,
+      partialIdentities: [],
+      detections: [
+        {
+          objectId: "component-1",
+          quality: "observed",
+          score: 0.99,
+          box:
+            t < 500
+              ? { left: 0.15, top: 0.25, right: 0.25, bottom: 0.45 }
+              : { left: 0.75, top: 0.2, right: 0.85, bottom: 0.7 },
+        },
+      ],
+    });
+  expect(s.result.status).toBe("passed");
+  feedTrackingFrame(s, {
+    timestampMs: 1000,
+    frameId: "invalid-calibration",
+    calibrationValid: false,
+    partialIdentities: [],
+    detections: [
+      {
+        objectId: "component-1",
+        quality: "observed",
+        score: 0.99,
+        box: { left: 0.75, top: 0.2, right: 0.85, bottom: 0.7 },
+      },
+    ],
+  });
+  expect(s.result.status).toBe("needs_verification");
 });

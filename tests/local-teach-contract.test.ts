@@ -86,6 +86,21 @@ it("approves V2 through real server handlers and verifies its unchanged receipt 
         },
       ],
     };
+    const sharp = (await import("sharp")).default;
+    const jpeg =
+      "data:image/jpeg;base64," +
+      (
+        await sharp({
+          create: {
+            width: 320,
+            height: 240,
+            channels: 3,
+            background: "#aabbaa",
+          },
+        })
+          .jpeg()
+          .toBuffer()
+      ).toString("base64");
     const headers = {
       "Content-Type": "application/json",
       authorization: `Bearer ${token}`,
@@ -98,6 +113,10 @@ it("approves V2 through real server handlers and verifies its unchanged receipt 
           token: seal(context, "review", "owner-cli"),
           draft: local,
           review,
+          setupFrames: [
+            { frame: 0, image: jpeg },
+            { frame: 2, image: jpeg },
+          ],
         }),
       }),
     );
@@ -111,7 +130,23 @@ it("approves V2 through real server handlers and verifies its unchanged receipt 
       }),
     );
     expect(loaded.status).toBe(200);
-    expect((await loaded.json()).procedure.execution.schemaVersion).toBe(2);
+    const lesson = await loaded.json();
+    expect(lesson.procedure.execution.schemaVersion).toBe(2);
+    expect(lesson.automaticSetup.objects[0].id).toBe("component-1");
+    expect(lesson.automaticSetup.frames[0].image).toBe(jpeg);
+    const changedImage = JSON.parse(raw);
+    changedImage.automaticSetup.frames[0].image = "data:image/jpeg;base64,AAAA";
+    expect(
+      (
+        await POST(
+          new Request("http://localhost/api/teach/practice-lesson", {
+            method: "POST",
+            headers,
+            body: JSON.stringify(changedImage),
+          }),
+        )
+      ).status,
+    ).toBe(422);
     const tampered = JSON.parse(raw);
     tampered.procedure.execution.goal = "Changed after approval";
     expect(
@@ -212,4 +247,47 @@ it("reviews the visible base rather than silently substituting the object's cent
       1000,
     ).procedure.steps[0].measurement?.point,
   ).toBe("bottom_center");
+});
+it("does not let a proposed lower threshold approve uncertain source evidence", async () => {
+  const { validateDraft } = await import("../src/teach/schema");
+  const { draft, context } = localFixture();
+  draft.procedure.steps[0].condition.minimumConfidence = 0.848;
+  expect(() => validateDraft(draft, context)).toThrow("0.90");
+});
+it("local discovery includes stationary supports and uses an explicit visible point instead of an occluded centre", async () => {
+  const { discoveryRequest, parseDiscovery } = await import(
+    "../src/server/teach/discovery"
+  );
+  const { context } = localFixture();
+  const goal = "Transfer between supports";
+  expect(
+    discoveryRequest("file-test", context.lesson, goal).instructions,
+  ).toContain("stationary source/support/destination");
+  const response = {
+    status: "completed",
+    output_text: JSON.stringify({
+      components: [
+        {
+          description: "Source support visible edge",
+          timestampMs: 100,
+          box: { left: 100, top: 400, right: 400, bottom: 800 },
+          positive: { x: 200, y: 600 },
+        },
+      ],
+    }),
+  };
+  expect(parseDiscovery(response, context.lesson, goal)[0].mark).toEqual({
+    kind: "point",
+    x: 64,
+    y: 143,
+  });
+  const invalid = JSON.parse(response.output_text);
+  invalid.components[0].positive.x = 900;
+  expect(() =>
+    parseDiscovery(
+      { ...response, output_text: JSON.stringify(invalid) },
+      context.lesson,
+      goal,
+    ),
+  ).toThrow("outside");
 });

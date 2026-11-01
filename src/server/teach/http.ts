@@ -1,4 +1,10 @@
 import "server-only";
+import sharp from "sharp";
+import {
+  SetupFrameSchema,
+  automaticSetupPlan,
+  bindAutomaticSetup,
+} from "../../teach/automatic-setup";
 import { z } from "zod";
 import {
   ContextSchema,
@@ -280,15 +286,56 @@ export async function approve(request: Request) {
         token: z.string().max(1_000_000),
         draft: z.unknown(),
         review: z.unknown(),
+        setupFrames: z.array(SetupFrameSchema).min(1).max(6).optional(),
       })
       .parse(await readJson(request));
     const context = ContextSchema.parse(unseal(input.token, "review", session));
-    const approved = approveDraft(
+    const reviewed = approveDraft(
       input.draft,
       input.review,
       context,
       Date.now(),
     );
+    if (input.setupFrames)
+      await Promise.all(
+        input.setupFrames.map(async (frame) => {
+          const bytes = Buffer.from(
+            frame.image.slice(frame.image.indexOf(",") + 1),
+            "base64",
+          );
+          const metadata = await sharp(bytes, {
+            limitInputPixels: 320 * 240,
+          })
+            .metadata()
+            .catch(() => {
+              throw new TeachError(
+                422,
+                "Automatic source image is invalid or exceeds the bounded image size.",
+              );
+            });
+          if (
+            metadata.format !== "jpeg" ||
+            !metadata.width ||
+            !metadata.height ||
+            metadata.width > 320 ||
+            metadata.height > 240
+          )
+            throw new TeachError(
+              422,
+              "Automatic source frames must be bounded JPEG images.",
+            );
+        }),
+      );
+    const approved =
+      input.setupFrames && reviewed.procedure.execution
+        ? {
+            ...reviewed,
+            automaticSetup: bindAutomaticSetup(
+              automaticSetupPlan(reviewed.procedure, reviewed.review, context),
+              input.setupFrames,
+            ),
+          }
+        : reviewed;
     const digest = createHash("sha256")
       .update(JSON.stringify(approved))
       .digest("hex");

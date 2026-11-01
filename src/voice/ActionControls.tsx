@@ -1,5 +1,7 @@
 "use client";
 import { useState } from "react";
+import { useVoicePreference } from "./voice-preference";
+import CommandFeedback from "./CommandFeedback";
 import { useVoiceControl, type VoiceEvent } from "./use-voice-control";
 import VoicePanel, { appendVoiceEvent } from "./VoicePanel";
 import type { VoiceCommand } from "./commands";
@@ -11,13 +13,14 @@ export default function ActionControls({
   commands: VoiceCommand[];
   onAction: (id: string) => { applied: boolean; message: string };
 }) {
-  const [enabled, setEnabled] = useState(false),
+  const [enabled, setEnabled] = useVoicePreference(),
     [events, setEvents] = useState<VoiceEvent[]>([]),
     [notice, setNotice] = useState("");
   const voice = useVoiceControl({
     commands,
     enabled,
-    onAction: (id) => {
+    onAction: (id, disposition) => {
+      if (disposition !== "executed") return false;
       const { applied, message } = onAction(id);
       setNotice(message);
       setEvents((old) =>
@@ -44,6 +47,15 @@ export default function ActionControls({
       <p>{commands.map((c) => `“Guide, ${c.phrases[0]}”`).join("; ")}</p>
       <p>Voice control: {voice.status}</p>
       <p role="status">{notice || voice.feedback}</p>
+      <CommandFeedback
+        feedback={voice.feedback}
+        commands={voice.availableCommands}
+        onRestart={
+          voice.status === "error" || voice.status === "denied"
+            ? voice.restart
+            : undefined
+        }
+      />
       <VoicePanel events={events} />
     </div>
   );

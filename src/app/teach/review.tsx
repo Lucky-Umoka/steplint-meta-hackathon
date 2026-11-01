@@ -1,5 +1,7 @@
 "use client";
 import { readAppJson } from "@/teach/api-response";
+import { automaticSetupPlan } from "@/teach/automatic-setup";
+import { saveApprovedProcedure } from "@/teach/approved-storage";
 import { ApprovedArtifactSchema } from "@/teach/approved-artifact";
 import FeedbackPopup, { useFeedback } from "@/components/feedback";
 import { useRouter } from "next/navigation";
@@ -307,11 +309,32 @@ export default function Review({
           ...checks[step.id],
         })),
       };
-      approveDraft(draft, review, context, Date.now()); // helpful local checks; server repeats all validation
+      const checked = approveDraft(draft, review, context, Date.now()); // server repeats validation
+      const plan = checked.procedure.execution
+        ? automaticSetupPlan(checked.procedure, checked.review, context)
+        : null;
+      const setupFrames = plan
+        ? await Promise.all(
+            [
+              ...new Set([
+                plan.sceneFrame,
+                plan.goalFrame,
+                ...plan.objects.map((object) => object.frame),
+              ]),
+            ].map(async (frame) => ({
+              frame,
+              image: await frameImage(
+                video,
+                context.lesson.media.frameTimesMs[frame],
+                320,
+              ),
+            })),
+          )
+        : undefined;
       const response = await fetch("/api/teach/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, draft, review }),
+        body: JSON.stringify({ token, draft, review, setupFrames }),
       });
       const result = await readAppJson(response, "Approval");
       if (!ApprovedArtifactSchema.safeParse(result).success)
@@ -798,22 +821,50 @@ export default function Review({
             Procedure approved. Save and open Practice, or download a copy.
           </p>
           <button
+            disabled={busy}
+            className="primary"
             onClick={() => {
-              try {
-                const text = JSON.stringify(approved);
-                if (text.length > 1_500_000)
-                  throw new Error(
-                    "Use the downloaded export: this lesson is too large for quick handoff.",
+              if (busy) return;
+              setBusy(true);
+              void (async () => {
+                try {
+                  const text = JSON.stringify(approved);
+                  if (text.length > 1_500_000)
+                    throw new Error(
+                      "Use the downloaded export: this lesson is too large for quick handoff.",
+                    );
+                  const artifact = ApprovedArtifactSchema.parse(approved);
+                  const beforeMs =
+                    context.lesson.media.frameTimesMs[
+                      artifact.review.steps[0].fromFrame
+                    ];
+                  const goalMs = Math.max(
+                    ...artifact.review.steps.map(
+                      (step) => context.lesson.media.frameTimesMs[step.toFrame],
+                    ),
                   );
-                sessionStorage.setItem("steplint-approved-handoff", text);
-                router.push("/practice");
-              } catch (e) {
-                setError(
-                  e instanceof Error
-                    ? e.message
-                    : "Save failed. Download the approved export instead.",
-                );
-              }
+                  const [before, goal] = await Promise.all([
+                    frameImage(video, beforeMs),
+                    frameImage(video, goalMs),
+                  ]);
+                  await saveApprovedProcedure(text, {
+                    before,
+                    goal,
+                    beforeMs,
+                    goalMs,
+                  });
+                  sessionStorage.setItem("steplint-approved-handoff", text);
+                  router.push("/practice");
+                } catch (e) {
+                  setError(
+                    e instanceof Error
+                      ? e.message
+                      : "Save failed. Download the approved export instead.",
+                  );
+                } finally {
+                  setBusy(false);
+                }
+              })();
             }}
           >
             Save and open Practice

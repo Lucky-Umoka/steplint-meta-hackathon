@@ -11,6 +11,8 @@ import { inspectLessonVideo } from "@/teach/media";
 import { MAX_TEACH_BODY, type LessonMedia } from "@/teach/schema";
 import { type VoiceCommand, type CommandDisposition } from "@/voice/commands";
 import { useVoiceControl, type VoiceEvent } from "@/voice/use-voice-control";
+import GestureControls from "@/gesture/GestureControls";
+import { useVoicePreference } from "@/voice/voice-preference";
 import CommandFeedback from "@/voice/CommandFeedback";
 import VoicePanel, { appendVoiceEvent } from "@/voice/VoicePanel";
 
@@ -33,7 +35,14 @@ const TEACH_COMMANDS: VoiceCommand[] = [
   },
   {
     id: "preview-recording",
-    phrases: ["preview recording", "preview", "show preview"],
+    phrases: [
+      "preview recording",
+      "preview",
+      "show preview",
+      "start camera",
+      "preview camera",
+      "open camera",
+    ],
   },
   {
     id: "discard-recording",
@@ -91,7 +100,7 @@ export default function LessonCapture({
         recorder.stop();
     }, 100);
   }
-  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceOn, setVoiceOn] = useVoicePreference();
   const [voiceLog, setVoiceLog] = useState<VoiceEvent[]>([]);
   function logVoice(event: VoiceEvent) {
     setVoiceLog((log) => appendVoiceEvent(log, event));
@@ -149,45 +158,51 @@ export default function LessonCapture({
       );
       return;
     }
-    const refuse = (text: string) => say(text);
+    const refuse = (text: string) => {
+      say(text);
+      return false;
+    };
     switch (id) {
       case "start-recording":
         markControl("start recording");
-        if (!consent) refuse("Confirm recording consent before starting.");
+        if (!consent)
+          return refuse("Confirm recording consent before starting.");
         else if (!support)
-          refuse(
+          return refuse(
             "Recording support is still being checked. Try again when the camera controls are ready.",
           );
         else if (!support.h264)
-          refuse(
+          return refuse(
             "Recording is unavailable in this browser. Use an existing MP4 instead.",
           );
         else if (state !== "idle" && state !== "preview")
-          refuse(
+          return refuse(
             "A recording is already active. Pause, stop or discard it before starting another.",
           );
         else void record();
         break;
       case "pause-recording":
         markControl("pause recording");
-        if (!pauseRecording()) refuse("Nothing is recording right now.");
+        if (!pauseRecording()) return refuse("Nothing is recording right now.");
         break;
       case "resume-recording":
         markControl("resume recording");
-        if (!resumeRecording()) refuse("Nothing is paused right now.");
+        if (!resumeRecording()) return refuse("Nothing is paused right now.");
         break;
       case "stop-recording":
         markControl("stop recording");
         if (state !== "recording" && state !== "paused")
-          refuse("Nothing is recording right now.");
+          return refuse("Nothing is recording right now.");
         else if (seconds < 10)
-          refuse("Keep going a little longer; lessons need ten seconds.");
+          return refuse(
+            "Keep going a little longer; lessons need ten seconds.",
+          );
         else resources.current.recorder?.stop();
         break;
       case "preview-recording":
         markControl("preview recording");
         if (state !== "idle" && state !== "preview")
-          refuse("Finish recording first.");
+          return refuse("Finish recording first.");
         else
           void preview().catch(() => refuse("There is no preview available."));
         break;
@@ -202,6 +217,7 @@ export default function LessonCapture({
         void record();
         break;
     }
+    return true;
   }
   const voice = useVoiceControl({
     commands: TEACH_COMMANDS,
@@ -406,7 +422,7 @@ export default function LessonCapture({
     }
   }
   return (
-    <section className="space-y-4 rounded border p-4">
+    <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <h2 className="text-xl font-bold">1. Record or choose a lesson</h2>
       <p>
         Record 10–20 seconds. Name each part and keep the complete movement,
@@ -449,10 +465,10 @@ export default function LessonCapture({
         autoPlay
         muted
         playsInline
-        className="w-full max-w-xl bg-slate-100"
+        className="max-h-[55vh] w-full rounded-xl bg-slate-950"
         aria-label="Live lesson preview"
       />
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         <button
           disabled={
             (state !== "idle" && state !== "preview") || !consent || !support
@@ -514,10 +530,10 @@ export default function LessonCapture({
             </p>
             <p className="mt-1 text-xs text-slate-500">
               Browser speech recognition runs while enabled; commands need the
-              Guide or StepLint prefix. Recognition is provided by your browser
-              and may use its online service — no audio is stored or sent
-              anywhere by StepLint. Say “StepLint, stop recording” to finish
-              hands-free.
+              Muse, Guide or StepLint prefix. Recognition is provided by your
+              browser and may use its online service — no audio is stored or
+              sent anywhere by StepLint. Say “StepLint, stop recording” to
+              finish hands-free.
             </p>
             {voice.pending && (
               <p role="alert" className="mt-1 font-medium text-amber-800">
@@ -543,6 +559,14 @@ export default function LessonCapture({
         />
       )}
       <VoicePanel events={voiceLog} />
+      <GestureControls
+        videoRef={camera}
+        pauseLabel="pauses recording"
+        onPauseRequest={() => {
+          if (pauseRecording()) say("Recording paused.");
+          else say("Nothing is recording right now.");
+        }}
+      />
       <div className="space-y-2">
         <p>Or choose an existing MP4/H.264 with audio (10–20 s, ≤2.8 MB).</p>
         <button

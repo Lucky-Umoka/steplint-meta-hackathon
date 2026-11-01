@@ -1,3 +1,4 @@
+import { feedbackEvents } from "../src/practice/feedback";
 import { expect, it } from "vitest";
 import { demoProcedure } from "../src/procedure/demo";
 import { ProcedureSpecSchema, type InputEvent } from "../src/procedure/schema";
@@ -241,5 +242,26 @@ it("rejects contradictory forbidden origins and repeated-object measurement-poin
   repeated.steps[1].measurement!.point = "bottom_center";
   expect(() => ProcedureSpecSchema.parse(repeated)).toThrow(
     "same measured point",
+  );
+});
+it("keeps a known wrong-order correction active until recovery, including unrelated successes", () => {
+  const verifier = createVerifier(twoSteps());
+  verifier.push(nextObject(1, "staging", 1, 1));
+  verifier.push(nextObject(500, "support-target", 500, 1));
+  const waiting = verifier.push(nextObject(600, "support-target", 600, 1));
+  expect(waiting.status).toBe("failed");
+  expect(waiting.events.at(-1)?.status).toBe("ignored");
+  verifier.push(observation(700, "staging"));
+  const earlierPassed = verifier.push(observation(800, "base-target"));
+  expect(
+    feedbackEvents(earlierPassed, earlierPassed.events.slice(-1))[0].status,
+  ).toBe("failed");
+  verifier.push(nextObject(1000, "staging", 1000, 1000));
+  const recovered = verifier.push(
+    nextObject(1100, "support-target", 1100, 1000),
+  );
+  expect(recovered.status).toBe("passed");
+  expect(feedbackEvents(recovered, recovered.events.slice(-1))[0].status).toBe(
+    "passed",
   );
 });

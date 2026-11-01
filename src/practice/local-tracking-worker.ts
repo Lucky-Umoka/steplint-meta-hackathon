@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import {
   calibrateLocal,
+  bootstrapLocal,
   trackLocal,
   trackingMeasurements,
   type LocalTrackingState,
@@ -35,6 +36,17 @@ self.onmessage = (event: MessageEvent<unknown>) => {
   }
   const input = parsed.data;
   try {
+    if (input.type === "bootstrap") {
+      const initialized = bootstrapLocal(input.image, input.source);
+      state = initialized.state;
+      send({
+        type: "calibrated",
+        generation: input.generation,
+        measurements: trackingMeasurements(state),
+        translation: initialized.translation,
+      });
+      return;
+    }
     if (input.type === "calibrate") {
       state = calibrateLocal(input.image, input.calibration);
       send({

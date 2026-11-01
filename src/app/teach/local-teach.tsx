@@ -1,10 +1,13 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
+import { VoicePreferenceProvider } from "@/voice/voice-preference";
 import ActionControls from "@/voice/ActionControls";
 import Workspace from "@/components/workspace";
 import LessonCapture, { type PreparedLesson } from "./capture";
 import ComponentPicker from "./component-picker";
+import ProcessingDialog from "./processing-dialog";
+import { nextProcessingStage, type ProcessingStage } from "@/teach/progress";
 import Review from "./review";
 import {
   ContextSchema,
@@ -40,12 +43,19 @@ function RecordingPreview({ video }: { video: Blob }) {
       ref={element}
       controls
       playsInline
-      className="max-w-3xl w-full"
+      className="max-h-[60vh] w-full rounded-xl bg-slate-950"
       aria-label="Prepared lesson preview"
     />
   );
 }
 export default function LocalTeach() {
+  return (
+    <VoicePreferenceProvider>
+      <LocalTeachFlow />
+    </VoicePreferenceProvider>
+  );
+}
+function LocalTeachFlow() {
   const inFlight = useRef(false);
   const [unlocked, setUnlocked] = useState(false),
     [access, setAccess] = useState("");
@@ -63,7 +73,10 @@ export default function LocalTeach() {
     [consent, setConsent] = useState(false),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(""),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [stage, setStage] = useState<ProcessingStage>("upload"),
+    [processingOpen, setProcessingOpen] = useState(false),
+    [automaticBuild, setAutomaticBuild] = useState(true);
   useEffect(() => {
     let active = true;
     void fetch("/api/teach/access")
@@ -107,6 +120,8 @@ export default function LocalTeach() {
     inFlight.current = true;
     setBusy(true);
     setError("");
+    setStage("upload");
+    setProcessingOpen(true);
     setMessage("Uploading the reviewed recording and transcribing the lesson…");
     try {
       const body = new FormData();
@@ -120,6 +135,9 @@ export default function LocalTeach() {
       setUploaded(
         UploadSchema.parse(await readAppJson(response, "Lesson upload")),
       );
+      // Upload is done; the next step is manual component choice, so dismiss
+      // the modal dialog instead of blocking the picker behind it.
+      setProcessingOpen(false);
       setMessage("Choose the objects whose transfers should be verified.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Lesson upload failed.");
@@ -131,10 +149,14 @@ export default function LocalTeach() {
   async function compile(selections?: Selection[]) {
     if (!uploaded || inFlight.current) return;
     inFlight.current = true;
-    setUploaded(null);
-    setConsent(false);
+    // Keep the uploaded lesson visible while analysis runs so a failed build
+    // can retry without re-uploading the recording.
+    setAutomaticBuild(!selections);
+    setStage("discover");
+    setProcessingOpen(true);
     setBusy(true);
     setError("");
+    setMessage("Finding task components automatically from your video…");
     try {
       const response = await fetch("/api/teach/compile", {
         method: "POST",
@@ -188,6 +210,7 @@ export default function LocalTeach() {
                 })
                 .parse(value);
               if (status.type === "error") throw Error(status.message);
+              setStage((current) => nextProcessingStage(current, status.message));
               setMessage(status.message);
             }
           }
@@ -200,6 +223,10 @@ export default function LocalTeach() {
         throw Error(
           "Analysis ended without a validated draft; no approval was assumed.",
         );
+      setStage("review");
+      // Draft is ready and renders inline below; dismiss the modal so review
+      // is directly interactive instead of one extra click behind glass.
+      setProcessingOpen(false);
       setMessage(
         "Review the full transfer, goal and evidence before approval.",
       );
@@ -212,15 +239,36 @@ export default function LocalTeach() {
   }
   return (
     <Workspace mode="teach">
-      <div className="space-y-5">
-        <h1 className="text-3xl font-bold">Teach a procedure</h1>
-        <p>
-          Demonstrate complete movements. Review the observed transfers and
-          final goal before learners practice.
-        </p>
+      <div className="mx-auto max-w-6xl space-y-5">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold">Create a guide</h1>
+            <p className="mt-1 text-slate-600">
+              Show the process. Check the steps and the goal.
+            </p>
+          </div>
+          <ol
+            aria-label="Create guide progress"
+            className="flex flex-wrap gap-3 text-sm"
+          >
+            {["Record", "Build", "Review", "Save"].map((name, index) => {
+              const active = review ? 2 : busy || uploaded || prepared ? 1 : 0;
+              return (
+                <li
+                  key={name}
+                  aria-current={index === active ? "step" : undefined}
+                  className={`rounded-full px-3 py-2 ${index === active ? "bg-emerald-100 font-bold text-emerald-900" : "text-slate-500"}`}
+                >
+                  {index + 1}. {name}
+                </li>
+              );
+            })}
+          </ol>
+        </div>
         {!unlocked ? (
-          <section>
-            <label>
+          <section className="mx-auto max-w-md space-y-4 rounded-2xl border bg-white p-6">
+            <h2 className="text-xl font-bold">Creator access</h2>
+            <label className="block">
               Creator access code{" "}
               <input
                 type="password"
@@ -228,7 +276,11 @@ export default function LocalTeach() {
                 onChange={(e) => setAccess(e.target.value)}
               />
             </label>
-            <button disabled={busy || !access} onClick={() => void unlock()}>
+            <button
+              className="primary"
+              disabled={busy || !access}
+              onClick={() => void unlock()}
+            >
               Unlock Teach
             </button>
           </section>
@@ -236,7 +288,7 @@ export default function LocalTeach() {
           <>
             {!review && (
               <>
-                <label className="block">
+                <label className="block rounded-2xl border bg-white p-5 font-medium">
                   What visible final result should the learner achieve?
                   <input
                     className="block w-full border p-2"
@@ -249,7 +301,7 @@ export default function LocalTeach() {
                 {!prepared ? (
                   <LessonCapture onPrepared={setPrepared} />
                 ) : !uploaded ? (
-                  <section className="space-y-3">
+                  <section className="space-y-4 rounded-2xl border bg-white p-5">
                     <RecordingPreview video={prepared.video} />
                     <p>
                       Recording prepared. Preview it in the recorder before
@@ -293,6 +345,7 @@ export default function LocalTeach() {
                       }}
                     />
                     <button
+                      className="primary"
                       disabled={busy || !consent || !goal.trim()}
                       onClick={() => void upload()}
                     >
@@ -329,6 +382,17 @@ export default function LocalTeach() {
             )}
           </>
         )}
+        <ProcessingDialog
+          open={processingOpen}
+          stage={stage}
+          busy={busy}
+          ready={!!review}
+          automatic={automaticBuild}
+          message={message}
+          error={error}
+          onClose={() => setProcessingOpen(false)}
+          onCancel={() => setProcessingOpen(false)}
+        />
         {message && <p role="status">{message}</p>}
         {error && (
           <p role="alert" className="text-red-700">

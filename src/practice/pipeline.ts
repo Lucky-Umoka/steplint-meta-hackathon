@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ObjectDetection } from "../guide/schema";
 import {
   ProcedureSpecSchema,
   type InputEvent,
@@ -80,7 +81,8 @@ export type PracticeSession = {
     epoch: number;
     timestampMs: number;
     bindings: ZoneBinding[];
-    humanConfirmed: true;
+    humanConfirmed: boolean;
+    method?: "manual" | "source_alignment";
   }[];
 };
 export function createSession(
@@ -482,6 +484,7 @@ export function resumeSession(
   session: PracticeSession,
   bindings: ZoneBinding[],
   nowMs: number,
+  method: "manual" | "source_alignment" = "manual",
 ) {
   if (!Number.isFinite(nowMs) || nowMs < 0)
     throw Error("Invalid calibration time.");
@@ -506,7 +509,8 @@ export function resumeSession(
     epoch: session.calibrations.length + 1,
     timestampMs: Math.floor(nowMs),
     bindings: structuredClone(bindings),
-    humanConfirmed: true,
+    humanConfirmed: method === "manual",
+    method,
   });
   for (const id of ids)
     feedDetection(
@@ -517,9 +521,125 @@ export function resumeSession(
         center: null,
         score: null,
         reason:
-          "Resuming after a confirmed calibration: require fresh state and identity evidence.",
+          method === "source_alignment"
+            ? "Resuming after measured source alignment: require fresh state and identity evidence."
+            : "Resuming after a confirmed calibration: require fresh state and identity evidence.",
       },
       nowMs,
     );
   return session;
+}
+
+export type TrackingFrameEvidence = {
+  timestampMs: number;
+  frameId: string;
+  calibrationValid: boolean;
+  detections: ObjectDetection[];
+  partialIdentities: {
+    objectId: string;
+    score: number;
+    visibleFraction: number;
+  }[];
+};
+/** Shared browser/replay adapter. No provider, rendering or alternate decision engine. */
+export function feedTrackingFrame(
+  session: PracticeSession,
+  frame: TrackingFrameEvidence,
+) {
+  const required = session.procedure.components.map(
+      (component) => component.id,
+    ),
+    ids = frame.detections.map((d) => d.objectId);
+  if (
+    new Set(ids).size !== ids.length ||
+    ids.length !== required.length ||
+    ids.some((id) => !required.includes(id))
+  )
+    throw Error(
+      "Tracking frame must include every approved identity exactly once.",
+    );
+  if (
+    new Set(frame.partialIdentities.map((p) => p.objectId)).size !==
+      frame.partialIdentities.length ||
+    frame.partialIdentities.some((p) => {
+      const d = frame.detections.find((d) => d.objectId === p.objectId);
+      return (
+        !d ||
+        d.quality === "observed" ||
+        d.box !== null ||
+        !Number.isFinite(p.score) ||
+        p.score < 0.9 ||
+        p.score > 1 ||
+        p.visibleFraction < 0.45 ||
+        p.visibleFraction > 1
+      );
+    })
+  )
+    throw Error("Invalid partial identity evidence.");
+  const before = session.events.length;
+  const ordered = [...frame.detections].sort(
+    (a, b) =>
+      session.procedure.steps.findIndex(
+        (s) => s.condition.componentId === a.objectId,
+      ) -
+      session.procedure.steps.findIndex(
+        (s) => s.condition.componentId === b.objectId,
+      ),
+  );
+  const observations: {
+    objectId: string;
+    outcome: ReturnType<typeof feedDetection>;
+  }[] = [];
+  let warning: { stepId: string; instruction: string } | null = null;
+  for (const detection of ordered) {
+    const related = session.procedure.steps.filter(
+      (step) => step.condition.componentId === detection.objectId,
+    );
+    if (!related.length) continue; // Stationary references are checked by the tracker/calibration.
+    const partial = frame.calibrationValid
+      ? frame.partialIdentities.find((p) => p.objectId === detection.objectId)
+      : undefined;
+    const point = related[0].measurement?.point;
+    const outcome = feedDetection(
+      session,
+      {
+        componentId: detection.objectId,
+        quality: !frame.calibrationValid
+          ? "missing"
+          : partial
+            ? "observed"
+            : detection.quality,
+        score: !frame.calibrationValid
+          ? null
+          : (partial?.score ?? detection.score),
+        identityOnly: !!partial,
+        visibleFraction: partial?.visibleFraction,
+        center:
+          frame.calibrationValid && detection.box
+            ? {
+                x: (detection.box.left + detection.box.right) / 2,
+                y:
+                  point === "bottom_center"
+                    ? detection.box.bottom
+                    : (detection.box.top + detection.box.bottom) / 2,
+              }
+            : null,
+        reason: !frame.calibrationValid
+          ? "Calibration unavailable; no endpoint evidence accepted."
+          : partial
+            ? "Continuously visible identity only; endpoint geometry unavailable."
+            : "Locally measured identity and approved image point; score is tracking quality, not action probability.",
+      },
+      frame.timestampMs,
+      frame.frameId,
+    );
+    observations.push({ objectId: detection.objectId, outcome });
+    if (outcome.warning) warning = outcome.warning;
+  }
+  return {
+    result: session.result,
+    changed: session.events.length !== before,
+    observations,
+    warning,
+  };
 }

@@ -27,7 +27,7 @@ export function useGuideCamera(
     setActive(false);
     setRequesting(false);
   }, []);
-  async function start() {
+  async function start(aspectRatio?: number) {
     stop();
     const gen = ++generation.current;
     setRequesting(true);
@@ -37,7 +37,21 @@ export function useGuideCamera(
       const media = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
-          height: { ideal: 720 },
+          height: {
+            ideal:
+              aspectRatio &&
+              Number.isFinite(aspectRatio) &&
+              aspectRatio >= 0.2 &&
+              aspectRatio <= 5
+                ? Math.round(1280 / aspectRatio)
+                : 720,
+          },
+          ...(aspectRatio &&
+          Number.isFinite(aspectRatio) &&
+          aspectRatio >= 0.2 &&
+          aspectRatio <= 5
+            ? { aspectRatio: { ideal: aspectRatio } }
+            : {}),
           facingMode: "environment",
         },
         audio: false,

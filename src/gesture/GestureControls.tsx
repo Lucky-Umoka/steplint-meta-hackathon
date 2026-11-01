@@ -12,16 +12,19 @@ import { useGestureControl } from "./use-gesture-control";
 export default function GestureControls({
   videoRef,
   onPauseRequest,
+  pauseLabel = "pauses practice",
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   onPauseRequest: () => void;
+  pauseLabel?: string;
 }) {
   const [enabled, setEnabled] = useState(false);
-  const { status, pointer, notice, clearNotice, getStats } = useGestureControl({
-    videoRef,
-    enabled,
-    onPauseRequest,
-  });
+  const { status, pointer, notice, clearNotice, getStats, activations } =
+    useGestureControl({
+      videoRef,
+      enabled,
+      onPauseRequest,
+    });
   const [rect, setRect] = useState<DOMRect | null>(null);
   useEffect(() => {
     const update = () =>
@@ -42,7 +45,11 @@ export default function GestureControls({
             ? "Background hand tracking is unavailable in this browser"
             : "Gesture control error — use the buttons";
   return (
-    <div className="rounded-xl border bg-white p-3 text-sm">
+    <div
+      data-testid="gesture-controls"
+      data-activations={activations}
+      className="rounded-xl border bg-white p-3 text-sm"
+    >
       <label className="flex items-center gap-2 font-medium">
         <input
           type="checkbox"
@@ -59,8 +66,9 @@ export default function GestureControls({
       </p>
       <p className="mt-1 text-xs text-slate-500">
         Hands stay on screen only: tracking runs in this browser, no hand images
-        are uploaded. Pinch clicks ordinary buttons; an open palm held in the
-        zone pauses practice.
+        are uploaded. Pinch clicks buttons and checkboxes; release before
+        clicking again. An open palm held in the zone for 1.2 seconds{" "}
+        {pauseLabel}.
       </p>
       <p role="status" className="mt-1 min-h-10 text-amber-800">
         {notice || "\u00a0"}

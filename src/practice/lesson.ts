@@ -1,3 +1,4 @@
+import { AutomaticSetupSchema } from "../teach/automatic-setup";
 import { z } from "zod";
 import { ProcedureSpecSchema } from "../procedure/schema";
 import { LessonSchema } from "../teach/schema";
@@ -6,6 +7,7 @@ export const PracticeLessonSchema = z
   .object({
     procedure: ProcedureSpecSchema,
     zoneBindings: ZoneBindingsSchema,
+    automaticSetup: AutomaticSetupSchema.optional(),
     sourceLesson: LessonSchema.nullable(),
     origin: z.enum(["teach", "controlled-fixture"]),
   })

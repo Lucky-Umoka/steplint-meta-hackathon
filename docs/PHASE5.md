@@ -112,3 +112,9 @@ Latest independent repair acceptance: see [LIVE_FLOW_AUDIT.md](LIVE_FLOW_AUDIT.m
 
 
 Owner physical acceptance subsequently failed. See [PHYSICAL_PRACTICE_REPAIR.md](PHYSICAL_PRACTICE_REPAIR.md) for concrete follow-up repairs and their limited validation: 410 deterministic tests, 28 production browser checks and a real local gesture-worker startup, with semantic providers mocked in browser tests. Both preview origins were restored. Physical acceptance remains open; no fresh paid trial or instantaneous-verification claim is implied.
+
+### Canonical local Practice, 2026-11-01
+
+Default Practice now consumes the signed ProcedureSpec through the existing authenticated import route. Bounded unmarked-object tracking runs in a worker; a shared frame adapter feeds the incremental deterministic verifier. Continuous identity transit, local endpoint stability, physical occurrence timing, wrong order, forbidden zones, advisory approach warnings, reversal/restoration and goal monitoring are covered by deterministic checks. Voice/gesture controls cannot bypass verification. Pause/resume uses fresh calibration and preserves verified history.
+
+The old relationship workflow is preserved explicitly for legacy data, not used as the normal new Practice path. No new paid request was made. Source model reliability, physical-camera identity/geometry, microphone concurrency, actual gesture recognition and hardware sensor-to-display latency remain separate acceptance gates. See LOCAL_PRACTICE_IMPLEMENTATION_REPORT.md and its progress/mistake log; older passing counts above do not prove current physical acceptance.

@@ -29,7 +29,9 @@ export function normalizeUtterance(text: string): string {
  * spaced speech-recognition spelling of StepLint. No fuzzy action matching. */
 export function commandBody(text: string): string | null {
   const clean = normalizeUtterance(text);
-  const activation = clean.match(/^(?:step[ -]*lint|guide)\s+(.+)$/);
+  const activation = clean.match(
+    /^(?:(?:hey|okay)\s+)?(?:step[ -]*lint|guide|(?:ai\s+)?muse)\s+(.+)$/,
+  );
   if (!activation) return null;
   return activation[1]
     .replace(/^(?:(?:can|could|would) you\s+)?(?:please\s+)?/, "")
@@ -49,7 +51,7 @@ export function commandFeedback(
   if (decision.kind === "executed")
     return `Command sent: ${decision.command.phrases[0]}.`;
   if (!commandBody(text))
-    return "No command executed. Begin with “Guide” or “StepLint”, for example “Guide, pause”.";
+    return "No command executed. Begin with “Muse”, “Guide” or “StepLint”, for example “Guide, pause”.";
   if (speaking)
     return commands.some((command) => command.id === "stop-speaking")
       ? "No command executed while guidance was speaking. Say “Guide, stop speaking”, then try again."

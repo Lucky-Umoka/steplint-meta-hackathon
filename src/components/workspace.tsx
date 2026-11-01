@@ -9,7 +9,7 @@ export default function Workspace({
   return (
     <div className="min-h-dvh bg-slate-50 text-slate-900">
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-4">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-4">
           <Link href="/" className="text-xl font-bold tracking-tight">
             StepLint
             <span className="ml-2 text-xs font-normal text-slate-500">

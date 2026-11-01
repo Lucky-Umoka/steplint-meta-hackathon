@@ -390,6 +390,7 @@ export async function compileLesson(
         upload.fileId,
         upload.lesson,
         signal,
+        options?.goal,
       );
       progress(
         `Found ${selections.length} candidate components. Tracking their proposed marks…`,

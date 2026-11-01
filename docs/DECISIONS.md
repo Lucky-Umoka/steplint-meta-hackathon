@@ -226,3 +226,20 @@ Accept explicit `Guide` and `StepLint` activation (including spaced `Step lint`)
 Use typed, authored relationship evidence errors and stage wrappers for source failures. Return specific safe validation reasons, preserve the primary cause if cleanup fails, and log only sanitized correlation metadata. Reference 1979985f could not be reconstructed from retained logs. Do not infer a historical cause or relax evidence gates.
 
 Timing medians average the middle pair; other percentiles use nearest-rank. A bounded appearance search visits all pixel parities because refining one coarse peak cannot recover an arbitrary skipped sharp texture peak. Missing/competing evidence still abstains. See LIVE_FLOW_AUDIT.md for real replay and browser acceptance evidence.
+
+## Local procedural Practice migration (2026-11-01, owner authorized)
+
+- Default Teach/Practice share an approved V2 ProcedureSpec. Reuse existing review, receipt validation, zone pipeline and verifier; retain old Guide libraries explicitly rather than reinterpreting signed bytes.
+- Keep Meta load-bearing in recorded Teach perception/drafting. Normal Practice decisions are local worker measurements plus the deterministic verifier, with no remote semantic check per action. No new provider or dependency was added.
+- Require explicit goal/capability coverage and human confirmation. Zone measurements establish visible transfers, not hidden contact force, torque, electrical correctness or damage prevention.
+- Preserve source policy >=0.90; local tracking scores are measured similarity/quality, not provider probabilities or accuracy percentages. Null legacy overlay scores remain null. Native surfaces, dense appearance and feature modes are selected at calibration; no marker dependency or silent identity reseeding.
+- Distinguish continuously visible partial identity from full geometry. Partial identity can preserve transit history but cannot verify an endpoint or confirm a reversal. Lost/competing identity stays unverified.
+- Automatically establish the initial scene, use local endpoint stability and separate event time from confirmation. Monitor persistent goals until Stop. Resume requires fresh calibration and evidence but retains proven historical actions; restart is explicit.
+- Browser tests have a default deny rule for paid routes unless the test supplies an explicit mock. Physical camera, actual speech/gesture accuracy and new live compiler behavior remain separate acceptance gates. No live model requests, commits, pushes or deployment occurred in this implementation run.
+
+### 2026-11-01 — Restore UI and make normal setup automatic
+
+- Owner rejected the replacement layout and mandatory manual calibration. Restore existing Teach cards/progress and the dark companion; keep camera/companion side by side, with workflow panels below. Keep their row visible while scrolling normal Practice; optional manual editing must remain unobstructed.
+- Carry bounded source images and server-derived source geometry in the signed approval. Establish local scene translation from consistent fixed objects (different tables allowed) or stationary scene matches. Background appearance alone does not define semantics or destinations. Ambiguous/different perspective views remain unknown. Runtime alignment is not human approval; record its provenance separately. Failed initialization retries cannot consume resume epochs or reset history.
+- Complete the stage-specific command allowlists (`start camera`, `pause practice`, Muse activation), preserve Teach voice opt-in between stages, and return actual host refusal. Gestures click normal buttons and checkboxes; Teach also connects pinch/palm to recorder handlers. Keep action feedback visible; controls never verify physical steps.
+- Browser tests assert real host state with mocked recognition; recorded replay uses real owned pixels and explicitly synthetic source metadata. Neither is acceptance of the owner's physical camera/microphone/hand recognition or a fresh Meta output.

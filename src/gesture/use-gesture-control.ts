@@ -1,4 +1,5 @@
 "use client";
+import { activateGestureControl } from "./activate-control";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DEFAULT_ZONE,
@@ -34,6 +35,7 @@ export function useGestureControl({
   const [status, setStatus] = useState<GestureStatus>("off");
   const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
   const [notice, setNotice] = useState("");
+  const [activations, setActivations] = useState(0);
   const [diagnostics, setDiagnostics] = useState({ samples: 0, avgMs: 0 });
   const callbacks = useRef({ onPauseRequest });
   useEffect(() => {
@@ -110,20 +112,22 @@ export function useGestureControl({
           if (action.kind === "move" || action.kind === "click") {
             const point = controlPointer(zone, action.x, action.y);
             setPointer(point);
-            setNotice("");
             if (action.kind === "click") {
               const element = document.elementFromPoint(
                 point.x * innerWidth,
                 point.y * innerHeight,
               );
-              const button =
-                element instanceof Element ? element.closest("button") : null;
-              if (button instanceof HTMLButtonElement && !button.disabled)
-                button.click();
-              else setNotice("Pinch landed on no button — aim at a control.");
+              const message = activateGestureControl(element);
+              setNotice(message);
+              if (message.startsWith("Activated:"))
+                setActivations((count) => count + 1);
             }
           } else if (action.kind === "pause")
             callbacks.current.onPauseRequest();
+          else if (engine.lastIgnored === "outside-zone")
+            setNotice(
+              "Move your fingertip into the dashed right-edge control zone.",
+            );
           else if (engine.lastIgnored === "low-confidence")
             setNotice("Hand unclear — hold it steady in the zone.");
         };
@@ -185,5 +189,6 @@ export function useGestureControl({
     notice,
     clearNotice,
     getStats,
+    activations,
   };
 }

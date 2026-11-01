@@ -18,8 +18,6 @@ const rgb = (p: Pixels, x: number, y: number) => {
   const j = (Math.round(y) * p.width + Math.round(x)) * 4;
   return [p.data[j], p.data[j + 1], p.data[j + 2]];
 };
-const distance = (a: number[], b: number[]) =>
-  Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
 /** Dense, mask-seeded appearance tracking for advisory overlays only. It cannot
  * establish contact, procedural correctness or identity after a lost view. */
 export function groundOverlay(
@@ -85,7 +83,11 @@ export function groundOverlay(
 export function trackOverlay(
   p: Pixels,
   t: OverlayTrack,
-  options?: { multiscale: boolean; retainFraction?: number },
+  options?: {
+    multiscale: boolean;
+    retainFraction?: number;
+    exhaustiveTranslation?: boolean;
+  },
 ): ObjectDetection {
   t.measurement = undefined;
   const unknown = (): ObjectDetection => ({
@@ -98,36 +100,91 @@ export function trackOverlay(
   const originDx = t.last.x - t.origin.x,
     originDy = t.last.y - t.origin.y;
   const currentScale = t.scale ?? 1;
+  // Templates are grounded from Uint8 pixels. Reuse a residual histogram
+  // instead of allocating RGB arrays and sorting up to 64 errors per candidate.
+  // This computes the exact same trimmed mean and keeps every matching gate.
+  if (
+    t.samples.length > 128 ||
+    t.samples.some(
+      (sample) =>
+        sample.color.length !== 3 ||
+        sample.color.some(
+          (value) => !Number.isInteger(value) || value < 0 || value > 255,
+        ),
+    )
+  )
+    throw Error("Invalid grounded appearance template.");
+  const histogram = new Uint16Array(256),
+    fraction = options?.retainFraction ?? 0.8;
+  if (fraction <= 0 || fraction > 1)
+    throw Error("Invalid appearance retention policy.");
   const evaluate = (dx: number, dy: number, scale = currentScale) => {
-    const errors: number[] = [];
-    let negative = 0,
+    histogram.fill(0);
+    let count = 0,
+      total = 0,
+      negative = 0,
       negativeCount = 0;
-    for (const s of t.samples) {
-      const x = Math.round(t.origin.x + (s.x - t.origin.x) * scale + dx),
-        y = Math.round(t.origin.y + (s.y - t.origin.y) * scale + dy);
+    for (const sample of t.samples) {
+      const x = Math.round(t.origin.x + (sample.x - t.origin.x) * scale + dx),
+        y = Math.round(t.origin.y + (sample.y - t.origin.y) * scale + dy);
       if (x < 0 || y < 0 || x >= p.width || y >= p.height) return Infinity;
-      const c = rgb(p, x, y);
-      if (s.inside) errors.push(distance(c, s.color));
-      else {
+      const index = (y * p.width + x) * 4,
+        r = p.data[index],
+        g = p.data[index + 1],
+        b = p.data[index + 2];
+      if (sample.inside) {
+        const error = Math.max(
+          Math.abs(r - sample.color[0]),
+          Math.abs(g - sample.color[1]),
+          Math.abs(b - sample.color[2]),
+        );
+        histogram[error]++;
+        count++;
+        total += error;
+      } else {
         negativeCount++;
-        const old = Math.min(...t.palette.map((a) => distance(a, s.color))),
-          now = Math.min(...t.palette.map((a) => distance(a, c)));
+        let old = 255,
+          now = 255;
+        for (const colour of t.palette) {
+          old = Math.min(
+            old,
+            Math.max(
+              Math.abs(colour[0] - sample.color[0]),
+              Math.abs(colour[1] - sample.color[1]),
+              Math.abs(colour[2] - sample.color[2]),
+            ),
+          );
+          now = Math.min(
+            now,
+            Math.max(
+              Math.abs(colour[0] - r),
+              Math.abs(colour[1] - g),
+              Math.abs(colour[2] - b),
+            ),
+          );
+        }
         if (old > 35 && now < 25) negative++;
       }
     }
-    errors.sort((a, b) => a - b);
-    const retained = errors.slice(
-      0,
-      Math.ceil(errors.length * (options?.retainFraction ?? 0.8)),
-    );
+    const retained = Math.ceil(count * fraction);
+    if (!retained) return Infinity;
+    if (retained < count) {
+      let remaining = retained;
+      total = 0;
+      for (let error = 0; error < 256 && remaining; error++) {
+        const n = Math.min(remaining, histogram[error]);
+        total += n * error;
+        remaining -= n;
+      }
+    }
     return (
-      retained.reduce((s, v) => s + v, 0) / retained.length +
-      (negativeCount ? (negative / negativeCount) * 120 : 0)
+      total / retained + (negativeCount ? (negative / negativeCount) * 120 : 0)
     );
   };
   const candidates: { dx: number; dy: number; cost: number }[] = [];
-  for (let dy = -48; dy <= 48; dy += 4)
-    for (let dx = -48; dx <= 48; dx += 4) {
+  const translationStep = options?.exhaustiveTranslation ? 1 : 4;
+  for (let dy = -48; dy <= 48; dy += translationStep)
+    for (let dx = -48; dx <= 48; dx += translationStep) {
       const x = Math.round(originDx + dx),
         y = Math.round(originDy + dy);
       candidates.push({ dx: x, dy: y, cost: evaluate(x, y) });

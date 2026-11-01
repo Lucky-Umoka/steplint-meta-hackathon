@@ -1,6 +1,11 @@
 import { test, expect, type Page } from "./safe-test";
+import { installHandFixture, pinchControl } from "./hand-fixture";
 import { localFixture } from "../tests/fixtures/local-procedure";
 import { localExecutionDraft } from "../src/teach/local-execution";
+import {
+  automaticSetupPlan,
+  bindAutomaticSetup,
+} from "../src/teach/automatic-setup";
 import { approveDraft } from "../src/teach/schema";
 import { suggestReviews } from "../src/teach/review-suggestions";
 
@@ -30,36 +35,60 @@ async function camera(page: Page) {
       }
     }
     Object.assign(window, { SpeechRecognition: Recognition });
-    window.speechSynthesis.speak = () => {};
+    const spoken: string[] = [];
+    Object.assign(window, { localSpoken: spoken });
+    window.speechSynthesis.speak = (utterance) => {
+      spoken.push(utterance.text);
+    };
     window.speechSynthesis.cancel = () => {};
     const state = { x: 48, hidden: false };
     Object.assign(window, { localScene: state });
-    const canvas = document.createElement("canvas");
-    canvas.width = 320;
-    canvas.height = 240;
-    const ctx = canvas.getContext("2d")!;
+    const canvas = document.createElement("canvas"),
+      background = document.createElement("canvas"),
+      sprite = document.createElement("canvas");
+    canvas.width = background.width = 320;
+    canvas.height = background.height = 240;
+    sprite.width = 64;
+    sprite.height = 84;
+    const ctx = canvas.getContext("2d")!,
+      bg = background.getContext("2d")!,
+      object = sprite.getContext("2d")!;
+    const pixels = bg.createImageData(320, 240),
+      objectPixels = object.createImageData(64, 84);
+    for (let y = 0; y < 240; y++)
+      for (let x = 0; x < 320; x++) {
+        let hash = Math.imul(x, 0x9e3779b1) ^ Math.imul(y, 0x85ebca6b);
+        hash ^= hash >>> 16;
+        const value = 50 + ((hash >>> 0) % 150),
+          i = (y * 320 + x) * 4;
+        pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = value;
+        pixels.data[i + 3] = 255;
+      }
+    for (let y = 0; y < 84; y++)
+      for (let x = 0; x < 64; x++) {
+        let hash = Math.imul(x, 0x45d9f3b) ^ Math.imul(y + 72, 0x119de1f3);
+        hash ^= hash >>> 16;
+        const value = 50 + ((hash >>> 0) % 150),
+          i = (y * 64 + x) * 4;
+        objectPixels.data[i] =
+          objectPixels.data[i + 1] =
+          objectPixels.data[i + 2] =
+            value;
+        objectPixels.data[i + 3] = 255;
+      }
+    bg.putImageData(pixels, 0, 0);
+    object.putImageData(objectPixels, 0, 0);
+    // The camera supplies pixels; avoid a synthetic 76,800-array allocation
+    // loop per animation frame competing with the actual verification UI.
     const draw = () => {
-      const image = ctx.createImageData(320, 240);
-      for (let y = 0; y < 240; y++)
-        for (let x = 0; x < 320; x++) {
-          const inside =
-            !state.hidden &&
-            x >= state.x &&
-            x < state.x + 64 &&
-            y >= 72 &&
-            y < 156;
-          const sx = inside ? x - state.x : x;
-          let hash =
-            Math.imul(sx, inside ? 0x45d9f3b : 0x9e3779b1) ^
-            Math.imul(y, inside ? 0x119de1f3 : 0x85ebca6b);
-          hash ^= hash >>> 16;
-          const v = 50 + ((hash >>> 0) % 150);
-          image.data.set([v, v, v, 255], (y * 320 + x) * 4);
-        }
-      ctx.putImageData(image, 0, 0);
+      ctx.drawImage(background, 0, 0);
+      if (!state.hidden) ctx.drawImage(sprite, state.x, 72);
       requestAnimationFrame(draw);
     };
     draw();
+    Object.assign(window, {
+      localReferenceImage: canvas.toDataURL("image/jpeg", 0.85),
+    });
     navigator.mediaDevices.getUserMedia = async () => canvas.captureStream(30);
   });
 }
@@ -110,7 +139,14 @@ async function draw(
     bounds.y + box.bottom * bounds.height,
   );
   await page.mouse.up();
-  await expect(page.locator("section select option:checked")).toHaveText(/^✓/);
+  await expect(
+    page
+      .locator("section")
+      .filter({
+        has: page.getByRole("heading", { name: "Calibrate this view" }),
+      })
+      .locator("select option:checked"),
+  ).toHaveText(/^✓/);
 }
 function fixture() {
   const { context, draft } = localFixture();
@@ -171,11 +207,12 @@ test("default Practice uses local worker automatically, corrects reversal and ke
   );
   await page.goto("/practice");
   await page.getByLabel("Approved lessons").selectOption(artifact.procedure.id);
-  await page.getByRole("button", { name: "Start camera", exact: true }).click();
-  await page.waitForTimeout(500);
-  await page
-    .getByRole("button", { name: "Capture setup for calibration" })
-    .click();
+  await page.getByLabel("Enable microphone voice controls").check();
+  await utter(page, "Muse, start camera");
+  await expect(
+    page.getByRole("button", { name: "Capture setup for calibration" }),
+  ).toBeEnabled();
+  await utter(page, "Muse, capture setup");
   await draw(page, "workspace", {
     left: 0.66,
     top: 0.08,
@@ -201,7 +238,7 @@ test("default Practice uses local worker automatically, corrects reversal and ke
     bottom: 0.7,
   });
   await page.getByLabel(/I checked object identities/).check();
-  await page.getByRole("button", { name: "Start automatic practice" }).click();
+  await utter(page, "Muse, start practice");
   await expect(
     page
       .locator("#local-practice-status")
@@ -243,7 +280,7 @@ test("default Practice uses local worker automatically, corrects reversal and ke
   await expect(
     page.locator("ol").getByText("passed", { exact: true }),
   ).toBeVisible();
-  await page.getByLabel("Enable voice guidance and controls").check();
+  await page.getByLabel("Enable microphone voice controls").check();
   await expect
     .poll(() =>
       page.evaluate(
@@ -270,7 +307,46 @@ test("default Practice uses local worker automatically, corrects reversal and ke
   await expect(
     page
       .locator("#local-practice-status")
-      .filter({ hasText: "Practice paused. Recalibrate before continuing." }),
+      .filter({ hasText: "Practice paused." }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Resume with fresh calibration" })
+    .click();
+  await draw(page, "workspace", {
+    left: 0.66,
+    top: 0.08,
+    right: 0.86,
+    bottom: 0.24,
+  });
+  await draw(page, "object:component-1", {
+    left: 0.65,
+    top: 0.3,
+    right: 0.85,
+    bottom: 0.65,
+  });
+  await draw(page, "zone:origin", {
+    left: 0.1,
+    top: 0.25,
+    right: 0.4,
+    bottom: 0.7,
+  });
+  await draw(page, "zone:destination", {
+    left: 0.6,
+    top: 0.25,
+    right: 0.9,
+    bottom: 0.7,
+  });
+  await page.getByLabel(/I checked object identities/).check();
+  await page
+    .getByRole("button", { name: "Resume automatic practice", exact: true })
+    .click();
+  await expect(
+    page
+      .locator("#local-practice-status")
+      .filter({ hasText: /Goal verified. Monitoring continues/ }),
+  ).toBeVisible();
+  await expect(
+    page.locator("ol").getByText("passed", { exact: true }),
   ).toBeVisible();
   const downloaded = page.waitForEvent("download");
   await page
@@ -293,6 +369,14 @@ test("default Practice uses local worker automatically, corrects reversal and ke
   ).toBe(true);
   expect(report.evidence.length).toBeGreaterThan(2);
   expect(report.trackingMeasurements.length).toBe(1);
+  expect(report.calibrations).toHaveLength(2);
+  console.log("local browser latency", report.latencySummary);
+  await (
+    await import("node:fs/promises")
+  ).writeFile(
+    ".media-lab/local-browser-latency.json",
+    JSON.stringify(report.latencySummary, null, 2),
+  );
   expect(paid).toBe(0);
 });
 
@@ -310,6 +394,7 @@ test("default Teach reviews the full goal and source moments, then hands the app
     },
   ];
   let approved: ReturnType<typeof approveDraft> | null = null;
+  let automaticSetup: ReturnType<typeof bindAutomaticSetup> | undefined;
   let modelChecks = 0;
   let uploads = 0,
     compiles = 0;
@@ -341,8 +426,16 @@ test("default Teach reviews the full goal and source moments, then hands the app
     if (url.endsWith("/approve")) {
       const input = route.request().postDataJSON();
       approved = approveDraft(input.draft, input.review, context, 1000);
+      automaticSetup = bindAutomaticSetup(
+        automaticSetupPlan(approved.procedure, approved.review, context),
+        input.setupFrames,
+      );
       return route.fulfill({
-        json: { ...approved, approvalReceipt: "mock-receipt-browser-only" },
+        json: {
+          ...approved,
+          automaticSetup,
+          approvalReceipt: "mock-receipt-browser-only",
+        },
       });
     }
     if (url.endsWith("/practice-lesson") && approved)
@@ -351,6 +444,7 @@ test("default Teach reviews the full goal and source moments, then hands the app
           procedure: approved.procedure,
           zoneBindings: approved.zoneBindings,
           sourceLesson: approved.sourceLesson,
+          automaticSetup,
           origin: "teach",
         },
       });
@@ -380,21 +474,9 @@ test("default Teach reviews the full goal and source moments, then hands the app
     page.getByRole("heading", { name: "3. Create your lesson automatically" }),
   ).toBeVisible();
   expect(uploads).toBe(1);
-  const previousRecognizer = await page.evaluate(
-    () =>
-      (window as unknown as { localRecognition: { instance: number } })
-        .localRecognition.instance,
-  );
-  await page.getByLabel("Enable voice controls for this stage").check();
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (window as unknown as { localRecognition: { instance: number } })
-            .localRecognition.instance,
-      ),
-    )
-    .toBeGreaterThan(previousRecognizer);
+  await expect(
+    page.getByLabel("Enable voice controls for this stage"),
+  ).toBeChecked();
   await utter(page, "Guide build my guide");
   await expect(
     page.getByRole("status").filter({
@@ -432,5 +514,203 @@ test("default Teach reviews the full goal and source moments, then hands the app
     .getByLabel("Approved lessons")
     .selectOption(context.lesson.lessonId);
   await expect(page.getByText("Goal: Object at destination")).toBeVisible();
+  await expect(
+    page.getByRole("img", { name: "Demonstrated starting state", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("img", { name: "Demonstrated final goal", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await page
+    .getByLabel("Approved lessons")
+    .selectOption(context.lesson.lessonId);
+  await expect(
+    page.getByRole("img", { name: "Demonstrated final goal", exact: true }),
+  ).toBeVisible();
   expect(modelChecks).toBe(0);
+});
+
+test("default Practice gestures activate voice settings and camera buttons; desktop and mobile layout preserve camera/companion hierarchy", async ({
+  page,
+}) => {
+  await camera(page);
+  await installHandFixture(page);
+  const { artifact, lesson } = fixture();
+  await page.route("**/api/teach/practice-lesson", (route) =>
+    route.fulfill({ json: lesson }),
+  );
+  await page.addInitScript(
+    (raw) => sessionStorage.setItem("steplint-approved-handoff", raw),
+    JSON.stringify(artifact),
+  );
+  await page.goto("/practice");
+  await page.getByLabel("Approved lessons").selectOption(artifact.procedure.id);
+  const cameraPanel = page.getByTestId("practice-camera"),
+    companion = page.getByTestId("practice-companion");
+  const left = await cameraPanel.boundingBox(),
+    right = await companion.boundingBox();
+  expect(left).not.toBeNull();
+  expect(right).not.toBeNull();
+  expect(Math.abs(left!.y - right!.y)).toBeLessThan(2);
+  expect(left!.x + left!.width).toBeLessThan(right!.x);
+  await expect(companion.locator("section")).toHaveClass(/bg-slate-950/);
+  await page.getByRole("button", { name: "Start camera", exact: true }).click();
+  await page.getByLabel("Enable gesture control", { exact: true }).check();
+  await expect(
+    page.getByText(
+      "Gesture control on — point in the right-edge zone, pinch to click",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  const voice = page.getByLabel("Enable microphone voice controls");
+  await pinchControl(page, voice);
+  await expect(voice).toBeChecked();
+  await utter(page, "Muse, capture setup");
+  await expect(
+    page.getByRole("heading", { name: "Calibrate this view" }),
+  ).toBeVisible();
+  await pinchControl(
+    page,
+    page.getByRole("button", { name: "Stop camera", exact: true }),
+  );
+  await expect(
+    page.getByRole("button", { name: "Start camera", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Steps", exact: true }),
+  ).toContainText("pending");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileCamera = await cameraPanel.boundingBox(),
+    mobileCompanion = await companion.boundingBox();
+  expect(mobileCompanion!.y).toBeGreaterThan(
+    mobileCamera!.y + mobileCamera!.height,
+  );
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(390);
+  await page.screenshot({
+    path: ".media-lab/restored-practice-mobile.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1280, height: 832 });
+  await page.screenshot({
+    path: ".media-lab/restored-practice-desktop.png",
+    fullPage: true,
+  });
+});
+
+test("automatic Practice starts from reviewed Teach references without calibration buttons and produces green, red and spoken correction", async ({
+  page,
+}) => {
+  await camera(page);
+  const { artifact, lesson } = fixture();
+  await page.route("**/api/teach/practice-lesson", async (route) => {
+    const image = await page.evaluate(
+      () =>
+        (window as unknown as { localReferenceImage: string })
+          .localReferenceImage,
+    );
+    return route.fulfill({
+      json: {
+        ...lesson,
+        automaticSetup: {
+          sceneFrame: 0,
+          objects: [
+            {
+              id: "component-1",
+              frame: 0,
+              box: { left: 0.15, top: 0.3, right: 0.35, bottom: 0.65 },
+              fixed: false,
+            },
+          ],
+          frames: [{ frame: 0, image }],
+        },
+      },
+    });
+  });
+  await page.addInitScript(
+    (raw) => sessionStorage.setItem("steplint-approved-handoff", raw),
+    JSON.stringify(artifact),
+  );
+  await page.goto("/practice");
+  await page.getByLabel("Approved lessons").selectOption(artifact.procedure.id);
+  await expect(page.locator("#local-practice-status")).toContainText(
+    "Automatic tracking active",
+    { timeout: 20000 },
+  );
+  await expect(
+    page.getByRole("heading", { name: "Calibrate this view" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Start automatic practice" }),
+  ).toHaveCount(0);
+  await page.waitForTimeout(600);
+  for (let x = 50; x <= 208; x += 4) {
+    await page.evaluate((x) => {
+      (window as unknown as { localScene: { x: number } }).localScene.x = x;
+    }, x);
+    await page.waitForTimeout(55);
+  }
+  await expect(
+    page.getByRole("region", { name: "Steps", exact: true }),
+  ).toContainText("passed");
+  await expect(page.getByTestId("practice-camera")).toHaveClass(
+    /border-green-600/,
+  );
+  await expect(
+    page.getByLabel("Live object tracking").locator("rect"),
+  ).toHaveAttribute("stroke", "#16a34a");
+  for (let x = 204; x >= 160; x -= 4) {
+    await page.evaluate((x) => {
+      (window as unknown as { localScene: { x: number } }).localScene.x = x;
+    }, x);
+    await page.waitForTimeout(55);
+  }
+  await expect(
+    page.getByRole("region", { name: "Steps", exact: true }),
+  ).toContainText("failed");
+  await expect(page.getByTestId("practice-camera")).toHaveClass(
+    /border-red-600/,
+  );
+  await expect(
+    page.getByLabel("Live object tracking").locator("rect"),
+  ).toHaveAttribute("stroke", "#dc2626");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { localSpoken: string[] }).localSpoken.some(
+          (text) => text.startsWith("Stop."),
+        ),
+      ),
+    )
+    .toBe(true);
+  await page.getByLabel("Enable microphone voice controls").check();
+  await utter(page, "StepLint, pause practice");
+  await expect(
+    page.getByRole("button", { name: "Pause practice", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Resume practice", exact: true }),
+  ).toBeVisible();
+  await utter(page, "Guide, resume practice");
+  await expect(
+    page.getByRole("button", { name: "Pause practice", exact: true }),
+  ).toBeVisible({ timeout: 15000 });
+  for (let x = 164; x <= 208; x += 4) {
+    await page.evaluate((x) => {
+      (window as unknown as { localScene: { x: number } }).localScene.x = x;
+    }, x);
+    await page.waitForTimeout(55);
+  }
+  await expect(
+    page.getByRole("region", { name: "Steps", exact: true }),
+  ).toContainText("passed");
+  await expect(
+    page.getByRole("heading", { name: "Calibrate this view" }),
+  ).toHaveCount(0);
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.screenshot({
+    path: ".media-lab/restored-practice-correction.png",
+    fullPage: true,
+  });
 });

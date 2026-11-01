@@ -454,6 +454,16 @@ export function createVerifier(procedureInput: unknown) {
         continue;
       }
       if (!matches(step.condition, before, observation)) {
+        if (procedure.execution && state.status === "failed") {
+          record(
+            "ignored",
+            "The known violation remains unresolved; observe the approved recovery.",
+            step,
+            [],
+            evidence,
+          );
+          continue;
+        }
         if (
           procedure.execution &&
           observation.zone === step.condition.fromZone &&

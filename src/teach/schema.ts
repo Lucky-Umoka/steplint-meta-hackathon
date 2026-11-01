@@ -191,6 +191,15 @@ export function validateDraft(
       );
   };
   for (const step of p.steps) {
+    if (
+      [
+        step.condition,
+        ...step.forbiddenTransitions.map((rule) => rule.condition),
+      ].some((condition) => condition.minimumConfidence < 0.9)
+    )
+      throw Error(
+        "Teach evidence policy requires a minimum tracking score of 0.90; uncertain source evidence cannot be approved by lowering the rule.",
+      );
     checkSource(step.source);
     checkSource(step.recovery.source);
     step.forbiddenTransitions.forEach((r) => checkSource(r.recovery.source));

@@ -12,3 +12,12 @@ export function stageFromMessage(message: string): ProcessingStage | undefined {
   if (message.startsWith("Drafting candidate")) return "draft";
   return undefined;
 }
+/** Advance the Teach build dialog from a live progress message. Unknown
+ * messages keep the current stage; the upload stage is set explicitly when
+ * the recording upload begins. */
+export function nextProcessingStage(
+  current: ProcessingStage,
+  message: string,
+): ProcessingStage {
+  return stageFromMessage(message) ?? current;
+}

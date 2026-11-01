@@ -150,6 +150,9 @@ it("allows the stop-speaking command to interrupt narration while blocking proce
 });
 
 it.each([
+  "Muse, start recording",
+  "Hey Muse, please start recording",
+  "AI Muse, start recording",
   "Guide, start recording",
   "Step lint, start recording",
   "Guide, could you please start recording please",
