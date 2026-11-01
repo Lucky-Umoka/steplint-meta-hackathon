@@ -83,10 +83,14 @@ export default function GuideAvatar({
   mode,
   speech,
   caption,
+  compact = false,
+  artClassName,
 }: {
   mode: GuideAvatarMode;
   speech: GuideAvatarSpeech;
   caption?: string;
+  compact?: boolean;
+  artClassName?: string;
 }) {
   const { main, soft } = PALETTE[mode];
   const label =
@@ -106,7 +110,7 @@ export default function GuideAvatar({
   return (
     <section
       aria-label="StepLint Guide"
-      className="flex h-full min-h-64 flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-5 text-center"
+      className={`flex h-full flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 text-center ${compact ? "min-h-0 p-2" : "min-h-80 p-4"}`}
     >
       <style>{`
         @keyframes guide-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.02); } }
@@ -126,7 +130,10 @@ export default function GuideAvatar({
       `}</style>
       <div
         aria-hidden="true"
-        className="mx-auto h-40 w-36 sm:h-48 sm:w-44"
+        className={
+          artClassName ??
+          (compact ? "mx-auto h-36 w-32" : "mx-auto h-60 w-56 sm:h-72 sm:w-64")
+        }
         style={{
           background: `radial-gradient(ellipse at center, ${soft}55 0%, transparent 70%)`,
         }}
@@ -225,7 +232,7 @@ export default function GuideAvatar({
       <p className="mt-1 text-sm font-semibold text-cyan-100">
         StepLint Guide · {label.replace("StepLint Guide, ", "")}
       </p>
-      {caption && (
+      {caption && !compact && (
         <p className="mt-1 min-h-10 line-clamp-2 text-sm text-slate-200">
           {caption}
         </p>

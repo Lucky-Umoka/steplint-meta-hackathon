@@ -6,7 +6,7 @@ import { approveDraft, validateDraft, validateSelections, type TeachContext, typ
 import { inspectLessonVideo, validateLessonAudio } from "../src/teach/media";
 import { stageFromMessage } from "../src/teach/progress";
 import { discoveryRequest, parseDiscovery } from "../src/server/teach/discovery";
-import { suggestReviews, keyFrames, reviewBlockers, reviewErrorMessage } from "../src/teach/review-suggestions";
+import { suggestReviews, keyFrames, narrowToVerifiableScope, reviewBlockers, reviewErrorMessage } from "../src/teach/review-suggestions";
 import { normalizeTranscript, samSelectionRequest, summarizeTracking, sparkRequest, parseSparkDraft, uploadLesson, compileLesson } from "../src/server/teach/pipeline";
 import { authorize, seal, unseal } from "../src/server/teach/security";
 import { boundedBody, lesson as lessonRoute, approve as approvalRoute, compile as compileRoute, access as accessRoute } from "../src/server/teach/http";
@@ -310,6 +310,60 @@ describe("approval readiness and processing UI contracts", () => {
     expect(issues.some((s) => s.includes("starting/target zones are missing"))).toBe(true);
     expect(issues.some((s) => s.includes("confirm the visible zone entry"))).toBe(true);
     expect(JSON.stringify(issues)).not.toContain("invalid_value");
+  });
+  it("names the exact failing field instead of a generic invalid-review message", () => {
+    const error = Object.assign(new Error("x"), {
+      name: "ZodError",
+      issues: [{ path: ["steps", 0, "toRegion"], message: "Required" }],
+    });
+    const message = reviewErrorMessage(error);
+    expect(message).toContain("steps.0.toRegion");
+    expect(message).toContain("Required");
+  });
+  it("narrows an unverifiable goal to its covered steps and repairs references", () => {
+    const draft = draftFor();
+    const second = structuredClone(draft.procedure.steps[0]);
+    second.id = "move-base-2";
+    second.prerequisites = ["move-base"];
+    draft.procedure.steps.push(second);
+    draft.procedure.execution = {
+      schemaVersion: 2,
+      goal: "Move the base twice.",
+      goalStepIds: ["move-base-2"],
+      requirements: [
+        { description: "First move.", status: "covered", stepIds: ["move-base"], reason: "Tracked." },
+        { description: "Second move.", status: "unsupported", stepIds: ["move-base-2"], reason: "Hidden state." },
+      ],
+    };
+    draft.notes.push({ ...draft.notes[0], stepId: "move-base-2" });
+    const narrowed = narrowToVerifiableScope(draft);
+    expect(narrowed.procedure.steps.map((s) => s.id)).toEqual(["move-base"]);
+    expect(narrowed.procedure.execution!.requirements.map((r) => r.status)).toEqual(["covered"]);
+    expect(narrowed.procedure.execution!.goalStepIds).toEqual(["move-base"]);
+    expect(narrowed.notes.map((n) => n.stepId)).toEqual(["move-base"]);
+    expect(draft.procedure.steps).toHaveLength(2);
+  });
+  it("refuses to narrow when nothing verifiable remains", () => {
+    const draft = draftFor();
+    draft.procedure.execution = {
+      schemaVersion: 2,
+      goal: "Hidden work.",
+      goalStepIds: ["move-base"],
+      requirements: [
+        { description: "Hidden.", status: "unsupported", stepIds: ["move-base"], reason: "Hidden state." },
+      ],
+    };
+    expect(() => narrowToVerifiableScope(draft)).toThrow("Nothing verifiable");
+    expect(() => narrowToVerifiableScope(draftFor())).toThrow("No executable goal");
+  });
+  it("renders procedure-level failures without an empty path prefix", () => {
+    const error = Object.assign(new Error("x"), {
+      name: "ZodError",
+      issues: [{ path: [], message: "Unsupported required work cannot be approved." }],
+    });
+    const message = reviewErrorMessage(error);
+    expect(message).toContain("Unsupported required work cannot be approved.");
+    expect(message).not.toContain("review —");
   });
   it("requires human review even with valid suggested zones, and becomes ready only after all checks", () => {
     const checks = suggestReviews(draftFor(), context);

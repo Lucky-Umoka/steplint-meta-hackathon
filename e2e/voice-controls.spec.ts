@@ -1,5 +1,4 @@
 import { test, expect } from "./safe-test";
-import { installHandFixture, pinchControl } from "./hand-fixture";
 test("voice controls release the recognizer, cancel stale confirmations and do not restart after permission denial", async ({
   page,
 }) => {
@@ -43,11 +42,17 @@ test("voice controls release the recognizer, cancel stale confirmations and do n
     window.speechSynthesis.speak = () => {};
     window.speechSynthesis.cancel = () => {};
   });
-  await page.route("**/api/teach/access", (r) =>
-    r.fulfill({ json: { unlocked: true } }),
-  );
-  await page.goto("/teach?legacy=1");
-  await page.getByLabel("Enable voice control", { exact: true }).check();
+  await page.goto("/practice");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { qaRecognition: unknown[] }).qaRecognition
+            .length,
+      ),
+    )
+    .toBe(1);
+  await page.getByLabel("Enable microphone voice controls").check();
   const utter = async (text: string) =>
     page.evaluate((text) => {
       const sessions = (
@@ -75,7 +80,7 @@ test("voice controls release the recognizer, cancel stale confirmations and do n
       get: () => true,
     }),
   );
-  await utter("Guide, start recording");
+  await utter("Muse, start practice");
   await expect(page.getByTestId("voice-command-feedback")).toContainText(
     "while guidance was speaking",
   );
@@ -85,15 +90,25 @@ test("voice controls release the recognizer, cancel stale confirmations and do n
       get: () => false,
     }),
   );
-  await utter("Guide, start recording");
+  await utter("Muse, pause");
   await expect(page.getByTestId("voice-command-feedback")).toContainText(
     "The action is not available in this state",
   );
-  await utter("StepLint, discard");
-  await expect(page.getByText(/within .*s, or it expires/)).toBeVisible();
-  await utter("StepLint, pause");
-  await expect(page.getByText(/within .*s, or it expires/)).toHaveCount(0);
-  await page.getByLabel("Enable voice control", { exact: true }).uncheck();
+  await expect(page.getByTestId("voice-transcript")).toContainText(
+    "Muse, pause",
+  );
+  await expect(page.getByTestId("voice-transcript")).toContainText(
+    "Practice is not running",
+  );
+  await utter("Guide, restart practice");
+  await expect(page.getByTestId("voice-command-feedback")).toContainText(
+    "Confirmation required",
+  );
+  await utter("Muse, pause");
+  await expect(page.getByTestId("voice-command-feedback")).not.toContainText(
+    "Confirmation required",
+  );
+  await page.getByLabel("Enable microphone voice controls").uncheck();
   await expect
     .poll(() =>
       page.evaluate(
@@ -103,7 +118,7 @@ test("voice controls release the recognizer, cancel stale confirmations and do n
       ),
     )
     .toBe(1);
-  await page.getByLabel("Enable voice control", { exact: true }).check();
+  await page.getByLabel("Enable microphone voice controls").check();
   await expect
     .poll(() =>
       page.evaluate(
@@ -129,37 +144,15 @@ test("voice controls release the recognizer, cancel stale confirmations and do n
     return { starts: rec.starts, aborts: rec.aborts };
   });
   expect(counts).toEqual({ starts: 1, aborts: 1 });
-  await expect(
-    page.getByText(/Microphone unavailable — use the buttons/),
-  ).toBeVisible();
+  await expect(page.getByTestId("voice-command-feedback")).toContainText(
+    "Microphone permission is blocked",
+  );
 });
 
-test("Teach voice commands drive the real recorder through recording, pause, resume and stop", async ({
+test("Teach recorder buttons drive recording, pause, resume and stop", async ({
   page,
 }) => {
-  await installHandFixture(page);
   await page.addInitScript(() => {
-    class Recognition {
-      continuous = true;
-      interimResults = true;
-      lang = "en-US";
-      onresult: ((e: unknown) => void) | null = null;
-      onstart: (() => void) | null = null;
-      start() {
-        this.onstart?.();
-        Object.assign(window, {
-          utter: (text: string) =>
-            this.onresult?.({
-              resultIndex: 0,
-              results: [{ isFinal: true, 0: { transcript: text } }],
-            }),
-        });
-      }
-      abort() {}
-      stop() {}
-    }
-    Object.assign(window, { SpeechRecognition: Recognition });
-    window.speechSynthesis.speak = () => {};
     const streams: MediaStream[] = [];
     Object.assign(window, { captureStreams: streams });
     navigator.mediaDevices.getUserMedia = async () => {
@@ -190,44 +183,25 @@ test("Teach voice commands drive the real recorder through recording, pause, res
     r.fulfill({ json: { unlocked: true } }),
   );
   await page.goto("/teach");
+  await page
+    .getByRole("button", { name: "Create new teach" })
+    .click();
   await page.getByLabel(/Everyone visible or audible/).check();
   await expect(
     page.getByRole("button", { name: "Start recording", exact: true }),
   ).toBeEnabled({ timeout: 20000 });
-  await page.getByLabel("Enable voice control", { exact: true }).check();
-  const utter = (text: string) =>
-    page.evaluate(
-      (text) =>
-        (window as unknown as { utter: (t: string) => void }).utter(text),
-      text,
-    );
-  await utter("Guide, start camera");
+  await page.getByRole("button", { name: "Preview camera", exact: true }).click();
   await expect(page.getByText(/Camera preview — not recording/)).toBeVisible();
-  await utter("Muse, start recording");
+  await page.getByRole("button", { name: "Start recording", exact: true }).click();
   await expect(page.getByText(/● REC — camera/)).toBeVisible();
-  await page.getByLabel("Enable gesture control", { exact: true }).check();
-  await pinchControl(
-    page,
-    page.getByRole("button", { name: "Pause recording", exact: true }),
-  );
+  await page.getByRole("button", { name: "Pause recording", exact: true }).click();
   await expect(page.getByText(/❚❚ Paused/)).toBeVisible();
-  await utter("Hey Muse, please resume recording");
-  await expect(page.getByText(/● REC — camera/)).toBeVisible();
-  await page.evaluate(() =>
-    Object.assign(window, {
-      controlHand: { kind: "open_palm", x: 0.9, y: 0.5 },
-    }),
-  );
-  await expect(page.getByText(/❚❚ Paused/)).toBeVisible();
-  await page.evaluate(() =>
-    Object.assign(window, { controlHand: { kind: "none", x: 0, y: 0 } }),
-  );
-  await utter("Muse, resume recording");
+  await page.getByRole("button", { name: "Resume recording", exact: true }).click();
   await expect(page.getByText(/● REC — camera/)).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Done", exact: true }),
-  ).toBeEnabled({ timeout: 20000 });
-  await utter("Guide, stop recording");
+  ).toBeEnabled({ timeout: 30000 });
+  await page.getByRole("button", { name: "Done", exact: true }).click();
   await expect
     .poll(() =>
       page.evaluate(() =>
@@ -240,4 +214,5 @@ test("Teach voice commands drive the real recorder through recording, pause, res
     )
     .toBe(true);
   await expect(page.getByText(/● REC — camera/)).toHaveCount(0);
+  await expect(page.getByLabel("Prepared lesson preview")).toBeVisible();
 });

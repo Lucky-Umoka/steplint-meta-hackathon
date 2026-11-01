@@ -9,12 +9,6 @@ import {
 } from "@/media/convert";
 import { inspectLessonVideo } from "@/teach/media";
 import { MAX_TEACH_BODY, type LessonMedia } from "@/teach/schema";
-import { type VoiceCommand, type CommandDisposition } from "@/voice/commands";
-import { useVoiceControl, type VoiceEvent } from "@/voice/use-voice-control";
-import GestureControls from "@/gesture/GestureControls";
-import { useVoicePreference } from "@/voice/voice-preference";
-import CommandFeedback from "@/voice/CommandFeedback";
-import VoicePanel, { appendVoiceEvent } from "@/voice/VoicePanel";
 
 export type PreparedLesson = { video: Blob; audio: Blob; media: LessonMedia };
 export type ControlMark = {
@@ -22,41 +16,6 @@ export type ControlMark = {
   recordingMs: number | null;
   text: string;
 };
-const TEACH_COMMANDS: VoiceCommand[] = [
-  {
-    id: "start-recording",
-    phrases: ["start recording", "start", "begin recording"],
-  },
-  { id: "pause-recording", phrases: ["pause recording", "pause"] },
-  { id: "resume-recording", phrases: ["resume recording", "resume"] },
-  {
-    id: "stop-recording",
-    phrases: ["stop recording", "stop", "done", "finish recording"],
-  },
-  {
-    id: "preview-recording",
-    phrases: [
-      "preview recording",
-      "preview",
-      "show preview",
-      "start camera",
-      "preview camera",
-      "open camera",
-    ],
-  },
-  {
-    id: "discard-recording",
-    phrases: ["discard recording", "discard", "start over"],
-    destructive: true,
-    confirmPhrase: "confirm discard",
-  },
-  {
-    id: "restart-recording",
-    phrases: ["restart recording", "restart"],
-    destructive: true,
-    confirmPhrase: "confirm restart",
-  },
-];
 export default function LessonCapture({
   onPrepared,
   onControlMark,
@@ -100,21 +59,13 @@ export default function LessonCapture({
         recorder.stop();
     }, 100);
   }
-  const [voiceOn, setVoiceOn] = useVoicePreference();
-  const [voiceLog, setVoiceLog] = useState<VoiceEvent[]>([]);
-  function logVoice(event: VoiceEvent) {
-    setVoiceLog((log) => appendVoiceEvent(log, event));
-  }
-  function say(text: string) {
-    logVoice({ at: Date.now(), source: "steplint", text });
-    try {
-      if ("speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
-      }
-    } catch {
-      // Speech is a convenience; the on-screen log is authoritative.
-    }
+  function stopTracks() {
+    const r = resources.current;
+    if (r.timer) clearInterval(r.timer);
+    r.timer = null;
+    r.stream?.getTracks().forEach((t) => t.stop());
+    r.stream = null;
+    if (camera.current) camera.current.srcObject = null;
   }
   function markControl(text: string) {
     const at = Date.now();
@@ -127,14 +78,6 @@ export default function LessonCapture({
           : null,
     });
   }
-  function stopTracks() {
-    const r = resources.current;
-    if (r.timer) clearInterval(r.timer);
-    r.timer = null;
-    r.stream?.getTracks().forEach((t) => t.stop());
-    r.stream = null;
-    if (camera.current) camera.current.srcObject = null;
-  }
   function cancel() {
     resources.current.abort.abort();
     const recorderState = resources.current.recorder?.state;
@@ -145,86 +88,6 @@ export default function LessonCapture({
     setSeconds(0);
     setError("");
   }
-  function runVoiceAction(id: string, disposition: CommandDisposition) {
-    if (disposition === "rejected") {
-      say("That confirmation has expired. Please say the command again.");
-      return;
-    }
-    if (disposition === "needs-confirmation") {
-      say(
-        id === "discard-recording"
-          ? "Say StepLint, confirm discard to delete this recording."
-          : "Say StepLint, confirm restart to replace this recording.",
-      );
-      return;
-    }
-    const refuse = (text: string) => {
-      say(text);
-      return false;
-    };
-    switch (id) {
-      case "start-recording":
-        markControl("start recording");
-        if (!consent)
-          return refuse("Confirm recording consent before starting.");
-        else if (!support)
-          return refuse(
-            "Recording support is still being checked. Try again when the camera controls are ready.",
-          );
-        else if (!support.h264)
-          return refuse(
-            "Recording is unavailable in this browser. Use an existing MP4 instead.",
-          );
-        else if (state !== "idle" && state !== "preview")
-          return refuse(
-            "A recording is already active. Pause, stop or discard it before starting another.",
-          );
-        else void record();
-        break;
-      case "pause-recording":
-        markControl("pause recording");
-        if (!pauseRecording()) return refuse("Nothing is recording right now.");
-        break;
-      case "resume-recording":
-        markControl("resume recording");
-        if (!resumeRecording()) return refuse("Nothing is paused right now.");
-        break;
-      case "stop-recording":
-        markControl("stop recording");
-        if (state !== "recording" && state !== "paused")
-          return refuse("Nothing is recording right now.");
-        else if (seconds < 10)
-          return refuse(
-            "Keep going a little longer; lessons need ten seconds.",
-          );
-        else resources.current.recorder?.stop();
-        break;
-      case "preview-recording":
-        markControl("preview recording");
-        if (state !== "idle" && state !== "preview")
-          return refuse("Finish recording first.");
-        else
-          void preview().catch(() => refuse("There is no preview available."));
-        break;
-      case "discard-recording":
-        markControl("discard recording");
-        cancel();
-        say("Recording discarded.");
-        break;
-      case "restart-recording":
-        markControl("restart recording");
-        cancel();
-        void record();
-        break;
-    }
-    return true;
-  }
-  const voice = useVoiceControl({
-    commands: TEACH_COMMANDS,
-    enabled: voiceOn,
-    onAction: runVoiceAction,
-    onEvent: (event) => logVoice(event),
-  });
   useEffect(() => {
     void probeEncoding()
       .then(setSupport)
@@ -422,12 +285,11 @@ export default function LessonCapture({
     }
   }
   return (
-    <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 className="text-xl font-bold">1. Record or choose a lesson</h2>
-      <p>
-        Record 10–20 seconds. Name each part and keep the complete movement,
-        starting state and final result visible. Continuous movements are
-        welcome.
+    <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <h2 className="text-lg font-bold">1. Record or choose a lesson</h2>
+      <p className="text-sm">
+        Record 10–20 seconds with the full movement visible, or upload a
+        recording.
       </p>
       <label className="flex gap-2">
         <input
@@ -465,7 +327,7 @@ export default function LessonCapture({
         autoPlay
         muted
         playsInline
-        className="max-h-[55vh] w-full rounded-xl bg-slate-950"
+        className="max-h-[30vh] w-full rounded-xl bg-slate-950"
         aria-label="Live lesson preview"
       />
       <div className="flex flex-wrap gap-3">
@@ -473,7 +335,10 @@ export default function LessonCapture({
           disabled={
             (state !== "idle" && state !== "preview") || !consent || !support
           }
-          onClick={() => void preview()}
+          onClick={() => {
+            markControl("preview recording");
+            void preview();
+          }}
         >
           Preview camera
         </button>
@@ -483,9 +348,21 @@ export default function LessonCapture({
             !consent ||
             !support?.h264
           }
-          onClick={() => void record()}
+          onClick={() => {
+            markControl("start recording");
+            void record();
+          }}
         >
           Start recording
+        </button>
+        <button
+          type="button"
+          disabled={state !== "idle"}
+          onClick={() => fileInput.current?.click()}
+          aria-controls="teach-mp4-upload"
+          title="MP4/H.264 with audio, 10–20 s, ≤2.8 MB. No consent checkbox needed."
+        >
+          Upload video recording
         </button>
         <button
           disabled={
@@ -496,87 +373,38 @@ export default function LessonCapture({
           Done
         </button>
         {state === "recording" && (
-          <button onClick={pauseRecording}>Pause recording</button>
+          <button
+            onClick={() => {
+              markControl("pause recording");
+              pauseRecording();
+            }}
+          >
+            Pause recording
+          </button>
         )}
         {state === "paused" && (
-          <button onClick={resumeRecording}>Resume recording</button>
+          <button
+            onClick={() => {
+              markControl("resume recording");
+              resumeRecording();
+            }}
+          >
+            Resume recording
+          </button>
         )}
-        <button onClick={cancel}>Discard recording</button>
-      </div>
-      <div className="rounded-xl border bg-white p-3 text-sm">
-        <label className="flex items-center gap-2 font-medium">
-          <input
-            type="checkbox"
-            checked={voiceOn}
-            onChange={(e) => setVoiceOn(e.target.checked)}
-          />
-          Enable voice control
-        </label>
-        {voiceOn && (
-          <>
-            <p role="status" className="mt-1 text-slate-600">
-              {voice.status === "listening"
-                ? "Listening for StepLint commands"
-                : voice.status === "requesting"
-                  ? "Requesting microphone permission…"
-                  : voice.status === "unsupported"
-                    ? "Voice control is not supported in this browser — use the buttons"
-                    : voice.status === "denied"
-                      ? "Microphone unavailable — use the buttons"
-                      : voice.status === "error"
-                        ? "Voice recognition error — use the buttons"
-                        : "Voice control off"}
-              {voice.lastHeard && ` · Last heard: “${voice.lastHeard}”`}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              Browser speech recognition runs while enabled; commands need the
-              Muse, Guide or StepLint prefix. Recognition is provided by your
-              browser and may use its online service — no audio is stored or
-              sent anywhere by StepLint. Say “StepLint, stop recording” to
-              finish hands-free.
-            </p>
-            {voice.pending && (
-              <p role="alert" className="mt-1 font-medium text-amber-800">
-                Say “StepLint,{" "}
-                {voice.pending.actionId === "discard-recording"
-                  ? "confirm discard"
-                  : "confirm restart"}{" "}
-                within {voice.confirmWindowSec}s, or it expires.
-              </p>
-            )}
-          </>
-        )}
-      </div>
-      {voiceOn && (
-        <CommandFeedback
-          feedback={voice.feedback}
-          commands={voice.availableCommands}
-          onRestart={
-            voice.status === "error" || voice.status === "denied"
-              ? voice.restart
-              : undefined
-          }
-        />
-      )}
-      <VoicePanel events={voiceLog} />
-      <GestureControls
-        videoRef={camera}
-        pauseLabel="pauses recording"
-        onPauseRequest={() => {
-          if (pauseRecording()) say("Recording paused.");
-          else say("Nothing is recording right now.");
-        }}
-      />
-      <div className="space-y-2">
-        <p>Or choose an existing MP4/H.264 with audio (10–20 s, ≤2.8 MB).</p>
         <button
-          type="button"
-          disabled={!consent || state !== "idle"}
-          onClick={() => fileInput.current?.click()}
-          aria-controls="teach-mp4-upload"
+          onClick={() => {
+            markControl("discard recording");
+            cancel();
+          }}
         >
-          Choose MP4 file
+          Discard recording
         </button>
+      </div>
+      <div className="space-y-2">
+        <p className="text-sm text-slate-500">
+          Upload: MP4/H.264 with audio, 10–20 s, ≤2.8 MB.
+        </p>
         <input
           ref={fileInput}
           id="teach-mp4-upload"
@@ -584,7 +412,7 @@ export default function LessonCapture({
           aria-label="Existing lesson MP4"
           type="file"
           accept="video/mp4,.mp4"
-          disabled={!consent || state !== "idle"}
+          disabled={state !== "idle"}
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = "";

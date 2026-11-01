@@ -93,7 +93,7 @@ export default function LocalPractice() {
   const [speaking, setSpeaking] = useState(false);
   const speechGeneration = useRef(0);
   const [guidanceOn, setGuidanceOn] = useState(true);
-  const [voiceOn, setVoiceOn] = useState(false),
+  const [voiceOn, setVoiceOn] = useState(true),
     [voiceLog, setVoiceLog] = useState<VoiceEvent[]>([]);
   const latest = useRef<Pixels | null>(null),
     worker = useRef<Worker | null>(null),
@@ -118,6 +118,33 @@ export default function LocalPractice() {
   });
   const evidence = useRef(new EvidenceBuffer());
   const trackingMeasurements = useRef<TrackingMeasurement[]>([]);
+  const lastProgressAt = useRef(0),
+    stallNoticed = useRef(false),
+    stallTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  function markProgress() {
+    lastProgressAt.current = performance.now();
+    stallNoticed.current = false;
+  }
+  function startStallWatch() {
+    if (stallTimer.current) clearInterval(stallTimer.current);
+    lastProgressAt.current = performance.now();
+    stallNoticed.current = false;
+    stallTimer.current = setInterval(() => {
+      if (
+        !stallNoticed.current &&
+        worker.current &&
+        session.current &&
+        !session.current.stopped &&
+        session.current.armed &&
+        performance.now() - lastProgressAt.current > 4000
+      ) {
+        stallNoticed.current = true;
+        setNotice(
+          "Waiting for trackable movement. Hold the work steady in frame with clear light.",
+        );
+      }
+    }, 2000);
+  }
   function archiveSession() {
     const previous = session.current;
     if (
@@ -145,19 +172,51 @@ export default function LocalPractice() {
       return;
     try {
       const gen = ++speechGeneration.current;
+      // Chrome drops a speak() issued in the same task as cancel(): defer
+      // past it, resume a suspended engine (mobile), and pick an explicit
+      // voice so platforms without a default still sound.
       window.speechSynthesis.cancel();
       setSpeaking(false);
       const utterance = new SpeechSynthesisUtterance(text);
+      const voices = window.speechSynthesis.getVoices?.() ?? [];
+      const english = voices.find((voice) =>
+        voice.lang?.toLowerCase().startsWith("en"),
+      );
+      if (english) {
+        utterance.voice = english;
+        utterance.lang = english.lang;
+      }
       utterance.onstart = () => {
         if (gen === speechGeneration.current) {
           setSpeaking(true);
           log({ at: Date.now(), source: "steplint", text });
         }
       };
-      utterance.onend = utterance.onerror = () => {
+      utterance.onend = () => {
         if (gen === speechGeneration.current) setSpeaking(false);
       };
-      window.speechSynthesis.speak(utterance);
+      utterance.onerror = () => {
+        if (gen === speechGeneration.current) setSpeaking(false);
+        log({
+          at: Date.now(),
+          source: "control",
+          text: "Speech failed; visual verification continues.",
+        });
+      };
+      window.setTimeout(() => {
+        if (gen !== speechGeneration.current) return;
+        try {
+          window.speechSynthesis.resume?.();
+          window.speechSynthesis.speak(utterance);
+        } catch {
+          setSpeaking(false);
+          log({
+            at: Date.now(),
+            source: "control",
+            text: "Speech is unavailable; visual verification continues.",
+          });
+        }
+      }, 60);
     } catch {
       setSpeaking(false);
       log({
@@ -191,6 +250,10 @@ export default function LocalPractice() {
     speechGeneration.current++;
     setSpeaking(false);
     window.speechSynthesis?.cancel();
+    if (stallTimer.current) {
+      clearInterval(stallTimer.current);
+      stallTimer.current = null;
+    }
     generation.current++;
     worker.current?.terminate();
     worker.current = null;
@@ -283,11 +346,29 @@ export default function LocalPractice() {
   useEffect(
     () => () => {
       worker.current?.terminate();
+      if (stallTimer.current) clearInterval(stallTimer.current);
       speechGeneration.current++;
       window.speechSynthesis?.cancel();
     },
     [],
   );
+  const speakRef = useRef(speak);
+  speakRef.current = speak;
+  const announcedCamera = useRef(false);
+  useEffect(() => {
+    if (cameraActive && !announcedCamera.current) {
+      announcedCamera.current = true;
+      speakRef.current(
+        lesson?.automaticSetup
+          ? "Camera on. Show the starting view; automatic tracking begins when it is recognized."
+          : "Camera on. Show the demonstrated starting view, then capture the setup for calibration.",
+      );
+    }
+    if (!cameraActive) announcedCamera.current = false;
+    // Spoken through the ref so the announcement always uses fresh state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraActive, lesson?.automaticSetup]);
+  const [rehearsal, setRehearsal] = useState(false);
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -297,8 +378,26 @@ export default function LocalPractice() {
           await saveApprovedProcedure(handoff);
           sessionStorage.removeItem("steplint-approved-handoff");
         }
+        // Rehearsal drafts arrive via localStorage (new tabs do not share
+        // sessionStorage). They load in memory only and are never saved.
+        if (new URLSearchParams(window.location.search).get("rehearsal") === "1") {
+          const draft = localStorage.getItem("steplint-rehearsal-handoff");
+          localStorage.removeItem("steplint-rehearsal-handoff");
+          if (!draft)
+            throw Error(
+              "Rehearsal data is missing. Start the test from Teach review.",
+            );
+          if (active) setRehearsal(true);
+          await load(draft, true);
+          return;
+        }
         const rows = await listApprovedProcedures();
-        if (active) setSaved(rows);
+        const ordered = [...rows].sort((a, b) => b.savedAt - a.savedAt);
+        if (!active) return;
+        setSaved(ordered);
+        // The guide is already chosen before reaching this screen (Teach sends
+        // it directly), so open the most recent one instead of asking again.
+        if (ordered.length > 0) await load(ordered[0].raw);
       } catch (e) {
         if (active)
           setError(
@@ -309,25 +408,35 @@ export default function LocalPractice() {
     return () => {
       active = false;
     };
+    // Mount-once intake: load identity is intentionally excluded so a
+    // consumed rehearsal is never re-loaded on re-renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  async function load(raw: string) {
+  async function load(raw: string, rehearsalRun = false) {
     const loading = ++loadGeneration.current;
-    halt("Loading approval…");
+    halt(rehearsalRun ? "Loading rehearsal…" : "Loading approval…");
     setError("");
     try {
-      const artifact = ApprovedArtifactSchema.parse(JSON.parse(raw));
-      if (!artifact.procedure.execution)
-        throw Error(
-          "This older approval needs a new executable review in Teach. Its original export is preserved.",
-        );
-      const response = await fetch("/api/teach/practice-lesson", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: raw,
-      });
-      const validated = PracticeLessonSchema.parse(
-        await readAppJson(response, "Approval verification"),
-      );
+      const validated = rehearsalRun
+        ? PracticeLessonSchema.parse({
+            ...JSON.parse(raw),
+            origin: "teach" as const,
+          })
+        : await (async () => {
+            const artifact = ApprovedArtifactSchema.parse(JSON.parse(raw));
+            if (!artifact.procedure.execution)
+              throw Error(
+                "This older approval needs a new executable review in Teach. Its original export is preserved.",
+              );
+            const response = await fetch("/api/teach/practice-lesson", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: raw,
+            });
+            return PracticeLessonSchema.parse(
+              await readAppJson(response, "Approval verification"),
+            );
+          })();
       if (loading !== loadGeneration.current) return;
       setLesson(validated);
       setManualSetupOpen(false);
@@ -485,6 +594,15 @@ export default function LocalPractice() {
       return;
     setError("");
     try {
+      // Unlock the speech engine on the starting gesture: later verdicts
+      // speak from async callbacks where mobile browsers may stay muted.
+      window.speechSynthesis?.getVoices?.();
+      window.speechSynthesis?.resume?.();
+    } catch {
+      /* Speech warm-up is best effort; verification continues. */
+    }
+    startStallWatch();
+    try {
       const bindings: ZoneBinding[] = lesson.zoneBindings.map((b) => ({
         zoneId: b.zoneId,
         region: automatic ? b.region : marks[`zone:${b.zoneId}`],
@@ -536,6 +654,16 @@ export default function LocalPractice() {
       if (!resuming && !automatic) archiveSession();
       session.current = next;
       setResult(next.result);
+      const firstPending = next.procedure.steps.find(
+        (step) =>
+          next.result.steps.find((state) => state.stepId === step.id)
+            ?.status !== "passed",
+      );
+      speak(
+        firstPending
+          ? `Practice started. ${firstPending.description}`
+          : "Practice started. Goal verified; keep required states in place.",
+      );
       lastEvent.current = resuming ? next.result.events.length : 0;
       lastAlert.current = "";
       if (!resuming) metrics.current = [];
@@ -635,6 +763,7 @@ export default function LocalPractice() {
           const frame = feedTrackingFrame(active, reply);
           const updated = frame.changed ? frame.result : null;
           const warning = frame.warning;
+          if (updated || warning) markProgress();
           for (const { objectId, outcome } of frame.observations) {
             if (outcome.evidenceFrames?.[0])
               evidence.current.hold(
@@ -989,6 +1118,12 @@ export default function LocalPractice() {
         })),
       ]
     : [];
+  let lastHeard = "",
+    lastGuide = "";
+  for (const event of voiceLog) {
+    if (event.source === "you") lastHeard = event.text;
+    else lastGuide = event.text;
+  }
   function objectColour(id: string) {
     const matching =
       lesson?.procedure.steps.filter(
@@ -1019,23 +1154,178 @@ export default function LocalPractice() {
   }
   return (
     <Workspace mode="practice">
-      <div className="mx-auto max-w-6xl space-y-5">
-        <div>
-          <h1 className="text-3xl font-bold">Practice a guide</h1>
-          <p>
-            Choose a guide and allow the camera. Practice recognizes the
-            starting view and checks movements automatically.
+      <div className="w-full space-y-2">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <h1 className="text-lg font-bold">Practice</h1>
+          <label className="text-sm text-slate-600">
+            Approved lessons{" "}
+            <select
+              disabled={running || starting}
+              value={lesson?.procedure.id ?? ""}
+              onChange={(e) => {
+                const row = saved.find((r) => r.id === e.target.value);
+                if (row) void load(row.raw);
+              }}
+            >
+              <option value="">Choose a lesson</option>
+              {saved.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          {!cameraActive ? (
+            <button
+              disabled={!lesson || cameraRequesting}
+              onClick={() => {
+                latest.current = null;
+                setFrameReady(false);
+                void startCamera(
+                  lesson?.sourceLesson?.media.info.video
+                    ? lesson.sourceLesson.media.info.video.width /
+                        lesson.sourceLesson.media.info.video.height
+                    : undefined,
+                );
+              }}
+            >
+              Start camera
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => {
+                  halt("Camera stopped.");
+                  stopCamera();
+                }}
+              >
+                Stop camera
+              </button>
+              {!running &&
+                !starting &&
+                (!lesson?.automaticSetup || manualSetupOpen) && (
+                  <button
+                    disabled={!frameReady}
+                    onClick={() => prepareSetup(false)}
+                  >
+                    Capture setup for calibration
+                  </button>
+                )}
+            </>
+          )}
+          {!running &&
+            !starting &&
+            cameraActive &&
+            result &&
+            (!lesson?.automaticSetup || manualSetupOpen) && (
+              <button onClick={() => prepareSetup(true)}>
+                Resume with fresh calibration
+              </button>
+            )}
+          {running && <button onClick={() => halt()}>Pause practice</button>}
+          {!running && lesson?.automaticSetup && result && (
+            <button
+              onClick={() => {
+                setResumeRequested(true);
+                automaticWanted.current = true;
+                automaticAttemptAt.current = -Infinity;
+                if (!cameraActive)
+                  void startCamera(
+                    lesson?.sourceLesson?.media.info.video
+                      ? lesson.sourceLesson.media.info.video.width /
+                          lesson.sourceLesson.media.info.video.height
+                      : undefined,
+                  );
+              }}
+            >
+              Resume practice
+            </button>
+          )}
+          <p id="local-practice-status" role="status" className="text-sm text-slate-600">
+            {notice}
           </p>
+        </div>
+        <div className="flex flex-wrap items-stretch gap-2 text-xs">
+          {lesson && (
+            <section
+              aria-label="Current step and goal"
+              className="min-w-52 flex-1 space-y-0.5 rounded-2xl border bg-white p-2"
+            >
+              <p className="truncate font-semibold">
+                Goal: {lesson.procedure.execution?.goal}
+              </p>
+              <p>
+                Next:{" "}
+                {!running
+                  ? lesson.automaticSetup
+                    ? "Show the starting view; automatic tracking is preparing."
+                    : "Open a fresh Teach approval for automatic tracking."
+                  : !startingVerified
+                    ? "Checking starting positions."
+                    : (lesson.procedure.steps.find(
+                        (step) =>
+                          result?.steps.find(
+                            (state) => state.stepId === step.id,
+                          )?.status !== "passed",
+                      )?.description ??
+                      "Goal verified; keep required states in place.")}
+              </p>
+            </section>
+          )}
+          <div className="min-w-52 flex-1 space-y-0.5 rounded-2xl border bg-white p-2">
+            <label className="flex gap-2 font-medium">
+              <input
+                type="checkbox"
+                checked={voiceOn}
+                onChange={(e) => {
+                  setVoiceOn(e.target.checked);
+                  if (!e.target.checked) {
+                    speechGeneration.current++;
+                    setSpeaking(false);
+                    window.speechSynthesis?.cancel();
+                  }
+                }}
+              />
+              Enable microphone voice controls
+            </label>
+            <p
+              className="truncate text-slate-600"
+              title={`Voice control: ${voice.status}. ${voice.feedback}`}
+            >
+              Voice control: {voice.status}. {voice.feedback}
+            </p>
+            <p className="truncate text-slate-600" data-testid="voice-transcript">
+              {lastHeard ? `You said: “${lastHeard}”` : " "}
+              {lastHeard && lastGuide ? " · " : ""}
+              {lastGuide ? `Guide said: “${lastGuide}”` : ""}
+            </p>
+          </div>
+          <div className="min-w-52 flex-1 text-xs">
+            <GestureControls
+              compact
+              videoRef={videoRef}
+              onPauseRequest={() => halt()}
+            />
+          </div>
         </div>
         <div
           data-testid="practice-live-row"
-          className={`grid items-stretch gap-4 bg-slate-50 py-2 md:grid-cols-2 ${still && !running ? "" : "md:sticky md:top-0 md:z-20"}`}
+          className="relative grid items-stretch gap-2 md:h-[calc(100dvh-300px)] md:min-h-[360px] md:grid-cols-[3fr_2fr]"
         >
+          {running &&
+            (result?.status === "passed" || result?.status === "failed") && (
+              <div
+                key={alert?.key ?? result?.status}
+                data-testid="practice-glow"
+                aria-hidden="true"
+                className={`pointer-events-none absolute inset-0 z-10 rounded-2xl ${result?.status === "failed" ? "practice-glow-fail" : "practice-glow-pass"}`}
+              />
+            )}
           <section
             data-testid="practice-camera"
-            className={`min-w-0 overflow-hidden rounded-2xl border-2 bg-white ${running && result?.status === "failed" ? "border-red-600 practice-frame-warning" : running && result?.status === "passed" ? "border-green-600" : "border-slate-200"}`}
+            className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border-2 bg-white ${running && result?.status === "failed" ? "border-red-600 practice-frame-warning" : running && result?.status === "passed" ? "border-green-600" : "border-slate-200"}`}
           >
-            <div className="flex items-center justify-between border-b px-4 py-3 text-sm font-semibold">
+            <div className="flex items-center justify-between border-b px-3 py-2 text-sm font-semibold">
               <span>Live work camera</span>
               <button
                 type="button"
@@ -1069,19 +1359,25 @@ export default function LocalPractice() {
                   : "Camera off"}
               </span>
             </div>
-            <div
-              className="relative mx-auto w-full bg-slate-950"
-              style={{
-                maxWidth: `min(100%, ${(cameraSize.width / cameraSize.height) * 30}vh)`,
-              }}
-            >
-              <video
-                ref={videoRef}
-                muted
-                playsInline
-                className={`block w-full bg-slate-950 ${cameraActive ? "" : "aspect-[4/3]"}`}
-                aria-label="Live work camera"
-              />
+            <div className="flex min-h-0 flex-1 items-center justify-center bg-slate-950">
+              <div
+                className="relative max-h-full max-w-full"
+                style={{
+                  aspectRatio: `${cameraSize.width} / ${cameraSize.height}`,
+                }}
+              >
+                <video
+                  ref={videoRef}
+                  muted
+                  playsInline
+                  className="absolute inset-0 h-full w-full bg-slate-950"
+                  aria-label="Live work camera"
+                />
+                {!cameraActive && (
+                  <p className="absolute inset-0 flex items-center justify-center p-4 text-center text-sm text-slate-400">
+                    Choose a guide and start the camera when you’re ready.
+                  </p>
+                )}
               {running && (
                 <svg
                   className="pointer-events-none absolute inset-0 h-full w-full"
@@ -1127,207 +1423,129 @@ export default function LocalPractice() {
                       ),
                   )}
                 </svg>
-              )}
+                )}
+              </div>
             </div>
-            {!cameraActive && (
-              <p className="p-4 text-sm text-slate-500">
-                Choose a guide and start the camera when you’re ready.
-              </p>
+            {lesson && !running && references && (
+              <div className="p-2" aria-label="Before and after goal">
+                <p className="mb-1 text-xs font-bold">Before and after goal</p>
+                <div className="flex justify-start gap-2">
+                  <figure className="w-20 overflow-hidden rounded-lg border bg-slate-50">
+                    <img
+                      src={references.before}
+                      alt="Demonstrated starting state"
+                      className="block h-12 w-full object-cover"
+                    />
+                    <figcaption className="px-1 py-0.5 text-xs font-bold">
+                      Before
+                    </figcaption>
+                  </figure>
+                  <figure className="w-20 overflow-hidden rounded-lg border bg-slate-50">
+                    <img
+                      src={references.goal}
+                      alt="Demonstrated final goal"
+                      className="block h-12 w-full object-cover"
+                    />
+                    <figcaption className="px-1 py-0.5 text-xs font-bold">
+                      After
+                    </figcaption>
+                  </figure>
+                </div>
+              </div>
+            )}
+            {lesson && (
+              <section
+                aria-label="Steps"
+                className="px-2 py-1 text-xs"
+              >
+                <details open={running ? true : undefined}>
+                  <summary className="cursor-pointer font-bold">
+                    Steps · {running ? "live verification" : "last observed result"}
+                  </summary>
+                  <ol className="mt-1 max-h-20 space-y-1 overflow-y-auto">
+                    {lesson.procedure.steps.map((step, index) => {
+                      const s = result?.steps.find(
+                        (state) => state.stepId === step.id,
+                      ) ?? { stepId: step.id, status: "pending" };
+                      return (
+                        <li
+                          key={s.stepId}
+                          className="flex gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1"
+                        >
+                          <span className="font-bold text-emerald-800">
+                            {index + 1}.
+                          </span>
+                          <span>
+                            {
+                              lesson?.procedure.steps.find(
+                                (step) => step.id === s.stepId,
+                              )?.description
+                            }
+                            : <strong>{s.status.replaceAll("_", " ")}</strong>
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </details>
+              </section>
+            )}
+            {alert && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/85 to-transparent px-3 pb-2 pt-8">
+                <div
+                  key={alert.key}
+                  data-testid="practice-verdict"
+                  role={alert.kind === "failed" ? "alert" : "status"}
+                  aria-live="polite"
+                  className={`rounded-xl border-2 p-2 text-base font-bold ${alert.kind === "failed" ? "border-red-600 bg-red-50 text-red-800 practice-correction-pulse" : alert.kind === "passed" ? "border-green-600 bg-green-50 text-green-800" : "border-amber-600 bg-amber-50 text-amber-800"}`}
+                >
+                  {alert.text}
+                </div>
+              </div>
+            )}
+            {running && references && (
+              <div className="pointer-events-none absolute right-2 top-14 w-24 overflow-hidden rounded-lg border-2 border-white bg-slate-950 shadow-lg">
+                <img src={references.goal} alt="" className="block w-full" />
+                <p className="bg-slate-950 px-1 py-0.5 text-center text-[10px] font-bold text-white">
+                  Goal
+                </p>
+              </div>
             )}
           </section>
-          <div data-testid="practice-companion" className="min-w-0">
-            <GuideAvatar
-              mode={resolveAvatarMode({
-                violation: running && result?.status === "failed",
-                complete:
-                  running &&
-                  result?.status === "passed" &&
-                  alert?.kind !== "warning",
-                uncertain:
-                  (!running && cameraActive) ||
-                  result?.status === "needs_verification" ||
-                  alert?.kind === "warning",
-                busy: starting,
-              })}
-              speech={
-                speaking
-                  ? "speaking"
-                  : voice.status === "listening"
-                    ? "listening"
-                    : "silent"
-              }
-              caption={alert?.text ?? notice}
-            />
+          <div className="flex min-w-0 flex-col">
+            <div data-testid="practice-companion" className="min-w-0 flex-1">
+              <GuideAvatar
+                artClassName="mx-auto h-72 w-64 sm:h-80 sm:w-72"
+                mode={resolveAvatarMode({
+                  violation: running && result?.status === "failed",
+                  complete:
+                    running &&
+                    result?.status === "passed" &&
+                    alert?.kind !== "warning",
+                  uncertain:
+                    (!running && cameraActive) ||
+                    result?.status === "needs_verification" ||
+                    alert?.kind === "warning",
+                  busy: starting,
+                })}
+                speech={
+                  speaking
+                    ? "speaking"
+                    : voice.status === "listening"
+                      ? "listening"
+                      : "silent"
+                }
+                caption={alert?.text ?? notice}
+              />
+            </div>
           </div>
         </div>
-        <p id="local-practice-status" role="status">
-          {notice}
-        </p>
-        <details
-          open={!lesson}
-          aria-label="Lesson library"
-          className="space-y-4 rounded-2xl border bg-white p-5"
-        >
-          <summary className="text-lg font-bold">
-            {lesson
-              ? `${lesson.procedure.title} · Change guide`
-              : "Your guides"}
-          </summary>
-          {!lesson && saved.length > 0 && (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {saved.map((row) => (
-                <button
-                  key={row.id}
-                  className="!overflow-hidden !rounded-2xl !p-0 text-left"
-                  onClick={() => void load(row.raw)}
-                >
-                  {row.references && (
-                    <svg
-                      viewBox="0 0 640 480"
-                      aria-hidden="true"
-                      className="w-full bg-slate-950"
-                    >
-                      <image
-                        href={row.references.goal}
-                        width="640"
-                        height="480"
-                        preserveAspectRatio="xMidYMid meet"
-                      />
-                    </svg>
-                  )}
-                  <span className="block p-5">
-                    <strong className="block text-lg">{row.title}</strong>
-                    <span className="mt-3 block text-sm text-emerald-800">
-                      Practice this guide →
-                    </span>
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          {!saved.length && (
-            <p className="text-sm text-slate-600">
-              Your first guide starts in Teach. Create and review a lesson, then
-              it will appear here.
-            </p>
-          )}
-          <label>
-            Approved lessons{" "}
-            <select
-              disabled={running || starting}
-              value={lesson?.procedure.id ?? ""}
-              onChange={(e) => {
-                const row = saved.find((r) => r.id === e.target.value);
-                if (row) void load(row.raw);
-              }}
-            >
-              <option value="">Choose a lesson</option>
-              {saved.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.title}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            Import an unchanged approved export{" "}
-            <input
-              disabled={running || starting}
-              type="file"
-              accept="application/json"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file)
-                  void (async () => {
-                    try {
-                      if (file.size > 1_500_000)
-                        throw Error("Export exceeds the size limit.");
-                      const raw = await file.text();
-                      await saveApprovedProcedure(raw);
-                      setSaved(await listApprovedProcedures());
-                      await load(raw);
-                    } catch (error) {
-                      setError(
-                        error instanceof Error
-                          ? error.message
-                          : "Import failed.",
-                      );
-                    }
-                  })();
-              }}
-            />
-          </label>
-        </details>
-        {lesson && (
-          <section
-            className="space-y-3 rounded-2xl border bg-white p-5"
-            aria-label="Current step and goal"
-          >
-            <p>Goal: {lesson.procedure.execution?.goal}</p>
-            <p className="font-semibold">
-              Next:{" "}
-              {!running
-                ? lesson.automaticSetup
-                  ? "Show the demonstrated starting view; automatic tracking is preparing."
-                  : "Open a fresh Teach approval for automatic tracking."
-                : !startingVerified
-                  ? "Checking starting positions before you begin."
-                  : (lesson.procedure.steps.find(
-                      (step) =>
-                        result?.steps.find((state) => state.stepId === step.id)
-                          ?.status !== "passed",
-                    )?.description ??
-                    "Goal verified; keep required states in place.")}
-            </p>
-          </section>
+        {!saved.length && !lesson && (
+          <p className="text-sm text-slate-600">
+            Your first guide starts in Teach. Create and review a lesson, then
+            it will open here automatically.
+          </p>
         )}
-        {!cameraActive ? (
-          <button
-            disabled={!lesson || cameraRequesting}
-            onClick={() => {
-              latest.current = null;
-              setFrameReady(false);
-              void startCamera(
-                lesson?.sourceLesson?.media.info.video
-                  ? lesson.sourceLesson.media.info.video.width /
-                      lesson.sourceLesson.media.info.video.height
-                  : undefined,
-              );
-            }}
-          >
-            Start camera
-          </button>
-        ) : (
-          <>
-            <button
-              onClick={() => {
-                halt("Camera stopped.");
-                stopCamera();
-              }}
-            >
-              Stop camera
-            </button>
-            {!running &&
-              !starting &&
-              (!lesson?.automaticSetup || manualSetupOpen) && (
-                <button
-                  disabled={!frameReady}
-                  onClick={() => prepareSetup(false)}
-                >
-                  Capture setup for calibration
-                </button>
-              )}
-          </>
-        )}
-        {!running &&
-          !starting &&
-          cameraActive &&
-          result &&
-          (!lesson?.automaticSetup || manualSetupOpen) && (
-            <button onClick={() => prepareSetup(true)}>
-              Resume with fresh calibration
-            </button>
-          )}
         {still && lesson && !running && (
           <section className="space-y-3 rounded-2xl border bg-white p-5">
             <h2 className="text-xl font-bold">Calibrate this view</h2>
@@ -1402,155 +1620,20 @@ export default function LocalPractice() {
             </button>
           </section>
         )}
-        {running && <button onClick={() => halt()}>Pause practice</button>}
-        {!running && lesson?.automaticSetup && result && (
-          <button
-            onClick={() => {
-              setResumeRequested(true);
-              automaticWanted.current = true;
-              automaticAttemptAt.current = -Infinity;
-              if (!cameraActive)
-                void startCamera(
-                  lesson?.sourceLesson?.media.info.video
-                    ? lesson.sourceLesson.media.info.video.width /
-                        lesson.sourceLesson.media.info.video.height
-                    : undefined,
-                );
-            }}
+        {rehearsal && lesson && (
+          <p
+            role="status"
+            className="rounded-2xl border-2 border-dashed border-amber-600 bg-amber-50 p-4 font-bold text-amber-900"
           >
-            Resume practice
-          </button>
+            Rehearsal — testing an unapproved draft. Nothing is saved. Approve
+            it in Teach to keep it.
+          </p>
         )}
-        {alert && (
-          <div
-            key={alert.key}
-            data-testid="practice-verdict"
-            role={alert.kind === "failed" ? "alert" : "status"}
-            aria-live="polite"
-            className={`rounded-xl border-2 p-4 text-lg font-bold ${alert.kind === "failed" ? "border-red-600 bg-red-50 text-red-800 practice-correction-pulse" : alert.kind === "passed" ? "border-green-600 bg-green-50 text-green-800" : "border-amber-600 bg-amber-50 text-amber-800"}`}
-          >
-            {alert.text}
-          </div>
-        )}
-        {lesson && (
-          <section
-            aria-label="Steps"
-            className="space-y-3 rounded-2xl border bg-white p-5"
-          >
-            <h2 className="text-xl font-bold">Steps</h2>
-            <p>
-              {running
-                ? "Live verification"
-                : "Last observed result — monitoring is inactive."}
-            </p>
-            <ol className="space-y-2">
-              {lesson.procedure.steps.map((step, index) => {
-                const s = result?.steps.find(
-                  (state) => state.stepId === step.id,
-                ) ?? { stepId: step.id, status: "pending" };
-                return (
-                  <li
-                    key={s.stepId}
-                    className="flex gap-3 rounded-xl border border-slate-200 p-4"
-                  >
-                    <span className="font-bold text-emerald-800">
-                      {index + 1}.
-                    </span>
-                    <span>
-                      {
-                        lesson?.procedure.steps.find(
-                          (step) => step.id === s.stepId,
-                        )?.description
-                      }
-                      : <strong>{s.status.replaceAll("_", " ")}</strong>
-                    </span>
-                  </li>
-                );
-              })}
-            </ol>
-          </section>
-        )}
-        {lesson && (
-          <section
-            aria-label="Before and final goal"
-            className="space-y-4 rounded-2xl border bg-white p-5"
-          >
-            <h2 className="text-xl font-bold">Before and final goal</h2>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <figure className="overflow-hidden rounded-xl border bg-slate-50">
-                {references ? (
-                  <svg
-                    role="img"
-                    aria-label="Demonstrated starting state"
-                    viewBox={`0 0 ${lesson.sourceLesson?.media.info.video?.width ?? 640} ${lesson.sourceLesson?.media.info.video?.height ?? 480}`}
-                    className="w-full bg-slate-950"
-                  >
-                    <image
-                      href={references.before}
-                      width="100%"
-                      height="100%"
-                    />
-                  </svg>
-                ) : (
-                  <p className="p-5 text-sm text-slate-500">
-                    No starting image was saved with this export. A fresh Teach
-                    save includes it.
-                  </p>
-                )}
-                <figcaption className="p-4">
-                  <strong>Before</strong>
-                  <p className="mt-1 text-sm text-slate-600">
-                    {lesson.procedure.steps[0].description}
-                  </p>
-                  {references && (
-                    <p className="text-xs text-slate-500">
-                      Reviewed demonstration ·{" "}
-                      {(references.beforeMs / 1000).toFixed(2)}s
-                    </p>
-                  )}
-                </figcaption>
-              </figure>
-              <figure className="overflow-hidden rounded-xl border bg-slate-50">
-                {references ? (
-                  <svg
-                    role="img"
-                    aria-label="Demonstrated final goal"
-                    viewBox={`0 0 ${lesson.sourceLesson?.media.info.video?.width ?? 640} ${lesson.sourceLesson?.media.info.video?.height ?? 480}`}
-                    className="w-full bg-slate-950"
-                  >
-                    <image href={references.goal} width="100%" height="100%" />
-                  </svg>
-                ) : (
-                  <p className="p-5 text-sm text-slate-500">
-                    No goal image was saved with this export. A fresh Teach save
-                    includes it.
-                  </p>
-                )}
-                <figcaption className="p-4">
-                  <strong>Final goal</strong>
-                  <p className="mt-1 text-sm text-slate-600">
-                    {lesson.procedure.execution?.goal}
-                  </p>
-                  {references && (
-                    <p className="text-xs text-slate-500">
-                      Reviewed demonstration ·{" "}
-                      {(references.goalMs / 1000).toFixed(2)}s
-                    </p>
-                  )}
-                </figcaption>
-              </figure>
-            </div>
-            <p className="text-xs text-slate-500">
-              Demonstration references help you compare the setup. Live
-              verification uses the approved rules and current camera evidence.
-            </p>
-          </section>
-        )}
-        <section
-          aria-label="Control settings"
-          className="space-y-3 rounded-2xl border bg-white p-5"
-        >
-          <h2 className="text-xl font-bold">Control settings</h2>
+        <details className="rounded-2xl border bg-white px-4 py-2">
+          <summary className="cursor-pointer text-sm font-bold">
+            Control settings
+          </summary>
+          <div className="space-y-3 py-2">
           <button
             onClick={() => {
               setManualSetupOpen(true);
@@ -1580,25 +1663,6 @@ export default function LocalPractice() {
               Retry automatic setup
             </button>
           )}
-          <label className="flex gap-2">
-            <input
-              type="checkbox"
-              checked={voiceOn}
-              onChange={(e) => {
-                setVoiceOn(e.target.checked);
-                if (!e.target.checked) {
-                  speechGeneration.current++;
-                  setSpeaking(false);
-                  window.speechSynthesis?.cancel();
-                }
-              }}
-            />
-            Enable microphone voice controls
-          </label>
-          <p>
-            Say “Muse, pause”, “Muse, repeat” or “Muse, stop speaking”. Voice
-            control: {voice.status}. {voice.feedback}
-          </p>
           <CommandFeedback
             feedback={voice.feedback}
             commands={voice.availableCommands}
@@ -1608,32 +1672,17 @@ export default function LocalPractice() {
                 : undefined
             }
           />
-          <details>
-            <summary>Available voice controls</summary>
-            <p>
-              “Muse, start camera” opens the camera. “Muse, capture setup” opens
-              calibration. “Muse, start practice” starts a confirmed setup.
-              “Guide, resume practice” prepares fresh calibration while
-              retaining completed work. “Guide, end practice” stops the camera.
-              “Guide, restart practice” requires “Guide, confirm restart
-              practice” before preparing a new attempt. Voice cannot verify or
-              skip steps.
-            </p>
-          </details>
           <VoicePanel events={voiceLog} />
-          <GestureControls videoRef={videoRef} onPauseRequest={() => halt()} />
-        </section>
+          <button onClick={download}>
+            Export diagnostics and recent evidence
+          </button>
+          </div>
+        </details>
         {error && (
           <p role="alert" className="text-red-700">
             {error}
           </p>
         )}
-        <button onClick={download}>
-          Export diagnostics and recent evidence
-        </button>
-        <a className="block" href="/practice?legacy=1">
-          Open previous lesson library
-        </a>
       </div>
     </Workspace>
   );

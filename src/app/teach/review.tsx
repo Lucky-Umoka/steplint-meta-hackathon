@@ -1,6 +1,9 @@
 "use client";
 import { readAppJson } from "@/teach/api-response";
-import { automaticSetupPlan } from "@/teach/automatic-setup";
+import {
+  automaticSetupPlan,
+  bindAutomaticSetup,
+} from "@/teach/automatic-setup";
 import { saveApprovedProcedure } from "@/teach/approved-storage";
 import { ApprovedArtifactSchema } from "@/teach/approved-artifact";
 import FeedbackPopup, { useFeedback } from "@/components/feedback";
@@ -16,6 +19,7 @@ import {
 import {
   suggestReviews,
   keyFrames,
+  narrowToVerifiableScope,
   reviewBlockers,
   reviewErrorMessage,
   type SuggestedCheck,
@@ -98,121 +102,43 @@ function RegionEditor({
     </div>
   );
 }
-function SupportingFrames({
-  video,
-  context,
-  frames,
-  componentId,
-  componentName,
-}: {
-  video: Blob;
-  context: TeachContext;
-  frames: number[];
-  componentId: string;
-  componentName?: string;
-}) {
-  const [loaded, setLoaded] = useState<{
-    key: string;
-    images: string[];
-  } | null>(null);
-  const key = JSON.stringify(frames);
-  useEffect(() => {
-    let active = true;
-    void Promise.all(
-      frames.map((frame) =>
-        frameImage(video, context.lesson.media.frameTimesMs[frame]),
-      ),
-    )
-      .then((images) => {
-        if (active) setLoaded({ key, images });
-      })
-      .catch(() => {
-        if (active) setLoaded(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, [video, context, frames, key]);
-  const size = context.lesson.media.info.video;
-  if (!size) return null;
-  return (
-    <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-      {(loaded?.key === key ? loaded.images : []).map((image, index) => (
-        <figure key={frames[index]}>
-          <svg
-            viewBox={`0 0 ${size.width} ${size.height}`}
-            role="img"
-            aria-label={`Supporting frame ${frames[index]}`}
-          >
-            <image href={image} width={size.width} height={size.height} />
-            {context.tracking
-              .filter((track) => track.componentId === componentId)
-              .map((track) => {
-                const sample = track.samples.find(
-                  (s) => s.frame === frames[index],
-                );
-                return (
-                  sample && (
-                    <g key={track.componentId}>
-                      <rect
-                        x={sample.box.left * size.width}
-                        y={sample.box.top * size.height}
-                        width={
-                          (sample.box.right - sample.box.left) * size.width
-                        }
-                        height={
-                          (sample.box.bottom - sample.box.top) * size.height
-                        }
-                        fill="none"
-                        stroke="#facc15"
-                        strokeWidth={3}
-                      />
-                      <text
-                        x={sample.box.left * size.width + 3}
-                        y={Math.max(16, sample.box.top * size.height)}
-                        fill="#facc15"
-                        stroke="#000"
-                        strokeWidth={0.3}
-                        fontSize={16}
-                      >
-                        {componentName ??
-                          context.selections.find(
-                            (s) => s.id === track.componentId,
-                          )?.description}
-                      </text>
-                    </g>
-                  )
-                );
-              })}
-          </svg>
-          <figcaption>
-            {(context.lesson.media.frameTimesMs[frames[index]] / 1000).toFixed(
-              2,
-            )}{" "}
-            s — marked component
-          </figcaption>
-        </figure>
-      ))}
-    </div>
-  );
-}
 export default function Review({
   initial,
   context,
   token,
   video,
+  onRetrain,
 }: {
   initial: TeachDraft;
   context: TeachContext;
   token: string;
   video: Blob;
+  onRetrain: () => void;
 }) {
   const router = useRouter();
   const feedback = useFeedback();
-  const [draft, setDraft] = useState(initial),
-    [editor, setEditor] = useState(JSON.stringify(initial, null, 2));
+  // Automatic self-repair: an unverifiable goal is narrowed to its covered
+  // scope before review starts. Nothing verifiable → keep the draft and show
+  // re-record guidance instead.
+  const autoNarrowed = useMemo(() => {
+    try {
+      const unsupported = initial.procedure.execution?.requirements.filter(
+        (r) => r.status === "unsupported",
+      );
+      if (!unsupported?.length) return null;
+      return {
+        draft: narrowToVerifiableScope(initial),
+        dropped: unsupported.map((r) => r.description),
+      };
+    } catch {
+      return null;
+    }
+  }, [initial]);
+  const base = autoNarrowed?.draft ?? initial;
+  const [draft, setDraft] = useState(base),
+    [editor, setEditor] = useState(JSON.stringify(base, null, 2));
   const [checks, setChecks] = useState<Record<string, Check>>(() =>
-    suggestReviews(initial, context),
+    suggestReviews(base, context),
   );
   const [goalConfirmed, setGoalConfirmed] = useState(false);
   const [reviewer, setReviewer] = useState(""),
@@ -224,8 +150,21 @@ export default function Review({
     () => suggestReviews(draft, context),
     [draft, context],
   );
-  const blockers = useMemo(
-    () => reviewBlockers(draft, context, checks),
+  // The single approval checkbox applies these marks (see approveAll): the
+  // displayed gate therefore enforces regions and evidence, never box-ticking.
+  function withReviewedMarks() {
+    const next = { ...checks };
+    for (const step of draft.procedure.steps)
+      next[step.id] = {
+        ...(next[step.id] ?? suggestions[step.id]),
+        reviewed: true,
+        conditionConfirmed: true,
+      };
+    return next;
+  }
+  const effectiveBlockers = useMemo(
+    () => reviewBlockers(draft, context, withReviewedMarks()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [draft, context, checks],
   );
   const size = context.lesson.media.info.video;
@@ -299,14 +238,14 @@ export default function Review({
     setBusy(true);
     try {
       if (dirty) throw new Error("Apply edited draft changes before approval.");
-      if (blockers.length) throw new Error(blockers[0]);
+      if (effectiveBlockers.length) throw new Error(effectiveBlockers[0]);
       const review = {
         reviewer,
         confirmed: confirm,
         ...(draft.procedure.execution ? { goalConfirmed } : {}),
         steps: draft.procedure.steps.map((step) => ({
           stepId: step.id,
-          ...checks[step.id],
+          ...withReviewedMarks()[step.id],
         })),
       };
       const checked = approveDraft(draft, review, context, Date.now()); // server repeats validation
@@ -351,76 +290,167 @@ export default function Review({
       setBusy(false);
     }
   }
+  async function rehearse() {
+    setError("");
+    setBusy(true);
+    try {
+      const marked = withReviewedMarks();
+      setChecks(marked);
+      if (effectiveBlockers.length) throw new Error(effectiveBlockers[0]);
+      // Rehearsal-only confirmation: validates the current edits against the
+      // same evidence gate as approval. `confirmed` satisfies the review
+      // schema for this in-memory check only — nothing is approved or saved.
+      const rehearsalReview = {
+        reviewer: reviewer.trim() || "Rehearsal",
+        confirmed: true,
+        ...(draft.procedure.execution ? { goalConfirmed: true } : {}),
+        steps: draft.procedure.steps.map((step) => ({
+          stepId: step.id,
+          ...marked[step.id],
+        })),
+      };
+      const checked = approveDraft(draft, rehearsalReview, context, Date.now());
+      const plan = checked.procedure.execution
+        ? automaticSetupPlan(checked.procedure, checked.review, context)
+        : null;
+      let automaticSetup = undefined;
+      if (plan) {
+        try {
+          const frames = await Promise.all(
+            [
+              ...new Set([
+                plan.sceneFrame,
+                plan.goalFrame,
+                ...plan.objects.map((object) => object.frame),
+              ]),
+            ].map(async (frame) => ({
+              frame,
+              image: await frameImage(
+                video,
+                context.lesson.media.frameTimesMs[frame],
+                320,
+              ),
+            })),
+          );
+          automaticSetup = bindAutomaticSetup(plan, frames);
+        } catch {
+          automaticSetup = undefined;
+        }
+      }
+      localStorage.setItem(
+        "steplint-rehearsal-handoff",
+        JSON.stringify({
+          procedure: checked.procedure,
+          zoneBindings: checked.zoneBindings,
+          automaticSetup,
+          sourceLesson: checked.sourceLesson,
+          origin: "teach",
+        }),
+      );
+      window.open("/practice?rehearsal=1", "_blank", "noopener");
+    } catch (e) {
+      const message = reviewErrorMessage(e);
+      setError(message);
+      feedback.failure(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function approveAll(checked: boolean) {
+    setConfirm(checked);
+    setApproved(null);
+    if (checked) {
+      setGoalConfirmed(true);
+      setChecks((old) => {
+        const next = { ...old };
+        for (const step of draft.procedure.steps)
+          next[step.id] = {
+            ...(next[step.id] ?? suggestions[step.id]),
+            reviewed: true,
+            conditionConfirmed: true,
+          };
+        return next;
+      });
+    }
+  }
   return (
     <section className="space-y-5 rounded border p-4">
       <h2 className="text-2xl font-bold">4. Review the draft</h2>
-      <p>Check the marked movements, confirm each step, then approve.</p>
       {draft.procedure.execution && (
-        <div className="space-y-3 rounded border p-3">
-          <p>Goal: {draft.procedure.execution.goal}</p>
-          <ul>
+        <div className="space-y-1">
+          <p className="text-lg font-semibold">
+            Goal: {draft.procedure.execution.goal}
+          </p>
+          <ul className="list-disc pl-6 text-sm">
             {draft.procedure.execution.requirements.map((r, i) => (
               <li key={i}>
-                {r.description}: <strong>{r.status}</strong> — {r.reason}
+                {r.description}:{" "}
+                <strong
+                  className={
+                    r.status === "unsupported" ? "text-red-700" : undefined
+                  }
+                >
+                  {r.status}
+                </strong>
+                {r.status === "unsupported" && ` — ${r.reason}`}
               </li>
             ))}
           </ul>
-          <p>
-            Approve only observable transfers between the marked zones. These
-            rules do not verify contact, force, electrical safety or hidden
-            internal state.
-          </p>
-          <label className="flex gap-2">
-            <input
-              type="checkbox"
-              checked={goalConfirmed}
-              disabled={draft.procedure.execution.requirements.some(
-                (r) => r.status === "unsupported",
-              )}
-              onChange={(e) => {
-                setGoalConfirmed(e.target.checked);
-                setApproved(null);
-              }}
-            />
-            The reviewed steps cover the stated visible goal completely; nothing
-            important is missing or split into an artificial pause.
-          </label>
+          {autoNarrowed && (
+            <p role="status" className="text-sm font-medium text-emerald-800">
+              Automatically kept the verifiable steps. Dropped:{" "}
+              {autoNarrowed.dropped.join("; ")}
+            </p>
+          )}
+          {draft.procedure.execution.requirements.some(
+            (r) => r.status === "unsupported",
+          ) && (
+            <p role="status" className="text-sm font-medium text-red-700">
+              Nothing verifiable to keep. Re-record showing only the visible
+              movement, or re-run analysis.
+            </p>
+          )}
         </div>
       )}
-      <details>
-        <summary>What can be approved?</summary>
-        <p>
-          Only clear, tracked start-to-target movement. Missing or uncertain
-          evidence stays blocked. A mask alone does not prove an action.
-        </p>
-      </details>
-      <details>
-        <summary>Tracking details</summary>
-        <ul className="list-disc pl-5">
-          {context.tracking.map((track) => (
-            <li key={track.componentId}>
-              {
-                context.selections.find((s) => s.id === track.componentId)
-                  ?.description
-              }
-              : {track.samples.length} frames with decoded geometry,{" "}
-              {track.missingFrames} without it. Missing geometry remains
-              unverified.
-            </li>
-          ))}
-        </ul>
-      </details>
-      {draft.procedure.steps.map((step) => {
+      <ol className="list-decimal space-y-1 pl-6">
+        {draft.procedure.steps.map((step) => (
+          <li key={step.id} className="font-medium">
+            {step.description}
+          </li>
+        ))}
+      </ol>
+      <div className="flex flex-wrap items-center gap-3">
+        <button disabled={busy} onClick={onRetrain}>
+          Re-run analysis
+        </button>
+        <button
+          className="primary"
+          disabled={busy || effectiveBlockers.length > 0}
+          onClick={() => void rehearse()}
+        >
+          Test in Practice
+        </button>
+        <span className="text-sm text-slate-600">
+          Live rehearsal in a new tab. Nothing is saved until you approve.
+        </span>
+      </div>
+      {draft.procedure.steps.map((step, index) => {
         const note = draft.notes.find((n) => n.stepId === step.id);
         const track = context.tracking.find(
           (t) => t.componentId === step.condition.componentId,
         );
         const fallback: Check = suggestions[step.id];
         const check = checks[step.id] ?? fallback;
+        // Moment menus offer only frames where this component was tracked
+        // with trusted geometry, so any choice keeps a valid source
+        // appearance for approval and Practice setup. Current values stay
+        // selectable so the menu never blanks.
         const moments = keyFrames(
           context,
-          track?.samples.map((s) => s.frame) ?? [],
-          [check.fromFrame, check.toFrame, ...(note?.supportingFrames ?? [])],
+          (track?.samples ?? [])
+            .filter((s) => (s.confidence ?? 0) >= 0.9)
+            .map((s) => s.frame),
+          [check.fromFrame, check.toFrame, check.changeFrame ?? -1],
         );
         const frameOptions = moments.map((frame) => (
           <option key={frame} value={frame}>
@@ -433,8 +463,33 @@ export default function Review({
           </option>
         ));
         return (
-          <article key={step.id} className="space-y-3 rounded border p-4">
-            <h3 className="text-xl font-bold">{step.description}</h3>
+          <details
+            key={step.id}
+            open={index === 0}
+            className="rounded border p-4"
+          >
+            <summary className="cursor-pointer text-xl font-bold">
+              {index + 1}. {step.description}
+              {(() => {
+                const track = context.tracking.find(
+                  (t) => t.componentId === step.condition.componentId,
+                );
+                if (!track) return null;
+                const matched = track.samples.filter(
+                  (s) => s.frame >= check.fromFrame && s.frame <= check.toFrame,
+                ).length;
+                if (matched >= 3 && track.missingFrames === 0) return null;
+                return (
+                  <span className="block text-sm font-medium text-amber-800">
+                    Weak evidence ({matched} tracked frames
+                    {track.missingFrames > 0 &&
+                      `, ${track.missingFrames} without geometry`}
+                    ): adjust the moment or zones, then rehearse.
+                  </span>
+                );
+              })()}
+            </summary>
+            <div className="mt-3 space-y-3">
             <details>
               <summary>Edit wording</summary>
               <div className="space-y-2 py-2">
@@ -521,25 +576,6 @@ export default function Review({
                 </select>
               </label>
             )}
-            <p className="text-sm">
-              Reference: {(step.source.timestampMs / 1000).toFixed(2)} s
-            </p>
-            {note && (
-              <SupportingFrames
-                video={video}
-                context={context}
-                componentId={step.condition.componentId}
-                componentName={
-                  draft.procedure.components.find(
-                    (c) => c.id === step.condition.componentId,
-                  )?.description
-                }
-                frames={keyFrames(context, note.supportingFrames, [
-                  check.fromFrame,
-                  check.toFrame,
-                ])}
-              />
-            )}
             {draft.procedure.execution && (
               <label>
                 Change moment{" "}
@@ -571,25 +607,7 @@ export default function Review({
                 </select>
               </label>
             )}
-            <p>
-              Recovery: {step.recovery.instruction} (
-              {(step.recovery.source.timestampMs / 1000).toFixed(3)} s)
-            </p>
-            <details>
-              <summary>Error cases and uncertainty</summary>
-              <p className="font-semibold">Candidate error cases</p>
-              <ul className="list-disc pl-5">
-                {note?.candidateErrors.map((item, i) => (
-                  <li key={i}>{item}</li>
-                ))}
-              </ul>
-              <p className="font-semibold">Uncertainty requiring your review</p>
-              <ul className="list-disc pl-5">
-                {note?.uncertainties.map((item, i) => (
-                  <li key={i}>{item}</li>
-                ))}
-              </ul>
-            </details>
+            <p>Recovery: {step.recovery.instruction}</p>
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <label>
@@ -692,32 +710,8 @@ export default function Review({
                 </button>
               </div>
             )}
-            <label className="flex gap-2">
-              <input
-                type="checkbox"
-                checked={check.reviewed}
-                onChange={(e) =>
-                  update(step.id, { reviewed: e.target.checked }, fallback)
-                }
-              />
-              I reviewed this step and its rules.
-            </label>
-            <label className="flex gap-2">
-              <input
-                type="checkbox"
-                disabled={!check.fromRegion || !check.toRegion}
-                checked={check.conditionConfirmed}
-                onChange={(e) =>
-                  update(
-                    step.id,
-                    { conditionConfirmed: e.target.checked },
-                    fallback,
-                  )
-                }
-              />
-              I checked the marks and can see this zone entry.
-            </label>
-          </article>
+            </div>
+          </details>
         );
       })}
       <details>
@@ -774,36 +768,34 @@ export default function Review({
         <input
           type="checkbox"
           checked={confirm}
-          onChange={(e) => {
-            setConfirm(e.target.checked);
-            setApproved(null);
-          }}
+          onChange={(e) => approveAll(e.target.checked)}
         />
-        I approve this procedure and its visible conditions.
+        I approve this lesson for Practice.
       </label>
-      {blockers.length > 0 && (
+      {effectiveBlockers.length > 0 && (
         <div
           id="approval-readiness"
           role="status"
           className="rounded border border-amber-400 bg-amber-50 p-4"
         >
-          <h3 className="font-bold">Finish these checks to enable approval</h3>
+          <h3 className="font-bold">Needs attention before approval</h3>
           <ul className="list-disc pl-5">
-            {blockers.map((message, index) => (
+            {effectiveBlockers.map((message, index) => (
               <li key={index}>{message}</li>
             ))}
           </ul>
         </div>
       )}
       <button
-        aria-describedby={blockers.length ? "approval-readiness" : undefined}
+        aria-describedby={
+          effectiveBlockers.length ? "approval-readiness" : undefined
+        }
         disabled={
           busy ||
           dirty ||
           !confirm ||
           !reviewer.trim() ||
-          blockers.length > 0 ||
-          (!!draft.procedure.execution && !goalConfirmed)
+          effectiveBlockers.length > 0
         }
         onClick={() => void approve()}
       >
@@ -818,7 +810,7 @@ export default function Review({
       {approved !== null && (
         <div role="status">
           <p className="font-bold">
-            Procedure approved. Save and open Practice, or download a copy.
+            Procedure approved. Save and open Practice.
           </p>
           <button
             disabled={busy}
@@ -869,14 +861,6 @@ export default function Review({
           >
             Save and open Practice
           </button>
-          <a
-            className="underline"
-            onClick={() => feedback.success("Download requested")}
-            href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(approved, null, 2))}`}
-            download="steplint-approved-lesson.json"
-          >
-            Download approved procedure and zone mappings
-          </a>
         </div>
       )}
     </section>

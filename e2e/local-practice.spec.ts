@@ -349,6 +349,7 @@ test("default Practice uses local worker automatically, corrects reversal and ke
     page.locator("ol").getByText("passed", { exact: true }),
   ).toBeVisible();
   const downloaded = page.waitForEvent("download");
+  await page.getByText("Control settings", { exact: true }).click();
   await page
     .getByRole("button", { name: "Export diagnostics and recent evidence" })
     .click();
@@ -453,53 +454,26 @@ test("default Teach reviews the full goal and source moments, then hands the app
   });
   await page.goto("/teach");
   await page
-    .getByLabel("What visible final result should the learner achieve?")
-    .fill("Object at destination");
+    .getByRole("button", { name: "Create new teach" })
+    .click();
   await page.getByLabel(/Everyone visible or audible/).check();
   await page
     .getByLabel("Existing lesson MP4")
     .setInputFiles("tests/fixtures/teach-preview.mp4");
   await expect(page.getByLabel("Prepared lesson preview")).toBeVisible();
-  await page.getByLabel("Enable voice controls for this stage").check();
-  await utter(page, "Guide process recording");
-  await expect(
-    page.getByRole("status").filter({
-      hasText: "Enter the goal and confirm recording processing consent first.",
-    }),
-  ).toBeVisible();
-  expect(uploads).toBe(0);
   await page.getByLabel(/I reviewed this recording/).check();
-  await utter(page, "Guide process recording");
-  await expect(
-    page.getByRole("heading", { name: "3. Create your lesson automatically" }),
-  ).toBeVisible();
-  expect(uploads).toBe(1);
-  await expect(
-    page.getByLabel("Enable voice controls for this stage"),
-  ).toBeChecked();
-  await utter(page, "Guide build my guide");
-  await expect(
-    page.getByRole("status").filter({
-      hasText: "Confirm automatic analysis consent first; no analysis started.",
-    }),
-  ).toBeVisible();
-  expect(compiles).toBe(0);
-  await page.getByLabel(/I approve automatic lesson analysis/).check();
-  await utter(page, "Guide build my guide");
+  await page
+    .getByRole("button", { name: "Build my lesson", exact: true })
+    .click();
   await expect(
     page.getByRole("heading", { name: "4. Review the draft" }),
   ).toBeVisible();
-  await page.getByLabel(/The reviewed steps cover/).check();
-  await page.getByLabel("I reviewed this step and its rules.").check();
-  await page
-    .getByLabel("I checked the marks and can see this zone entry.")
-    .check();
+  expect(uploads).toBe(1);
+  expect(compiles).toBe(1);
   await page
     .getByLabel("Your reviewer name")
     .fill("Synthetic browser reviewer");
-  await page
-    .getByLabel("I approve this procedure and its visible conditions.")
-    .check();
+  await page.getByLabel("I approve this lesson for Practice.").check();
   await page
     .getByRole("button", { name: "Approve procedure", exact: true })
     .click();
@@ -563,7 +537,10 @@ test("default Practice gestures activate voice settings and camera buttons; desk
     ),
   ).toBeVisible();
   const voice = page.getByLabel("Enable microphone voice controls");
+  await expect(voice).toBeChecked();
   await pinchControl(page, voice);
+  await expect(voice).not.toBeChecked();
+  await voice.check();
   await expect(voice).toBeChecked();
   await utter(page, "Muse, capture setup");
   await expect(
@@ -657,6 +634,9 @@ test("automatic Practice starts from reviewed Teach references without calibrati
   await expect(page.getByTestId("practice-camera")).toHaveClass(
     /border-green-600/,
   );
+  await expect(page.getByTestId("practice-glow")).toHaveClass(
+    /practice-glow-pass/,
+  );
   await expect(
     page.getByLabel("Live object tracking").locator("rect"),
   ).toHaveAttribute("stroke", "#16a34a");
@@ -671,6 +651,9 @@ test("automatic Practice starts from reviewed Teach references without calibrati
   ).toContainText("failed");
   await expect(page.getByTestId("practice-camera")).toHaveClass(
     /border-red-600/,
+  );
+  await expect(page.getByTestId("practice-glow")).toHaveClass(
+    /practice-glow-fail/,
   );
   await expect(
     page.getByLabel("Live object tracking").locator("rect"),

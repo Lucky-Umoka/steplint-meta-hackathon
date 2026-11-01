@@ -1,20 +1,21 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
-import { VoicePreferenceProvider } from "@/voice/voice-preference";
-import ActionControls from "@/voice/ActionControls";
 import Workspace from "@/components/workspace";
 import LessonCapture, { type PreparedLesson } from "./capture";
-import ComponentPicker from "./component-picker";
 import ProcessingDialog from "./processing-dialog";
 import { nextProcessingStage, type ProcessingStage } from "@/teach/progress";
+import { useRouter } from "next/navigation";
+import {
+  listApprovedProcedures,
+  type SavedProcedure,
+} from "@/teach/approved-storage";
 import Review from "./review";
 import {
   ContextSchema,
   DraftSchema,
   LessonSchema,
   type Lesson,
-  type Selection,
   type TeachContext,
   type TeachDraft,
 } from "@/teach/schema";
@@ -43,19 +44,25 @@ function RecordingPreview({ video }: { video: Blob }) {
       ref={element}
       controls
       playsInline
-      className="max-h-[60vh] w-full rounded-xl bg-slate-950"
+      className="max-h-[32vh] w-full rounded-xl bg-slate-950"
       aria-label="Prepared lesson preview"
     />
   );
 }
 export default function LocalTeach() {
-  return (
-    <VoicePreferenceProvider>
-      <LocalTeachFlow />
-    </VoicePreferenceProvider>
-  );
+  return <LocalTeachFlow />;
+}
+function lessonGoal(raw: string): string {
+  try {
+    const goal = (JSON.parse(raw) as { procedure?: { execution?: { goal?: unknown } } })
+      .procedure?.execution?.goal;
+    return typeof goal === "string" ? goal : "";
+  } catch {
+    return "";
+  }
 }
 function LocalTeachFlow() {
+  const router = useRouter();
   const inFlight = useRef(false);
   const [unlocked, setUnlocked] = useState(false),
     [access, setAccess] = useState("");
@@ -69,14 +76,15 @@ function LocalTeachFlow() {
     context: TeachContext;
     token: string;
   } | null>(null);
-  const [goal, setGoal] = useState(""),
-    [consent, setConsent] = useState(false),
+  const [consent, setConsent] = useState(false),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(""),
     [error, setError] = useState(""),
     [stage, setStage] = useState<ProcessingStage>("upload"),
     [processingOpen, setProcessingOpen] = useState(false),
-    [automaticBuild, setAutomaticBuild] = useState(true);
+    [automaticBuild, setAutomaticBuild] = useState(true),
+    [library, setLibrary] = useState<SavedProcedure[] | null>(null),
+    [creating, setCreating] = useState(false);
   useEffect(() => {
     let active = true;
     void fetch("/api/teach/access")
@@ -95,6 +103,20 @@ function LocalTeachFlow() {
       active = false;
     };
   }, []);
+  useEffect(() => {
+    if (!unlocked) return;
+    let active = true;
+    void listApprovedProcedures()
+      .then((rows) => {
+        if (active) setLibrary(rows);
+      })
+      .catch(() => {
+        if (active) setLibrary([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [unlocked]);
   async function unlock() {
     setBusy(true);
     setError("");
@@ -115,8 +137,11 @@ function LocalTeachFlow() {
       setBusy(false);
     }
   }
-  async function upload() {
-    if (!prepared || !consent || !goal.trim() || inFlight.current) return;
+  async function upload(): Promise<{
+    lesson: Lesson;
+    token: string;
+  } | null> {
+    if (!prepared || !consent || inFlight.current) return null;
     inFlight.current = true;
     setBusy(true);
     setError("");
@@ -132,26 +157,34 @@ function LocalTeachFlow() {
         method: "POST",
         body,
       });
-      setUploaded(
-        UploadSchema.parse(await readAppJson(response, "Lesson upload")),
+      const data = UploadSchema.parse(
+        await readAppJson(response, "Lesson upload"),
       );
-      // Upload is done; the next step is manual component choice, so dismiss
-      // the modal dialog instead of blocking the picker behind it.
-      setProcessingOpen(false);
-      setMessage("Choose the objects whose transfers should be verified.");
+      setUploaded(data);
+      setMessage("Upload complete. Building your guide…");
+      return data;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Lesson upload failed.");
+      return null;
     } finally {
       inFlight.current = false;
       setBusy(false);
     }
   }
-  async function compile(selections?: Selection[]) {
-    if (!uploaded || inFlight.current) return;
+  async function compile(uploadOverride?: {
+    lesson: Lesson;
+    token: string;
+  }) {
+    const data = uploadOverride ?? uploaded;
+    if (!data || inFlight.current) return;
+    // The build goal comes from the creator's own narration; the AI
+    // structures it into steps during analysis. No separate goal step.
+    const narration =
+      data.lesson.transcript.text.trim().slice(0, 2000) ||
+      "Complete the demonstrated procedure.";
+    setUploaded(data);
     inFlight.current = true;
-    // Keep the uploaded lesson visible while analysis runs so a failed build
-    // can retry without re-uploading the recording.
-    setAutomaticBuild(!selections);
+    setAutomaticBuild(true);
     setStage("discover");
     setProcessingOpen(true);
     setBusy(true);
@@ -162,10 +195,10 @@ function LocalTeachFlow() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          token: uploaded.token,
+          token: data.token,
           confirmed: true,
-          goal: goal.trim(),
-          ...(selections ? { selections } : { automatic: true }),
+          goal: narration,
+          automatic: true,
         }),
       });
       if (!response.ok) {
@@ -195,7 +228,7 @@ function LocalTeachFlow() {
                   ? event.data.draft
                   : localExecutionDraft(
                       event.data.draft,
-                      goal.trim(),
+                      narration,
                       event.data.context,
                     ),
                 context: event.data.context,
@@ -232,18 +265,26 @@ function LocalTeachFlow() {
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Lesson analysis failed.");
+      // Return to the build screen so a failed build can retry with one click.
+      setUploaded(null);
     } finally {
       inFlight.current = false;
       setBusy(false);
     }
   }
+  async function buildGuide() {
+    if (inFlight.current || !prepared) return;
+    setReview(null);
+    const data = await upload();
+    if (data) await compile(data);
+  }
   return (
     <Workspace mode="teach">
-      <div className="mx-auto max-w-6xl space-y-5">
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div className="mx-auto max-w-6xl space-y-4">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold">Create a guide</h1>
-            <p className="mt-1 text-slate-600">
+            <h1 className="text-2xl font-bold">Create a guide</h1>
+            <p className="mt-1 text-sm text-slate-600">
               Show the process. Check the steps and the goal.
             </p>
           </div>
@@ -284,91 +325,114 @@ function LocalTeachFlow() {
               Unlock Teach
             </button>
           </section>
+        ) : !creating && !prepared && !review ? (
+          <section className="space-y-5">
+            <div>
+              <h1 className="text-3xl font-bold">Your lessons</h1>
+              <p className="mt-1 text-slate-600">
+                Practice a lesson or create a new one.
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <button
+                className="rounded-2xl border-2 border-dashed border-emerald-600 p-6 text-left"
+                onClick={() => setCreating(true)}
+              >
+                <span className="block text-4xl" aria-hidden="true">
+                  +
+                </span>
+                <strong className="mt-2 block text-lg">
+                  Create new teach
+                </strong>
+                <span className="mt-1 block text-sm text-slate-600">
+                  Record or upload a demonstration.
+                </span>
+              </button>
+              {(library ?? []).map((row) => {
+                const rowGoal = lessonGoal(row.raw);
+                return (
+                  <article
+                    key={row.id}
+                    className="space-y-2 rounded-2xl border bg-white p-5"
+                  >
+                    {row.references && (
+                      <img
+                        src={row.references.goal}
+                        alt=""
+                        className="w-full rounded-xl bg-slate-950"
+                      />
+                    )}
+                    <h2 className="text-lg font-bold">{row.title}</h2>
+                    {rowGoal && (
+                      <p className="text-sm text-slate-600">{rowGoal}</p>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className="primary"
+                        onClick={() => router.push("/practice")}
+                      >
+                        Practice
+                      </button>
+                      <button onClick={() => setCreating(true)}>
+                        Rebuild
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            {library !== null && library.length === 0 && (
+              <p className="text-sm text-slate-600">
+                No lessons yet. Create your first teach above.
+              </p>
+            )}
+          </section>
         ) : (
           <>
+            {!prepared && !review && (
+              <button disabled={busy} onClick={() => setCreating(false)}>
+                ← Your lessons
+              </button>
+            )}
             {!review && (
               <>
-                <label className="block rounded-2xl border bg-white p-5 font-medium">
-                  What visible final result should the learner achieve?
-                  <input
-                    className="block w-full border p-2"
-                    maxLength={2000}
-                    value={goal}
-                    disabled={busy || !!uploaded}
-                    onChange={(e) => setGoal(e.target.value)}
-                  />
-                </label>
                 {!prepared ? (
                   <LessonCapture onPrepared={setPrepared} />
                 ) : !uploaded ? (
-                  <section className="space-y-4 rounded-2xl border bg-white p-5">
+                  <section className="space-y-3 rounded-2xl border bg-white p-4">
                     <RecordingPreview video={prepared.video} />
-                    <p>
-                      Recording prepared. Preview it in the recorder before
-                      processing.
-                    </p>
                     <label className="flex gap-2">
                       <input
                         type="checkbox"
                         checked={consent}
                         onChange={(e) => setConsent(e.target.checked)}
                       />
-                      I reviewed this recording and approve one Meta upload and
-                      Muse Voice transcription request. Object analysis has a
-                      separate confirmation next.
+                      I reviewed this recording and approve upload,
+                      transcription and automatic analysis.
                     </label>
-                    <ActionControls
-                      commands={[
-                        {
-                          id: "process",
-                          phrases: ["process recording", "build my guide"],
-                        },
-                      ]}
-                      onAction={() => {
-                        if (busy || inFlight.current)
-                          return {
-                            applied: false,
-                            message: "Processing is already running.",
-                          };
-                        if (!consent || !goal.trim())
-                          return {
-                            applied: false,
-                            message:
-                              "Enter the goal and confirm recording processing consent first.",
-                          };
-                        void upload();
-                        return {
-                          applied: true,
-                          message:
-                            "Starting the approved upload and transcription.",
-                        };
-                      }}
-                    />
-                    <button
-                      className="primary"
-                      disabled={busy || !consent || !goal.trim()}
-                      onClick={() => void upload()}
-                    >
-                      Process recording
-                    </button>
-                    <button
-                      disabled={busy}
-                      onClick={() => {
-                        setPrepared(null);
-                        setConsent(false);
-                      }}
-                    >
-                      Choose another recording
-                    </button>
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        className="primary"
+                        disabled={busy || !consent}
+                        onClick={() => void buildGuide()}
+                      >
+                        Build my lesson
+                      </button>
+                      <button
+                        disabled={busy}
+                        onClick={() => {
+                          setPrepared(null);
+                          setConsent(false);
+                        }}
+                      >
+                        Choose another recording
+                      </button>
+                    </div>
                   </section>
                 ) : (
-                  <ComponentPicker
-                    lesson={uploaded.lesson}
-                    video={prepared.video}
-                    busy={busy}
-                    onCompile={(s) => void compile(s)}
-                    onAutomatic={() => void compile()}
-                  />
+                  <p role="status">
+                    Building your lesson… the review appears automatically.
+                  </p>
                 )}
               </>
             )}
@@ -378,6 +442,7 @@ function LocalTeachFlow() {
                 context={review.context}
                 token={review.token}
                 video={prepared.video}
+                onRetrain={() => void buildGuide()}
               />
             )}
           </>
@@ -399,7 +464,6 @@ function LocalTeachFlow() {
             {error}
           </p>
         )}
-        <a href="/teach?legacy=1">Open previous lesson workflow</a>
       </div>
     </Workspace>
   );

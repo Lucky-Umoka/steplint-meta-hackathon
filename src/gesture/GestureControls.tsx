@@ -13,10 +13,12 @@ export default function GestureControls({
   videoRef,
   onPauseRequest,
   pauseLabel = "pauses practice",
+  compact = false,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   onPauseRequest: () => void;
   pauseLabel?: string;
+  compact?: boolean;
 }) {
   const [enabled, setEnabled] = useState(false);
   const { status, pointer, notice, clearNotice, getStats, activations } =
@@ -48,7 +50,7 @@ export default function GestureControls({
     <div
       data-testid="gesture-controls"
       data-activations={activations}
-      className="rounded-xl border bg-white p-3 text-sm"
+      className={`rounded-xl border bg-white ${compact ? "space-y-0.5 p-2 text-xs" : "p-3 text-sm"}`}
     >
       <label className="flex items-center gap-2 font-medium">
         <input
@@ -61,18 +63,26 @@ export default function GestureControls({
         />
         Enable gesture control
       </label>
-      <p role="status" className="mt-1 text-slate-600">
+      <p role="status" className="mt-1 truncate text-slate-600" title={statusText}>
         {statusText}
       </p>
-      <p className="mt-1 text-xs text-slate-500">
-        Hands stay on screen only: tracking runs in this browser, no hand images
-        are uploaded. Pinch clicks buttons and checkboxes; release before
-        clicking again. An open palm held in the zone for 1.2 seconds{" "}
-        {pauseLabel}.
-      </p>
-      <p role="status" className="mt-1 min-h-10 text-amber-800">
-        {notice || "\u00a0"}
-      </p>
+      {!compact && (
+        <p className="mt-1 text-xs text-slate-500">
+          Hands stay on screen only: tracking runs in this browser, no hand
+          images are uploaded. Pinch clicks buttons and checkboxes; release
+          before clicking again. An open palm held in the zone for 1.2 seconds{" "}
+          {pauseLabel}.
+        </p>
+      )}
+      {compact ? (
+        <p role="status" className="mt-1 truncate text-amber-800" title={notice}>
+          {notice || " "}
+        </p>
+      ) : (
+        <p role="status" className="mt-1 min-h-10 text-amber-800">
+          {notice || "\u00a0"}
+        </p>
+      )}
       {enabled && rect && pointer && (
         <div
           aria-hidden="true"

@@ -98,6 +98,70 @@ export function suggestReviews(
   }
   return suggestions;
 }
+/**
+ * Self-repair for an unverifiable goal: keep the covered requirements and the
+ * steps they (and their prerequisites) need, drop the rest, and repair every
+ * reference. Throws when nothing verifiable remains — then only a re-record
+ * helps. Never invents coverage; callers re-validate the result.
+ */
+export function narrowToVerifiableScope(draft: TeachDraft): TeachDraft {
+  const next = structuredClone(draft);
+  const procedure = next.procedure;
+  if (!procedure.execution) throw Error("No executable goal to narrow.");
+  const keptRequirements = procedure.execution.requirements.filter(
+    (requirement) => requirement.status !== "unsupported",
+  );
+  const keep = new Set(
+    keptRequirements.flatMap((requirement) => requirement.stepIds),
+  );
+  const byId = new Map(procedure.steps.map((step) => [step.id, step]));
+  const stack = [...keep];
+  while (stack.length) {
+    const step = byId.get(stack.pop()!);
+    for (const prerequisite of step?.prerequisites ?? [])
+      if (!keep.has(prerequisite) && byId.has(prerequisite)) {
+        keep.add(prerequisite);
+        stack.push(prerequisite);
+      }
+  }
+  procedure.steps = procedure.steps.filter((step) => keep.has(step.id));
+  if (!procedure.steps.length)
+    throw Error(
+      "Nothing verifiable to keep. Re-record showing only the visible movement.",
+    );
+  for (const step of procedure.steps) {
+    step.prerequisites = step.prerequisites.filter((id) => keep.has(id));
+    step.forbiddenTransitions = step.forbiddenTransitions.filter((rule) =>
+      rule.unlessVerified.every((id) => keep.has(id)),
+    );
+  }
+  procedure.execution.requirements = keptRequirements
+    .map((requirement) => ({
+      ...requirement,
+      stepIds: requirement.stepIds.filter((id) => keep.has(id)),
+    }))
+    .filter(
+      (requirement) =>
+        requirement.status !== "covered" || requirement.stepIds.length > 0,
+    );
+  if (
+    !procedure.execution.requirements.some(
+      (requirement) => requirement.status === "covered",
+    )
+  )
+    throw Error(
+      "Nothing verifiable to keep. Re-record showing only the visible movement.",
+    );
+  procedure.execution.goalStepIds = procedure.execution.goalStepIds.filter(
+    (id) => keep.has(id),
+  );
+  if (!procedure.execution.goalStepIds.length)
+    procedure.execution.goalStepIds = [
+      procedure.steps[procedure.steps.length - 1].id,
+    ];
+  next.notes = next.notes.filter((note) => keep.has(note.stepId));
+  return next;
+}
 /** A small set of distinct source moments, not hundreds of nearly-identical frames. */
 export function keyFrames(
   context: TeachContext,
@@ -182,8 +246,21 @@ export function reviewBlockers(
   return issues;
 }
 export function reviewErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.name === "ZodError")
-    return "The review is incomplete or contains invalid fields. Check the approval checklist and each step's starting/target zones.";
+  if (error instanceof Error && error.name === "ZodError") {
+    // Never swallow the cause: name the first failing field so the creator
+    // (and diagnostics) can see what is actually invalid.
+    const issues = (
+      error as unknown as {
+        issues?: Array<{ path: Array<string | number>; message: string }>;
+      }
+    ).issues;
+    const first = issues?.[0];
+    const where = [...(first?.path ?? [])].join(".");
+    const detail = first
+      ? ` Problem: ${where ? `${where} — ` : ""}${first.message}.`
+      : "";
+    return `The review is incomplete or contains invalid fields.${detail} Check the approval checklist and each step's starting/target zones.`;
+  }
   return error instanceof Error
     ? error.message
     : "Approval failed. Check the review and try again.";

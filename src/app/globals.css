@@ -65,3 +65,24 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .practice-frame-warning { animation: none; }
 }
+
+/* Bright verification wash over the whole live area: flashes on each new
+ * verdict, then holds steady while the state holds. Never dims the camera. */
+@keyframes practice-glow-flash {
+  0% { opacity: 0; }
+  20% { opacity: 1; }
+  100% { opacity: 1; }
+}
+.practice-glow-pass {
+  border: 3px solid rgb(22 163 74 / .9);
+  box-shadow: 0 0 28px 6px rgb(34 197 94 / .55), inset 0 0 24px rgb(34 197 94 / .3);
+  animation: practice-glow-flash .6s ease-out;
+}
+.practice-glow-fail {
+  border: 3px solid rgb(220 38 38 / .95);
+  box-shadow: 0 0 34px 8px rgb(239 68 68 / .6), inset 0 0 28px rgb(239 68 68 / .35);
+  animation: practice-glow-flash .6s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .practice-glow-pass, .practice-glow-fail { animation: none; }
+}

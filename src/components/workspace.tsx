@@ -34,7 +34,9 @@ export default function Workspace({
           </nav>
         </div>
       </header>
-      <main className="flow-workspace mx-auto max-w-7xl px-5 py-6">
+      <main
+        className={`flow-workspace mx-auto ${mode === "practice" ? "w-full px-4 py-3" : "max-w-7xl px-5 py-6"}`}
+      >
         {children}
       </main>
     </div>
