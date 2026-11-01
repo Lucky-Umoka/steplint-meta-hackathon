@@ -28,7 +28,15 @@ export async function perceiveRelations(request: Request) {
             }),
           )
           .length(3),
-        contextFrames:z.array(z.strictObject({frame:z.number().int().nonnegative(),image:ImageSchema})).max(8).default([]),
+        contextFrames: z
+          .array(
+            z.strictObject({
+              frame: z.number().int().nonnegative(),
+              image: ImageSchema,
+            }),
+          )
+          .max(8)
+          .default([]),
       })
       .parse(await readGuideJson(request, 4_000_000));
     if (
@@ -41,11 +49,21 @@ export async function perceiveRelations(request: Request) {
         400,
         "Use three fresh ordered camera observations within eight seconds.",
       );
-    const all=[...input.frames,...input.contextFrames].sort((a,b)=>a.frame-b.frame);
-    if(new Set(all.map(f=>f.frame)).size!==all.length||input.contextFrames.some(f=>f.frame<=input.frames[0].frame||f.frame>=input.frames[2].frame))throw new TeachError(400,"Motion context must lie inside this observation window.");
-    all.forEach((f) =>
-      validateJpeg(f.image, input.width, input.height),
+    const all = [...input.frames, ...input.contextFrames].sort(
+      (a, b) => a.frame - b.frame,
     );
+    if (
+      new Set(all.map((f) => f.frame)).size !== all.length ||
+      input.contextFrames.some(
+        (f) =>
+          f.frame <= input.frames[0].frame || f.frame >= input.frames[2].frame,
+      )
+    )
+      throw new TeachError(
+        400,
+        "Motion context must lie inside this observation window.",
+      );
+    all.forEach((f) => validateJpeg(f.image, input.width, input.height));
     lease = acquirePerception(input.token, 1);
     const plan = lease.guide.relationPlan;
     if (!plan)
@@ -62,8 +80,10 @@ export async function perceiveRelations(request: Request) {
         window: RelationWindowSchema.parse({
           id: input.id,
           epoch: input.epoch,
-          witnesses:observation.witnesses,
-          frames:input.frames.map(f=>observation.frames.find(o=>o.frame===f.frame)),
+          witnesses: observation.witnesses,
+          frames: input.frames.map((f) =>
+            observation.frames.find((o) => o.frame === f.frame),
+          ),
         }),
         remainingModelRequests: lease.remaining(),
       },

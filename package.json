@@ -24,6 +24,7 @@
     "format:check": "prettier --check src/guide src/server/guide e2e"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.2.0",
     "@meta-sam/parser": "0.1.0",
     "@next/env": "16.4.3",
     "mediabunny": "^1.63.0",

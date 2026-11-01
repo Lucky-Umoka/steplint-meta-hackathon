@@ -1,3 +1,4 @@
+import { RelationEvidenceError } from "./relation-error";
 import { z } from "zod";
 
 /** Perceived physical relationships, never model-issued procedural outcomes. */
@@ -115,13 +116,24 @@ export function matchesRelation(
 }
 
 export function validateRelationPlan(plan: RelationPlan, durationMs: number) {
-  if(plan.goalStepIds&&(new Set(plan.goalStepIds).size!==plan.goalStepIds.length||plan.goalStepIds.some(id=>!plan.steps.some(s=>s.id===id))))throw Error("Unknown or duplicate final goal conditions.");
+  if (
+    plan.goalStepIds &&
+    (new Set(plan.goalStepIds).size !== plan.goalStepIds.length ||
+      plan.goalStepIds.some((id) => !plan.steps.some((s) => s.id === id)))
+  )
+    throw new RelationEvidenceError(
+      "invalid_relation_plan",
+      "Unknown or duplicate final goal conditions.",
+    );
   const ids = new Set(plan.objects.map((o) => o.id));
   if (
     ids.size !== plan.objects.length ||
     new Set(plan.steps.map((s) => s.id)).size !== plan.steps.length
   )
-    throw Error("Duplicate source identities.");
+    throw new RelationEvidenceError(
+      "invalid_relation_plan",
+      "Duplicate source identities.",
+    );
   for (const [i, s] of plan.steps.entries()) {
     if (
       !ids.has(s.objectId) ||
@@ -129,17 +141,20 @@ export function validateRelationPlan(plan: RelationPlan, durationMs: number) {
       s.objectId === s.anchorId ||
       s.before === s.after
     )
-      throw Error(
+      throw new RelationEvidenceError(
+        "invalid_relation_plan",
         "A step needs two distinct parts and a changed relationship.",
       );
     if (
       !(s.startMs < s.changeMs && s.changeMs < s.endMs && s.endMs <= durationMs)
     )
-      throw Error(
+      throw new RelationEvidenceError(
+        "invalid_relation_plan",
         "An action needs actual ordered before, change and result moments.",
       );
     if (i && s.startMs < plan.steps[i - 1].endMs)
-      throw Error(
+      throw new RelationEvidenceError(
+        "invalid_relation_plan",
         "The proposed actions overlap. Their actual order needs review.",
       );
   }

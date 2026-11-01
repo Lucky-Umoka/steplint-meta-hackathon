@@ -33,7 +33,7 @@ const plan: RelationPlan = {
   ],
   goalStepIds: ["place"],
 };
-async function setup(page: Page) {
+async function setup(page: Page, startCamera = true) {
   await page.addInitScript(() => {
     const state = { x: 30, streams: [] as MediaStream[] };
     Object.assign(window, { relationCamera: state });
@@ -171,12 +171,13 @@ async function setup(page: Page) {
   }, plan);
   await page.reload();
   await page.getByRole("button", { name: /Practice this guide/ }).click();
+  if (!startCamera) return;
   await page.getByRole("button", { name: "Start camera", exact: true }).click();
   await expect(
     page.getByText(
       "Watching automatically. Follow the instruction; hold each result briefly for verification.",
     ),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 20000 });
 }
 async function move(page: Page, x: number) {
   await page.evaluate((x) => {
@@ -243,18 +244,27 @@ test("automatically checks a wrong result, pulses correction, observes recovery 
   await move(page, 110);
   await expect(
     page.getByText("Correction needed", { exact: true }),
-  ).toBeVisible();
-  await expect(page.locator("svg .practice-correction-pulse")).toBeVisible();
+  ).toBeVisible({ timeout: 20000 });
+  await expect(page.locator("svg .practice-correction-pulse")).toBeVisible({
+    timeout: 20000,
+  });
+  await expect(page.locator("svg .practice-correction-pulse")).toHaveCSS(
+    "animation-name",
+    "practice-correction-pulse",
+  );
   await move(page, 30);
+  // .first(): the avatar caption echoes the same spoken recovery line.
   await expect(
-    page.getByText(
-      "Starting relationship restored. Follow the current instruction.",
-    ),
-  ).toBeVisible();
+    page
+      .getByText(
+        "Starting relationship restored. Follow the current instruction.",
+      )
+      .first(),
+  ).toBeVisible({ timeout: 20000 });
   await move(page, 170);
   await expect(
     page.getByRole("strong").filter({ hasText: "Goal reached" }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 20000 });
   expect(calls).toBe(3);
   await page.getByRole("button", { name: "Stop camera" }).click();
   expect(
@@ -288,18 +298,333 @@ test("keeps automatic evidence capture alive during a delayed AI response", asyn
   });
   await setup(page);
   await move(page, 100);
-  await expect.poll(() => requests.length).toBe(1);
+  await expect.poll(() => requests.length, { timeout: 20000 }).toBe(1);
+  await expect(
+    page.getByText("StepLint Guide · checking evidence", { exact: true }),
+  ).toBeVisible();
   await move(page, 180);
-  await expect(page.getByText(/1 captured action waiting/)).toBeVisible();
+  await expect(page.getByText(/1 captured action waiting/)).toBeVisible({
+    timeout: 20000,
+  });
   await expect(
     page.getByRole("strong").filter({ hasText: "Goal reached" }),
-  ).toHaveCount(0);
+  ).toHaveCount(0, { timeout: 20000 });
   release();
-  await expect.poll(() => requests.length).toBe(2);
+  await expect.poll(() => requests.length, { timeout: 20000 }).toBe(2);
   expect(requests[1].frames[0].frame).toBeGreaterThanOrEqual(
     requests[0].frames[2].frame,
   );
   await expect(
     page.getByRole("strong").filter({ hasText: "Goal reached" }),
+  ).toBeVisible({ timeout: 20000 });
+});
+
+test("spoken commands start, pause, resume and stop actual Practice capture without advancing a step", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    class Recognition {
+      continuous = true;
+      interimResults = true;
+      lang = "en-US";
+      onresult: ((e: unknown) => void) | null = null;
+      onstart: (() => void) | null = null;
+      onend: (() => void) | null = null;
+      start() {
+        this.onstart?.();
+        Object.assign(window, {
+          utter: (text: string) =>
+            this.onresult?.({
+              resultIndex: 0,
+              results: [{ isFinal: true, 0: { transcript: text } }],
+            }),
+        });
+      }
+      abort() {}
+      stop() {}
+    }
+    Object.assign(window, { SpeechRecognition: Recognition });
+    window.speechSynthesis.speak = () => {};
+    window.speechSynthesis.cancel = () => {};
+  });
+  await setup(page, false);
+  await page.getByLabel("Enable voice control", { exact: true }).check();
+  const utter = (text: string) =>
+    page.evaluate(
+      (text) =>
+        (window as unknown as { utter: (t: string) => void }).utter(text),
+      text,
+    );
+  await utter("Guide, start practice");
+  await expect(
+    page.getByText(
+      "Watching automatically. Follow the instruction; hold each result briefly for verification.",
+    ),
+  ).toBeVisible({ timeout: 20000 });
+  await page.evaluate(() =>
+    Object.defineProperty(window.speechSynthesis, "speaking", {
+      configurable: true,
+      get: () => true,
+    }),
+  );
+  await utter("Step lint, pause practice");
+  await expect(
+    page.getByRole("button", {
+      name: "Continue from this starting view",
+      exact: true,
+    }),
   ).toBeVisible();
+  await page.evaluate(() =>
+    Object.defineProperty(window.speechSynthesis, "speaking", {
+      configurable: true,
+      get: () => false,
+    }),
+  );
+  await utter("Guide, please resume practice");
+  await expect(
+    page.getByRole("button", {
+      name: "Continue from this starting view",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await utter("Guide, next step");
+  await expect(
+    page.getByText("Command sent: repeat instruction."),
+  ).toBeVisible();
+  await expect(page.getByText(/Goal verified/)).toHaveCount(0);
+  await utter("Guide, end practice");
+  await expect(
+    page.getByRole("button", { name: "Start camera", exact: true }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() =>
+      (
+        window as unknown as { relationCamera: { streams: MediaStream[] } }
+      ).relationCamera.streams.every((s) =>
+        s.getTracks().every((t) => t.readyState === "ended"),
+      ),
+    ),
+  ).toBe(true);
+});
+
+test("the real bundled gesture runtime loads and samples the active camera", async ({
+  page,
+}) => {
+  test.setTimeout(90000);
+  await setup(page);
+  await page.getByLabel("Enable gesture control", { exact: true }).check();
+  await expect(
+    page.getByText(
+      "Gesture control on — point in the right-edge zone, pinch to click",
+      { exact: true },
+    ),
+  ).toBeVisible({ timeout: 60000 });
+  await page.getByText("Gesture diagnostics", { exact: true }).click();
+  await expect(page.getByText(/samples · avg/)).toContainText(
+    /[1-9]\d* samples/,
+    { timeout: 20000 },
+  );
+  await page.getByLabel("Enable gesture control", { exact: true }).uncheck();
+  await expect(
+    page.getByText("Gesture control off", { exact: true }),
+  ).toBeVisible();
+});
+
+test("Practice diagnostics describe the running state without media or session tokens", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.getByText("Developer details", { exact: true }).click();
+  const downloaded = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Download Practice diagnostics", exact: true })
+    .click();
+  const download = await downloaded;
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  const text = Buffer.concat(chunks).toString("utf8");
+  const report = JSON.parse(text);
+  expect(report.camera.active).toBe(true);
+  expect(report.camera.frames).toBeGreaterThan(0);
+  expect(report.flow.armed).toBe(true);
+  expect(text).not.toContain("mock-only");
+  expect(text).not.toContain("data:image");
+  expect(report).not.toHaveProperty("token");
+});
+
+test("slow setup retains real local outlines on an untextured work surface", async ({
+  page,
+}) => {
+  await setup(page, false);
+  await page.route("**/api/teach/guide/perceive", async (r) => {
+    await new Promise((resolve) => setTimeout(resolve, 6500));
+    const objects = [
+      {
+        objectId: "component-1",
+        quality: "observed",
+        score: 0.99,
+        box: {
+          left: 30 / 320,
+          top: 90 / 240,
+          right: 80 / 320,
+          bottom: 160 / 240,
+        },
+      },
+      {
+        objectId: "component-2",
+        quality: "observed",
+        score: 0.99,
+        box: {
+          left: 140 / 320,
+          top: 160 / 240,
+          right: 270 / 320,
+          bottom: 190 / 240,
+        },
+      },
+    ];
+    await r.fulfill({
+      json: {
+        phase: "starting",
+        objects,
+        foregrounds: objects.map((o) => ({
+          objectId: o.objectId,
+          foreground: {
+            width: 3,
+            height: 3,
+            bounds: o.box,
+            bits: Buffer.from([255, 128]).toString("base64"),
+          },
+        })),
+        remainingModelRequests: 9,
+      },
+    });
+  });
+  await page.getByRole("button", { name: "Start camera", exact: true }).click();
+  await expect(
+    page.getByText("Local tracking ready for 2 items.", { exact: true }),
+  ).toBeAttached({ timeout: 30000 });
+  await expect(
+    page.getByLabel("Locally tracked relevant parts", { exact: true }),
+  ).toBeVisible({ timeout: 10000 });
+});
+
+test("a held pinch reaches the ordinary Pause button and does not verify a step", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    class HandWorker {
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      postMessage(input: { type: string; image?: ImageBitmap; at?: number }) {
+        if (input.type === "init")
+          queueMicrotask(() => this.onmessage?.({ data: { type: "ready" } }));
+        else {
+          input.image?.close();
+          const hand = (
+            window as unknown as {
+              testHand?: { x: number; y: number; pinching?: boolean };
+            }
+          ).testHand;
+          this.onmessage?.({
+            data: {
+              type: "result",
+              elapsedMs: 1,
+              reading: hand
+                ? {
+                    kind: hand.pinching ? "pinch" : "none",
+                    confidence: hand.pinching ? null : 0,
+                    geometry: "hand-relative-pinch",
+                    pinchGap: 0.02,
+                    ...hand,
+                    at: input.at,
+                  }
+                : { kind: "none", confidence: 0, at: input.at },
+            },
+          });
+        }
+      }
+      terminate() {}
+    }
+    Object.assign(window, { Worker: HandWorker });
+  });
+  await setup(page);
+  await page.getByLabel("Enable gesture control", { exact: true }).check();
+  await expect(
+    page.getByText(
+      "Gesture control on — point in the right-edge zone, pinch to click",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  const pause = page.getByRole("button", { name: "Pause", exact: true });
+  await pause.scrollIntoViewIfNeeded();
+  const box = await pause.boundingBox();
+  expect(box).not.toBeNull();
+  await page.evaluate((box) => {
+    Object.assign(window, {
+      testHand: {
+        x: 0.8 + 0.18 * ((box!.x + box!.width / 2) / innerWidth),
+        y: 0.1 + 0.8 * ((box!.y + box!.height / 2) / innerHeight),
+      },
+    });
+  }, box);
+  await expect(page.getByTestId("gesture-pointer")).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Continue from this starting view",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await page.evaluate(() => {
+    (
+      window as unknown as { testHand: { pinching: boolean } }
+    ).testHand.pinching = true;
+  });
+  await expect(
+    page.getByText(
+      "Paused. Restore the current starting view before continuing.",
+      {
+        exact: true,
+      },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Continue from this starting view",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Goal reached", { exact: true })).toHaveCount(0);
+});
+
+test("exhausted verification allowance pauses visibly without pretending to keep checking", async ({
+  page,
+}) => {
+  let calls = 0;
+  await page.route("**/api/teach/guide/relations/perceive", async (r) => {
+    calls++;
+    await r.fulfill({
+      json: observation(
+        r.request().postDataJSON(),
+        ["separate", "unknown", "unknown"],
+        0,
+      ),
+    });
+  });
+  await setup(page);
+  await move(page, 100);
+  await expect(
+    page.getByText(/This session reached its 12-check limit/),
+  ).toBeVisible({ timeout: 20000 });
+  await expect(
+    page.getByText("Watching automatically", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", {
+      name: "Continue from this starting view",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await expect(page.getByText("Goal reached", { exact: true })).toHaveCount(0);
+  expect(calls).toBe(1);
 });

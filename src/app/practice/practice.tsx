@@ -21,6 +21,43 @@ import {
   type PracticeEvent,
 } from "@/guide/evaluator";
 import PracticeAlert from "./PracticeAlert";
+import GuideAvatar, { resolveAvatarMode } from "@/components/GuideAvatar";
+import GestureControls from "@/gesture/GestureControls";
+import { type VoiceCommand, type CommandDisposition } from "@/voice/commands";
+import { useVoiceControl, type VoiceEvent } from "@/voice/use-voice-control";
+import CommandFeedback from "@/voice/CommandFeedback";
+import VoicePanel, { appendVoiceEvent } from "@/voice/VoicePanel";
+
+const PRACTICE_COMMANDS: VoiceCommand[] = [
+  {
+    id: "start-practice",
+    phrases: ["start practice", "start", "begin practice"],
+  },
+  { id: "pause-practice", phrases: ["pause practice", "pause"] },
+  { id: "resume-practice", phrases: ["resume practice", "resume"] },
+  {
+    id: "end-practice",
+    phrases: ["end practice", "end", "stop practice", "finish"],
+  },
+  {
+    id: "repeat-instruction",
+    phrases: [
+      "repeat instruction",
+      "repeat",
+      "say again",
+      "next step",
+      "what is next",
+    ],
+  },
+  { id: "repeat-warning", phrases: ["repeat warning", "repeat the warning"] },
+  { id: "current-step", phrases: ["what is the current step", "current step"] },
+  {
+    id: "read-progress",
+    phrases: ["read my progress", "read progress", "my progress"],
+  },
+  { id: "stop-speaking", phrases: ["stop speaking", "be quiet", "quiet"] },
+  { id: "help", phrases: ["help", "what can i say"] },
+];
 import {
   PerceptionResultSchema,
   PerceptionSessionSchema,
@@ -62,6 +99,7 @@ type View =
   | "practice"
   | "paused"
   | "complete";
+import { browserClock } from "@/practice/browser-clock";
 import { sameDetections, percentile } from "@/practice/detections";
 function TimingPanel({
   latencies,
@@ -78,15 +116,21 @@ function TimingPanel({
         Camera frames processed: {camera.frames} · last interval{" "}
         {camera.lastIntervalMs} ms · avg process {camera.avgProcessMs} ms.
       </p>
-      <p>
-        Local evaluator: median {percentile(evals, 50)} ms · p95{" "}
-        {percentile(evals, 95)} ms over {evals.length} warnings.
-      </p>
-      <p>
-        Warning paint: median {percentile(paints, 50)} ms · p95{" "}
-        {percentile(paints, 95)} ms. Paint is measured from React state to
-        pixels; it excludes camera sampling and model time.
-      </p>
+      {latencies.length === 0 ? (
+        <p>No warning timing samples yet.</p>
+      ) : (
+        <>
+          <p>
+            Local evaluator: median {percentile(evals, 50)} ms · p95{" "}
+            {percentile(evals, 95)} ms over {evals.length} warnings.
+          </p>
+          <p>
+            Warning paint: median {percentile(paints, 50)} ms · p95{" "}
+            {percentile(paints, 95)} ms. Paint is measured from React state to
+            pixels; it excludes camera sampling time.
+          </p>
+        </>
+      )}
     </div>
   );
 }
@@ -120,7 +164,11 @@ export default function Practice() {
     [autoStart, setAutoStart] = useState(true),
     [remaining, setRemaining] = useState(8),
     [latestEvent, setLatestEvent] = useState<PracticeEvent | null>(null),
-    [watching, setWatching] = useState<string | null>(null);
+    [watching, setWatching] = useState<string | null>(null),
+    [speaking, setSpeaking] = useState(false),
+    [lastSpoken, setLastSpoken] = useState(""),
+    [voiceOn, setVoiceOn] = useState(false),
+    [voiceLog, setVoiceLog] = useState<VoiceEvent[]>([]);
   const [perceptionHelp, setPerceptionHelp] = useState("");
   const resumeContext = useRef<{
     background: AppearanceTrack | null;
@@ -129,13 +177,19 @@ export default function Practice() {
   const restartRequired = useRef(false);
   const clock = useRef(createSessionClock());
   const observationQuality = useRef(createObservationQuality());
-  const [, refreshClock] = useState(0);
+  const [display, setDisplay] = useState({
+    guideKey: "",
+    session: null as GuideSession | null,
+    timing: null as ReturnType<typeof timingSummary> | null,
+    timingSessionId: "",
+    evidence: createObservationQuality(),
+    latencies: [] as { eventId: string; evalMs: number; paintMs: number }[],
+    restartRequired: false,
+    blocked: false,
+    camera: { frames: 0, lastIntervalMs: 0, avgProcessMs: 0 },
+  });
   const recordedCompletion = useRef(false);
   const timingSessionId = useRef("");
-  useEffect(() => {
-    const id = window.setInterval(() => refreshClock((tick) => tick + 1), 1000);
-    return () => window.clearInterval(id);
-  }, []);
   const background = useRef<AppearanceTrack | null>(null);
   const session = useRef<GuideSession | null>(null),
     pixels = useRef<Pixels | null>(null),
@@ -176,8 +230,19 @@ export default function Practice() {
     )
       return;
     lastSaid.current = text;
+    setVoiceLog((log) =>
+      appendVoiceEvent(log, {
+        at: browserClock.wall(),
+        source: "steplint",
+        text,
+      }),
+    );
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onstart = () => setSpeaking(true);
+    utterance.onend = () => setSpeaking(false);
+    utterance.onerror = () => setSpeaking(false);
+    setLastSpoken(text);
     window.speechSynthesis.speak(utterance);
   }
   function saveTimingResult(completed: boolean) {
@@ -187,12 +252,12 @@ export default function Practice() {
       clock.current,
       current.guide,
       current.steps,
-      performance.now(),
+      browserClock.monotonic(),
     );
     void guideRepository
       .recordAttempt(selected.key, {
         sessionId: timingSessionId.current,
-        at: Date.now(),
+        at: browserClock.wall(),
         completed,
         activeMs: measured.activeMs,
         pausedMs: measured.pausedMs,
@@ -241,7 +306,7 @@ export default function Practice() {
           : null,
         baseline: { ...current.baseline },
       };
-    clockPhase(clock.current, performance.now(), "paused");
+    clockPhase(clock.current, browserClock.monotonic(), "paused");
     clearWatch();
     if (!current?.finished) saveTimingResult(false);
     runGeneration.current++;
@@ -284,6 +349,18 @@ export default function Practice() {
     setStates({ ...s.steps });
     const event = events.at(-1)!;
     setLatestEvent(event);
+    if (
+      event.kind === "violation" ||
+      event.kind === "verified" ||
+      event.kind === "complete"
+    )
+      setVoiceLog((log) =>
+        appendVoiceEvent(log, {
+          at: browserClock.wall(),
+          source: "verdict",
+          text: event.message,
+        }),
+      );
     if (event.kind === "violation") {
       if (selected?.artifact.guide.approval?.purpose === "rehearsal")
         void guideRepository
@@ -298,13 +375,13 @@ export default function Practice() {
       setMessage(event.message);
       // SpeechSynthesis queues asynchronously and never blocks the paint below.
       speak(event.message);
-      const painted = performance.now();
+      const painted = browserClock.monotonic();
       requestAnimationFrame(() =>
         requestAnimationFrame(() =>
           latencies.current.push({
             eventId: event.id,
             evalMs: Math.round(evalMs * 10) / 10,
-            paintMs: Math.round((performance.now() - painted) * 10) / 10,
+            paintMs: Math.round((browserClock.monotonic() - painted) * 10) / 10,
           }),
         ),
       );
@@ -329,7 +406,7 @@ export default function Practice() {
       history.current = [];
       pixels.current = null;
       showDetections([]);
-      clockPhase(clock.current, performance.now(), "complete");
+      clockPhase(clock.current, browserClock.monotonic(), "complete");
       if (!recordedCompletion.current && selected) {
         recordedCompletion.current = true;
         saveTimingResult(true);
@@ -363,7 +440,7 @@ export default function Practice() {
     const index = currentIndex(s),
       generation = runGeneration.current,
       captured = image,
-      capturedAt = performance.now();
+      capturedAt = browserClock.monotonic();
     remote.current = true;
     setBusy(true);
     lastCheck.current = capturedAt;
@@ -553,7 +630,7 @@ export default function Practice() {
             ? e.message
             : "The camera response was invalid. No step was verified.",
         );
-        setMessage("The AI check stopped. Your progress is kept.");
+        setMessage("The verification check stopped. Your progress is kept.");
       }
     } finally {
       if (generation === runGeneration.current) {
@@ -659,7 +736,7 @@ export default function Practice() {
       }
     }
     if (restartRequired.current) {
-      clockPhase(clock.current, performance.now(), "verifying");
+      clockPhase(clock.current, browserClock.monotonic(), "verifying");
       showDetections([]);
       return;
     }
@@ -718,7 +795,7 @@ export default function Practice() {
     const stable = quality.usable && now - stableSince.current >= 650;
     clockPhase(
       clock.current,
-      performance.now(),
+      browserClock.monotonic(),
       s.running
         ? aligned && clear && !remote.current
           ? "active"
@@ -733,10 +810,10 @@ export default function Practice() {
         step.condition.objectId,
         ...(step.condition.anchorId ? [step.condition.anchorId] : []),
       ]);
-      const evalStarted = performance.now();
+      const evalStarted = browserClock.monotonic();
       const recovered = recoverReturnedObjects(s, observation);
       const fed = feedGuideObservation(s, observation);
-      const evalMs = performance.now() - evalStarted;
+      const evalMs = browserClock.monotonic() - evalStarted;
       applyEvents(recovered, evalMs);
       applyEvents(fed, evalMs);
       const candidate = hasCandidate(s);
@@ -816,14 +893,19 @@ export default function Practice() {
         if (pendingReady.current || automatic) {
           try {
             beginGuide(s, readyBefore.current!, automatic);
-            clockPhase(clock.current, performance.now(), "active", step.id);
+            clockPhase(
+              clock.current,
+              browserClock.monotonic(),
+              "active",
+              step.id,
+            );
             setView("practice");
             setMessage(step.instruction);
             speak(step.instruction);
             pendingReady.current = false;
-            const beginEvalStarted = performance.now();
+            const beginEvalStarted = browserClock.monotonic();
             const beginFed = feedGuideObservation(s, observation);
-            applyEvents(beginFed, performance.now() - beginEvalStarted);
+            applyEvents(beginFed, browserClock.monotonic() - beginEvalStarted);
           } catch (e) {
             setMessage(
               e instanceof Error ? e.message : "Restore a clear starting view.",
@@ -848,6 +930,42 @@ export default function Practice() {
       void checkScene();
   }
   const camera = useGuideCamera(frame, pause);
+  const cameraStats = camera.getStats;
+  useEffect(() => {
+    const update = () => {
+      const current = session.current;
+      setDisplay({
+        guideKey: selected?.key ?? "",
+        session: current
+          ? {
+              ...current,
+              steps: { ...current.steps },
+              events: [...current.events],
+            }
+          : null,
+        timing: current
+          ? timingSummary(
+              clock.current,
+              current.guide,
+              current.steps,
+              browserClock.monotonic(),
+            )
+          : null,
+        timingSessionId: timingSessionId.current,
+        evidence: { ...observationQuality.current },
+        latencies: [...latencies.current],
+        restartRequired: restartRequired.current,
+        blocked: blocked.current,
+        camera: cameraStats(),
+      });
+    };
+    const paint = requestAnimationFrame(update),
+      timer = window.setInterval(update, 1000);
+    return () => {
+      cancelAnimationFrame(paint);
+      window.clearInterval(timer);
+    };
+  }, [selected, view, latestEvent, remaining, watching, cameraStats]);
   const selectInitial = useEffectEvent((row: SavedGuide) => select(row));
   const disposeSession = useEffectEvent(() => {
     if (session.current && !session.current.finished) saveTimingResult(false);
@@ -941,7 +1059,7 @@ export default function Practice() {
       timingSessionId.current = crypto.randomUUID();
       observationQuality.current = createObservationQuality();
       recordedCompletion.current = false;
-    } else clockPhase(clock.current, performance.now(), "verifying");
+    } else clockPhase(clock.current, browserClock.monotonic(), "verifying");
     setStates({ ...session.current.steps });
     tracks.current = [];
     background.current = null;
@@ -953,7 +1071,7 @@ export default function Practice() {
     lastChecked.current = [];
     lastFingerprint.current = [];
     history.current = [];
-    stableSince.current = performance.now();
+    stableSince.current = browserClock.monotonic();
     readyBefore.current = null;
     pendingReady.current = false;
     stepChecked.current = -1;
@@ -992,7 +1110,81 @@ export default function Practice() {
       }
     }
   }
-  const s = session.current,
+  function runPracticeVoice(id: string, disposition: CommandDisposition) {
+    void disposition;
+    const s = session.current,
+      g = selected?.artifact.guide,
+      total = g?.steps.length ?? 0,
+      idx = s ? currentIndex(s) : 0,
+      active = g?.steps[idx],
+      verified =
+        g?.steps.filter((step) => s?.steps[step.id] === "verified").length ?? 0;
+    const refuse = (text: string) => speak(text);
+    switch (id) {
+      case "start-practice":
+        if (!selected) refuse("Choose a procedure first.");
+        else if (!camera.active) void start();
+        else if (view === "ready" && !restartRequired.current) {
+          pendingReady.current = true;
+          setMessage("Starting from the observed view…");
+        } else refuse("Practice is already running.");
+        break;
+      case "pause-practice":
+        if (camera.active && view !== "paused")
+          pause("Practice paused. Your verified steps are kept.");
+        else refuse("Nothing is running right now.");
+        break;
+      case "resume-practice":
+        if (view === "paused") void start();
+        else refuse("Nothing is paused right now.");
+        break;
+      case "end-practice":
+        if (!selected) refuse("Nothing is running right now.");
+        else {
+          camera.stop();
+          pause("Practice ended.");
+          setSelected(null);
+          setView("off");
+        }
+        break;
+      case "repeat-instruction":
+        if (active) speak(active.instruction);
+        else if (g) speak(g.initialInstruction);
+        else refuse("Choose a procedure first.");
+        break;
+      case "repeat-warning":
+        if (correction) speak(correction);
+        else if (latestEvent) speak(latestEvent.message);
+        else speak(message || "No warning right now.");
+        break;
+      case "current-step":
+        if (active)
+          speak(
+            `Step ${idx + 1} of ${total}. ${active.instruction} State: ${s?.steps[active.id] ?? "waiting"}.`,
+          );
+        else refuse("Choose a procedure first.");
+        break;
+      case "read-progress":
+        if (g) speak(`${verified} of ${total} steps verified.`);
+        else refuse("Choose a procedure first.");
+        break;
+      case "stop-speaking":
+        if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+        break;
+      case "help":
+        speak(
+          "Say StepLint, start practice. Pause, resume, or end practice. Repeat the instruction or warning. Ask the current step or your progress. Say stop speaking to silence me.",
+        );
+        break;
+    }
+  }
+  const voiceControl = useVoiceControl({
+    commands: PRACTICE_COMMANDS,
+    enabled: voiceOn,
+    onAction: runPracticeVoice,
+    onEvent: (event) => setVoiceLog((log) => appendVoiceEvent(log, event)),
+  });
+  const s = display.guideKey === selected?.key ? display.session : null,
     g = selected?.artifact.guide,
     index = s ? currentIndex(s) : 0,
     step = g?.steps[index],
@@ -1024,17 +1216,10 @@ export default function Practice() {
           : "Starting view";
   const allActionsVerified =
     !!s && s.guide.steps.every((item) => s.steps[item.id] === "verified");
-  const timing = s
-    ? timingSummary(
-        clock.current,
-        s.guide,
-        s.steps,
-        typeof window === "undefined" ? 0 : performance.now(),
-      )
-    : null;
+  const timing = display.guideKey === selected?.key ? display.timing : null;
   const previousAverage = localAverage(
     (selected?.attempts ?? []).filter(
-      (attempt) => attempt.sessionId !== timingSessionId.current,
+      (attempt) => attempt.sessionId !== display.timingSessionId,
     ),
   );
   const debug =
@@ -1054,7 +1239,7 @@ export default function Practice() {
             clock.current,
             session.current.guide,
             session.current.steps,
-            performance.now(),
+            browserClock.monotonic(),
           )
         : null,
       remaining,
@@ -1065,6 +1250,7 @@ export default function Practice() {
     };
   }, [debug, view, states, remaining, detections]);
   function download() {
+    const s = session.current;
     if (!s) return;
     const url = URL.createObjectURL(
       new Blob(
@@ -1083,7 +1269,7 @@ export default function Practice() {
                 clock.current,
                 s.guide,
                 s.steps,
-                performance.now(),
+                browserClock.monotonic(),
               ),
               latencies: latencies.current,
               camera: camera.getStats(),
@@ -1284,12 +1470,12 @@ export default function Practice() {
                 <details className="text-sm text-slate-500">
                   <summary>Session timing</summary>
                   <TimingPanel
-                    latencies={latencies.current}
-                    camera={camera.getStats()}
+                    latencies={display.latencies}
+                    camera={display.camera}
                   />
                 </details>
                 <div className="flex flex-wrap gap-3">
-                  {restartRequired.current && (
+                  {display.restartRequired && (
                     <button
                       className="primary"
                       onClick={() => {
@@ -1300,7 +1486,7 @@ export default function Practice() {
                       Restart practice
                     </button>
                   )}
-                  {view === "ready" && !restartRequired.current && (
+                  {view === "ready" && !display.restartRequired && (
                     <button
                       className="primary"
                       onClick={() => {
@@ -1318,6 +1504,20 @@ export default function Practice() {
                       }
                     >
                       Pause
+                    </button>
+                  )}
+                  {camera.active && view === "practice" && (
+                    <button
+                      onClick={() =>
+                        speak(
+                          step
+                            ? step.instruction
+                            : (g?.initialInstruction ??
+                                "Show the starting view."),
+                        )
+                      }
+                    >
+                      Repeat instruction
                     </button>
                   )}
                   {camera.active && (
@@ -1351,7 +1551,7 @@ export default function Practice() {
                       </button>
                     </>
                   )}
-                  {blocked.current && camera.active && remaining >= 2 && (
+                  {display.blocked && camera.active && remaining >= 2 && (
                     <button
                       onClick={() => {
                         blocked.current = false;
@@ -1361,6 +1561,14 @@ export default function Practice() {
                     >
                       Try camera check again
                     </button>
+                  )}
+                  {camera.active && (
+                    <GestureControls
+                      videoRef={camera.video}
+                      onPauseRequest={() =>
+                        pause("Practice paused. Your verified steps are kept.")
+                      }
+                    />
                   )}
                 </div>
                 {error && (
@@ -1402,7 +1610,7 @@ export default function Practice() {
                         {camera.requesting ? "Waiting…" : "Start camera"}
                       </button>
                       <p className="mt-3 text-sm text-slate-300">
-                        Selected camera images help AI locate the objects.
+                        Selected camera images help locate the objects.
                       </p>
                     </div>
                   </div>
@@ -1484,6 +1692,61 @@ export default function Practice() {
               </div>
             </section>
             <aside className="space-y-4">
+              <GuideAvatar
+                mode={resolveAvatarMode({
+                  violation: !!correction,
+                  complete: view === "complete",
+                  uncertain:
+                    needsClearView ||
+                    (view === "practice" &&
+                      s?.steps[step?.id ?? ""] === "uncertain"),
+                  busy: busy || watching !== null,
+                })}
+                speech={speaking ? "speaking" : "silent"}
+                caption={lastSpoken || undefined}
+              />
+              <div className="rounded-xl border bg-white p-3 text-sm">
+                <label className="flex items-center gap-2 font-medium">
+                  <input
+                    type="checkbox"
+                    checked={voiceOn}
+                    onChange={(e) => setVoiceOn(e.target.checked)}
+                  />
+                  Enable voice control
+                </label>
+                {voiceOn && (
+                  <p role="status" className="mt-1 text-slate-600">
+                    {voiceControl.status === "listening"
+                      ? "Listening for StepLint commands"
+                      : voiceControl.status === "requesting"
+                        ? "Requesting microphone permission…"
+                        : voiceControl.status === "unsupported"
+                          ? "Voice control is not supported in this browser — use the buttons"
+                          : voiceControl.status === "denied"
+                            ? "Microphone unavailable — use the buttons"
+                            : voiceControl.status === "error"
+                              ? "Voice recognition error — use the buttons"
+                              : "Voice control off"}
+                    {voiceControl.lastHeard &&
+                      ` · Last heard: “${voiceControl.lastHeard}”`}
+                  </p>
+                )}
+              </div>
+              {voiceOn && (
+                <>
+                  <CommandFeedback
+                    feedback={voiceControl.feedback}
+                    commands={voiceControl.availableCommands}
+                    onRestart={
+                      voiceControl.status === "error" ||
+                      voiceControl.status === "denied"
+                        ? voiceControl.restart
+                        : undefined
+                    }
+                  />
+                  <VoicePanel events={voiceLog} />
+                </>
+              )}
               <section className="rounded-2xl border bg-white p-5">
                 <div className="flex items-center justify-between">
                   <h2 className="font-bold">Your progress</h2>
@@ -1577,18 +1840,18 @@ export default function Practice() {
                   <details className="mt-2 text-xs text-slate-500">
                     <summary>Timing and evidence details</summary>
                     <p className="mb-2">
-                      Usable observations: {observationQuality.current.usable}/
-                      {observationQuality.current.checked}
-                      {observationQuality.current.checked
-                        ? ` (${Math.round((100 * observationQuality.current.usable) / observationQuality.current.checked)}%)`
+                      Usable observations: {display.evidence.usable}/
+                      {display.evidence.checked}
+                      {display.evidence.checked
+                        ? ` (${Math.round((100 * display.evidence.usable) / display.evidence.checked)}%)`
                         : ""}
                       . This measures evidence availability, not accuracy or a
                       success probability.
                     </p>
                     Active session includes unpaused thinking time. Breaks are
                     explicit pauses; stillness alone is not a break. Uncertain
-                    tracking and AI checks count as verification waits.
-                    Estimates are guidance, not speed targets.
+                    tracking and verification checks count as verification
+                    waits. Estimates are guidance, not speed targets.
                     <ul>
                       {g.steps.map((item, i) => (
                         <li key={item.id}>
@@ -1635,7 +1898,7 @@ export default function Practice() {
                   setup.
                 </label>
                 <p className="text-slate-500">
-                  AI receives selected camera images to locate objects. Frequent
+                  Selected camera images are used to locate objects. Frequent
                   tracking stays in this browser. Scoring requires clear
                   observed changes.
                 </p>

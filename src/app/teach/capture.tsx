@@ -9,12 +9,51 @@ import {
 } from "@/media/convert";
 import { inspectLessonVideo } from "@/teach/media";
 import { MAX_TEACH_BODY, type LessonMedia } from "@/teach/schema";
+import { type VoiceCommand, type CommandDisposition } from "@/voice/commands";
+import { useVoiceControl, type VoiceEvent } from "@/voice/use-voice-control";
+import CommandFeedback from "@/voice/CommandFeedback";
+import VoicePanel, { appendVoiceEvent } from "@/voice/VoicePanel";
 
 export type PreparedLesson = { video: Blob; audio: Blob; media: LessonMedia };
+export type ControlMark = {
+  at: number;
+  recordingMs: number | null;
+  text: string;
+};
+const TEACH_COMMANDS: VoiceCommand[] = [
+  {
+    id: "start-recording",
+    phrases: ["start recording", "start", "begin recording"],
+  },
+  { id: "pause-recording", phrases: ["pause recording", "pause"] },
+  { id: "resume-recording", phrases: ["resume recording", "resume"] },
+  {
+    id: "stop-recording",
+    phrases: ["stop recording", "stop", "done", "finish recording"],
+  },
+  {
+    id: "preview-recording",
+    phrases: ["preview recording", "preview", "show preview"],
+  },
+  {
+    id: "discard-recording",
+    phrases: ["discard recording", "discard", "start over"],
+    destructive: true,
+    confirmPhrase: "confirm discard",
+  },
+  {
+    id: "restart-recording",
+    phrases: ["restart recording", "restart"],
+    destructive: true,
+    confirmPhrase: "confirm restart",
+  },
+];
 export default function LessonCapture({
   onPrepared,
+  onControlMark,
 }: {
   onPrepared: (lesson: PreparedLesson) => void;
+  onControlMark?: (mark: ControlMark) => void;
 }) {
   const feedback = useFeedback();
   function fail(message: string) {
@@ -34,6 +73,51 @@ export default function LessonCapture({
     abort: new AbortController(),
     timer: null as ReturnType<typeof setInterval> | null,
   });
+  const pauseMarks = useRef({ pausedMs: 0, pauseStart: 0 });
+  const recordingStartWall = useRef(0);
+  const recordStart = useRef(0);
+  function startTimer() {
+    const resourcesRef = resources.current;
+    if (resourcesRef.timer) clearInterval(resourcesRef.timer);
+    resourcesRef.timer = setInterval(() => {
+      const recorder = resourcesRef.recorder;
+      const elapsed =
+        (performance.now() -
+          recordStart.current -
+          pauseMarks.current.pausedMs) /
+        1000;
+      setSeconds(elapsed);
+      if (elapsed >= 20 && recorder && recorder.state === "recording")
+        recorder.stop();
+    }, 100);
+  }
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceLog, setVoiceLog] = useState<VoiceEvent[]>([]);
+  function logVoice(event: VoiceEvent) {
+    setVoiceLog((log) => appendVoiceEvent(log, event));
+  }
+  function say(text: string) {
+    logVoice({ at: Date.now(), source: "steplint", text });
+    try {
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+      }
+    } catch {
+      // Speech is a convenience; the on-screen log is authoritative.
+    }
+  }
+  function markControl(text: string) {
+    const at = Date.now();
+    onControlMark?.({
+      at,
+      text,
+      recordingMs:
+        state === "recording" || state === "paused"
+          ? at - recordingStartWall.current
+          : null,
+    });
+  }
   function stopTracks() {
     const r = resources.current;
     if (r.timer) clearInterval(r.timer);
@@ -44,13 +128,87 @@ export default function LessonCapture({
   }
   function cancel() {
     resources.current.abort.abort();
-    if (resources.current.recorder?.state === "recording")
-      resources.current.recorder.stop();
+    const recorderState = resources.current.recorder?.state;
+    if (recorderState === "recording" || recorderState === "paused")
+      resources.current.recorder?.stop();
     stopTracks();
     setState("idle");
     setSeconds(0);
     setError("");
   }
+  function runVoiceAction(id: string, disposition: CommandDisposition) {
+    if (disposition === "rejected") {
+      say("That confirmation has expired. Please say the command again.");
+      return;
+    }
+    if (disposition === "needs-confirmation") {
+      say(
+        id === "discard-recording"
+          ? "Say StepLint, confirm discard to delete this recording."
+          : "Say StepLint, confirm restart to replace this recording.",
+      );
+      return;
+    }
+    const refuse = (text: string) => say(text);
+    switch (id) {
+      case "start-recording":
+        markControl("start recording");
+        if (!consent) refuse("Confirm recording consent before starting.");
+        else if (!support)
+          refuse(
+            "Recording support is still being checked. Try again when the camera controls are ready.",
+          );
+        else if (!support.h264)
+          refuse(
+            "Recording is unavailable in this browser. Use an existing MP4 instead.",
+          );
+        else if (state !== "idle" && state !== "preview")
+          refuse(
+            "A recording is already active. Pause, stop or discard it before starting another.",
+          );
+        else void record();
+        break;
+      case "pause-recording":
+        markControl("pause recording");
+        if (!pauseRecording()) refuse("Nothing is recording right now.");
+        break;
+      case "resume-recording":
+        markControl("resume recording");
+        if (!resumeRecording()) refuse("Nothing is paused right now.");
+        break;
+      case "stop-recording":
+        markControl("stop recording");
+        if (state !== "recording" && state !== "paused")
+          refuse("Nothing is recording right now.");
+        else if (seconds < 10)
+          refuse("Keep going a little longer; lessons need ten seconds.");
+        else resources.current.recorder?.stop();
+        break;
+      case "preview-recording":
+        markControl("preview recording");
+        if (state !== "idle" && state !== "preview")
+          refuse("Finish recording first.");
+        else
+          void preview().catch(() => refuse("There is no preview available."));
+        break;
+      case "discard-recording":
+        markControl("discard recording");
+        cancel();
+        say("Recording discarded.");
+        break;
+      case "restart-recording":
+        markControl("restart recording");
+        cancel();
+        void record();
+        break;
+    }
+  }
+  const voice = useVoiceControl({
+    commands: TEACH_COMMANDS,
+    enabled: voiceOn,
+    onAction: runVoiceAction,
+    onEvent: (event) => logVoice(event),
+  });
   useEffect(() => {
     void probeEncoding()
       .then(setSupport)
@@ -100,6 +258,34 @@ export default function LessonCapture({
         fail(e instanceof Error ? e.message : "Unable to prepare lesson.");
       }
     }
+  }
+  function pauseRecording() {
+    const recorder = resources.current.recorder;
+    if (!recorder || recorder.state !== "recording") return false;
+    try {
+      recorder.pause();
+    } catch {
+      return false;
+    }
+    if (resources.current.timer) clearInterval(resources.current.timer);
+    resources.current.timer = null;
+    pauseMarks.current.pauseStart = performance.now();
+    setState("paused");
+    return true;
+  }
+  function resumeRecording() {
+    const recorder = resources.current.recorder;
+    if (!recorder || recorder.state !== "paused") return false;
+    try {
+      recorder.resume();
+    } catch {
+      return false;
+    }
+    pauseMarks.current.pausedMs +=
+      performance.now() - pauseMarks.current.pauseStart;
+    startTimer();
+    setState("recording");
+    return true;
   }
   async function preview() {
     cancel();
@@ -207,12 +393,10 @@ export default function LessonCapture({
       };
       recorder.start(250);
       setState("recording");
-      const start = performance.now();
-      resources.current.timer = setInterval(() => {
-        const elapsed = (performance.now() - start) / 1000;
-        setSeconds(elapsed);
-        if (elapsed >= 20 && recorder.state === "recording") recorder.stop();
-      }, 100);
+      pauseMarks.current = { pausedMs: 0, pauseStart: 0 };
+      recordingStartWall.current = Date.now();
+      recordStart.current = performance.now();
+      startTimer();
     } catch (e) {
       if (!controller.signal.aborted) {
         stopTracks();
@@ -249,13 +433,15 @@ export default function LessonCapture({
       >
         {state === "recording"
           ? `● REC — camera + microphone — ${seconds.toFixed(1)} s`
-          : state === "permission"
-            ? "Waiting for camera/microphone permission…"
-            : state === "preparing"
-              ? "Camera off. Preparing MP4 and mono PCM WAV locally…"
-              : state === "preview"
-                ? "Camera preview — not recording. Frame your shot, then start recording."
-                : "Camera and microphone off"}
+          : state === "paused"
+            ? `❚❚ Paused — ${seconds.toFixed(1)} s recorded. Resume or stop.`
+            : state === "permission"
+              ? "Waiting for camera/microphone permission…"
+              : state === "preparing"
+                ? "Camera off. Preparing MP4 and mono PCM WAV locally…"
+                : state === "preview"
+                  ? "Camera preview — not recording. Frame your shot, then start recording."
+                  : "Camera and microphone off"}
       </p>
       <video
         ref={camera}
@@ -285,13 +471,77 @@ export default function LessonCapture({
           Start recording
         </button>
         <button
-          disabled={state !== "recording" || seconds < 10}
+          disabled={
+            (state !== "recording" && state !== "paused") || seconds < 10
+          }
           onClick={() => resources.current.recorder?.stop()}
         >
           Done
         </button>
+        {state === "recording" && (
+          <button onClick={pauseRecording}>Pause recording</button>
+        )}
+        {state === "paused" && (
+          <button onClick={resumeRecording}>Resume recording</button>
+        )}
         <button onClick={cancel}>Discard recording</button>
       </div>
+      <div className="rounded-xl border bg-white p-3 text-sm">
+        <label className="flex items-center gap-2 font-medium">
+          <input
+            type="checkbox"
+            checked={voiceOn}
+            onChange={(e) => setVoiceOn(e.target.checked)}
+          />
+          Enable voice control
+        </label>
+        {voiceOn && (
+          <>
+            <p role="status" className="mt-1 text-slate-600">
+              {voice.status === "listening"
+                ? "Listening for StepLint commands"
+                : voice.status === "requesting"
+                  ? "Requesting microphone permission…"
+                  : voice.status === "unsupported"
+                    ? "Voice control is not supported in this browser — use the buttons"
+                    : voice.status === "denied"
+                      ? "Microphone unavailable — use the buttons"
+                      : voice.status === "error"
+                        ? "Voice recognition error — use the buttons"
+                        : "Voice control off"}
+              {voice.lastHeard && ` · Last heard: “${voice.lastHeard}”`}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Browser speech recognition runs while enabled; commands need the
+              Guide or StepLint prefix. Recognition is provided by your browser
+              and may use its online service — no audio is stored or sent
+              anywhere by StepLint. Say “StepLint, stop recording” to finish
+              hands-free.
+            </p>
+            {voice.pending && (
+              <p role="alert" className="mt-1 font-medium text-amber-800">
+                Say “StepLint,{" "}
+                {voice.pending.actionId === "discard-recording"
+                  ? "confirm discard"
+                  : "confirm restart"}{" "}
+                within {voice.confirmWindowSec}s, or it expires.
+              </p>
+            )}
+          </>
+        )}
+      </div>
+      {voiceOn && (
+        <CommandFeedback
+          feedback={voice.feedback}
+          commands={voice.availableCommands}
+          onRestart={
+            voice.status === "error" || voice.status === "denied"
+              ? voice.restart
+              : undefined
+          }
+        />
+      )}
+      <VoicePanel events={voiceLog} />
       <div className="space-y-2">
         <p>Or choose an existing MP4/H.264 with audio (10–20 s, ≤2.8 MB).</p>
         <button

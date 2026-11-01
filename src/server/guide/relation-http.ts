@@ -1,7 +1,13 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { authorize, seal, unseal, TeachError } from "../teach/security";
+import {
+  authorize,
+  seal,
+  unseal,
+  TeachError,
+  TeachStageError,
+} from "../teach/security";
 import { boundedBody, responseError } from "../teach/http";
 import { createMetaClient } from "../meta/client";
 import { sourceStream } from "./http";
@@ -90,8 +96,20 @@ export async function analyseRelations(request: Request) {
             uploadDeleted: true,
           });
         } catch (e) {
-          if (!cleanupAttempted) await deleteLessonFile(client, source.fileId);
-          throw e;
+          let cleanup: "deleted" | "expiry_fallback" = cleanupAttempted
+            ? "expiry_fallback"
+            : "deleted";
+          if (!cleanupAttempted) {
+            try {
+              await deleteLessonFile(client, source.fileId);
+            } catch {
+              cleanup = "expiry_fallback";
+            }
+          }
+          throw Object.assign(
+            new TeachStageError("Checking source relationships", e),
+            { analysis: { cleanup } },
+          );
         }
       });
     }

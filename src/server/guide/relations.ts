@@ -1,3 +1,4 @@
+import { RelationEvidenceError } from "../../guide/relation-error";
 import "server-only";
 import { z } from "zod";
 import type OpenAI from "openai";
@@ -101,7 +102,10 @@ export async function inspectRelationEvidence(
     frames.length > 24 ||
     new Set(frames.map((f) => f.frame)).size !== frames.length
   )
-    throw Error("Invalid observation image batch.");
+    throw new RelationEvidenceError(
+      "source_evidence_missing",
+      "The requested source images are missing or duplicated. Keep the recording and prepare its source images again.",
+    );
   const response = await client.responses.create(
     {
       model: "muse-spark-1.3",
@@ -182,8 +186,9 @@ export async function inspectRelationEvidence(
         f.readings.some((r) => !ids.has(r.stepId)),
     )
   )
-    throw Error(
-      "The observations do not match the requested images and parts.",
+    throw new RelationEvidenceError(
+      "observation_mismatch",
+      "The observations do not match the requested images and parts. Nothing was approved; review the source or analyze it again.",
     );
   const box = (b: z.infer<typeof wireBox> | null) =>
     b

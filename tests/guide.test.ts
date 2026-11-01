@@ -255,6 +255,20 @@ describe("appearance tracking independent of hue", () => {
     expect(b.quality).toBe("observed");
     expect(b.box!.left).toBeCloseTo(29 / 120, 2);
   });
+  it.each([1, 3, 5])(
+    "tracks a %i-pixel movement instead of testing only even shifts",
+    (dx) => {
+      const track = groundAppearance(texture(), "phone", {
+        left: 25 / 120,
+        top: 25 / 90,
+        right: 65 / 120,
+        bottom: 65 / 90,
+      });
+      const result = trackAppearance(texture(dx), track);
+      expect(result.quality).toBe("observed");
+      expect(result.box!.left).toBeCloseTo((25 + dx) / 120, 2);
+    },
+  );
   it("abstains on obstruction and refuses to learn the replacement background", () => {
     const track = groundAppearance(texture(), "phone", {
       left: 25 / 120,

@@ -334,7 +334,11 @@ export function guideBlockers(g: Guide): string[] {
     );
   g.steps.forEach((s, i) => {
     if (!s.supported)
-      issues.push(g.relationPlan ? `Step ${i + 1} needs a clearly observed starting relationship and result.` : `Step ${i + 1} needs clearer tracked movement.`);
+      issues.push(
+        g.relationPlan
+          ? `Step ${i + 1} needs a clearly observed starting relationship and result.`
+          : `Step ${i + 1} needs clearer tracked movement.`,
+      );
     for (const f of [
       s.evidence.startFrame,
       s.evidence.changeFrame,

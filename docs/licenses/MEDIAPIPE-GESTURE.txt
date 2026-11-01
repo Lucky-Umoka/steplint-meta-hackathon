@@ -1,0 +1,12 @@
+MediaPipe Tasks Vision gesture recognizer
+
+- npm package: @mediapipe/tasks-vision 1.2.0, Apache-2.0 (see registry license field).
+- Model asset: public/models/gesture_recognizer.task (float16 bundle, ~8.4 MB),
+  downloaded from the official MediaPipe model storage:
+  https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task
+  MediaPipe model bundles are distributed under Apache-2.0 terms; see
+  https://developers.google.com/edge/mediapipe/solutions/vision/gesture_recognizer
+  for the current model card and terms.
+- The asset loads lazily in the browser only after the user explicitly enables
+  gesture control. It is never uploaded anywhere and no hand imagery leaves
+  the device.

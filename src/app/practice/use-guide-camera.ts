@@ -99,6 +99,7 @@ export function useGuideCamera(
   const getStats = useCallback(() => ({ ...stats.current }), []);
   useEffect(() => {
     if (!active) return;
+    const sourceVideo = video.current;
     let last = -1,
       fresh = performance.now(),
       lastProcess = 0,
@@ -126,7 +127,7 @@ export function useGuideCamera(
       fresh = now;
       // Adaptive ~12fps target with an overlap guard: a slow tick never
       // queues behind itself, and duplicate frames are never processed.
-      if (processing || now - lastProcess < 66) return schedule();
+      if (processing || now - lastProcess < 83) return schedule();
       processing = true;
       lastProcess = now;
       const started = performance.now();
@@ -150,6 +151,12 @@ export function useGuideCamera(
         s.avgProcessMs =
           Math.round((s.avgProcessMs * (s.frames - 1) + elapsed) * 10) /
           (s.frames * 10);
+      } catch {
+        callbacks.current.onPause(
+          "Camera processing stopped. Restart the camera to get a fresh view.",
+        );
+        stop();
+        return;
       } finally {
         processing = false;
       }
@@ -185,7 +192,7 @@ export function useGuideCamera(
       stopped = true;
       cancelAnimationFrame(raf);
       window.clearTimeout(timer);
-      const v = video.current as
+      const v = sourceVideo as
         | (HTMLVideoElement & {
             cancelVideoFrameCallback?: (handle: number) => void;
           })

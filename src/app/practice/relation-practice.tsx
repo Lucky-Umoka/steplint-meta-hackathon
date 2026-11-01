@@ -22,11 +22,58 @@ import {
   trackOverlay,
   type OverlayTrack,
 } from "@/practice/appearance-overlay";
-import { cameraNeedsAlignment } from "@/practice/camera-motion";
 import { outsidePlacementTarget } from "@/practice/target-feedback";
 import { createSessionClock, clockPhase, timingSummary } from "@/guide/timing";
 import { useGuideCamera } from "./use-guide-camera";
 import PracticeAlert from "./PracticeAlert";
+import GuideAvatar, { resolveAvatarMode } from "@/components/GuideAvatar";
+import GestureControls from "@/gesture/GestureControls";
+import { type VoiceCommand, type CommandDisposition } from "@/voice/commands";
+import { useVoiceControl, type VoiceEvent } from "@/voice/use-voice-control";
+import CommandFeedback from "@/voice/CommandFeedback";
+import VoicePanel, { appendVoiceEvent } from "@/voice/VoicePanel";
+
+const RELATION_COMMANDS: VoiceCommand[] = [
+  {
+    id: "start-practice",
+    phrases: ["start practice", "start", "begin practice", "start camera"],
+  },
+  { id: "pause-practice", phrases: ["pause practice", "pause"] },
+  {
+    id: "resume-practice",
+    phrases: ["resume practice", "continue practice", "resume", "continue"],
+  },
+  {
+    id: "end-practice",
+    phrases: [
+      "end practice",
+      "end",
+      "stop practice",
+      "finish",
+      "stop",
+      "stop camera",
+    ],
+  },
+  {
+    id: "repeat-instruction",
+    phrases: [
+      "repeat instruction",
+      "repeat",
+      "say again",
+      "next step",
+      "what is next",
+    ],
+  },
+  { id: "current-step", phrases: ["what is the current step", "current step"] },
+  {
+    id: "read-progress",
+    phrases: ["read my progress", "read progress", "my progress"],
+  },
+  { id: "stop-speaking", phrases: ["stop speaking", "be quiet", "quiet"] },
+  { id: "help", phrases: ["help", "what can i say"] },
+];
+import { overlayFrame, OVERLAY_REPLAY_FRAMES } from "@/practice/overlay-frame";
+import { browserClock } from "@/practice/browser-clock";
 import { percentile } from "@/practice/detections";
 
 import {
@@ -72,8 +119,13 @@ export default function RelationPractice({
     [localWarning, setLocalWarning] = useState(false),
     [locating, setLocating] = useState(false),
     [queued, setQueued] = useState(0),
+    [trackingNotice, setTrackingNotice] = useState(""),
     [latencyMs, setLatencyMs] = useState<number | null>(null),
-    [checkHistory, setCheckHistory] = useState<number[]>([]);
+    [checkHistory, setCheckHistory] = useState<number[]>([]),
+    [speaking, setSpeaking] = useState(false),
+    [lastSpoken, setLastSpoken] = useState(""),
+    [voiceOn, setVoiceOn] = useState(false),
+    [voiceLog, setVoiceLog] = useState<VoiceEvent[]>([]);
   const session = useRef<RelationSession | null>(null),
     token = useRef(""),
     request = useRef<AbortController | null>(null),
@@ -82,8 +134,6 @@ export default function RelationPractice({
     collector = useRef(new MotionWindows()),
     pixels = useRef<Pixels | null>(null),
     tracks = useRef<OverlayTrack[]>([]),
-    background = useRef<OverlayTrack | null>(null),
-    backgroundOrigin = useRef({ x: 0.5, y: 0.5 }),
     localBaseline = useRef<ObjectDetection[]>([]),
     localHistory = useRef<{ at: number; frame: Pixels }[]>([]),
     grounding = useRef(false),
@@ -115,8 +165,20 @@ export default function RelationPractice({
     )
       return;
     lastSaid.current = text;
+    setVoiceLog((log) =>
+      appendVoiceEvent(log, {
+        at: browserClock.wall(),
+        source: "steplint",
+        text,
+      }),
+    );
     window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onstart = () => setSpeaking(true);
+    utterance.onend = () => setSpeaking(false);
+    utterance.onerror = () => setSpeaking(false);
+    setLastSpoken(text);
+    window.speechSynthesis.speak(utterance);
   }
   function pause(reason: string) {
     generation.current++;
@@ -125,7 +187,7 @@ export default function RelationPractice({
     grounding.current = false;
     setLocating(false);
     setBusy(false);
-    clockPhase(clock.current, performance.now(), "paused");
+    clockPhase(clock.current, browserClock.monotonic(), "paused");
     running.current = false;
     setArmed(false);
     collector.current.reset();
@@ -134,7 +196,6 @@ export default function RelationPractice({
     setMotion(false);
     setReadings([]);
     tracks.current = [];
-    background.current = null;
     localHistory.current = [];
     setLocalObjects([]);
     setLocalWarning(false);
@@ -147,48 +208,38 @@ export default function RelationPractice({
     start: startCamera,
     stop: stopCamera,
     capture,
+    getStats: getCameraStats,
   } = useGuideCamera(onFrame, pause);
   function snapshot(now: number): Snapshot {
     return { frame: Math.round(now), ...capture() };
   }
-  function onFrame(p: Pixels, now: number) {
+  function seedCapture() {
+    collector.current.reset();
+    const p = pixels.current;
+    if (!p) return;
+    const signature = motionSignature(p);
+    const now = browserClock.monotonic();
+    previous.current = signature;
+    collector.current.observe(signature, now, () => snapshot(now));
+  }
+  function onFrame(cameraPixels: Pixels, now: number) {
+    const p = overlayFrame(cameraPixels);
     pixels.current = p;
     if (grounding.current) {
       localHistory.current.push({ at: now, frame: p });
-      if (localHistory.current.length > 60) localHistory.current.shift();
+      if (localHistory.current.length > OVERLAY_REPLAY_FRAMES)
+        localHistory.current.shift();
     }
-    let trackedMotion: number[] | null = null;
     if (running.current && tracks.current.length) {
-      const bg = background.current && trackOverlay(p, background.current);
-      const box = bg?.box;
-      const aligned =
-        !!box &&
-        bg?.quality === "observed" &&
-        !cameraNeedsAlignment(
-          Math.hypot(
-            (box.left + box.right) / 2 - backgroundOrigin.current.x,
-            (box.top + box.bottom) / 2 - backgroundOrigin.current.y,
-          ),
-          0,
-          1,
-          Infinity,
-        );
       const found = tracks.current.map((t) => trackOverlay(p, t));
-      if (aligned && found.every((d) => d.quality === "observed" && d.box))
-        trackedMotion = found.flatMap((d) => [
-          d.box!.left * 1000,
-          d.box!.top * 1000,
-          d.box!.right * 1000,
-          d.box!.bottom * 1000,
-        ]);
-      setLocalObjects(aligned ? found : []);
+      // Advisory feedback uses the two tracked parts as its reference.
+      // Physical correctness still requires the independent scene witness.
+      setLocalObjects(found);
       const step = plan.steps.find(
         (s) => session.current?.states[s.id] !== "verified",
       );
       const wrong =
-        !!step &&
-        aligned &&
-        outsidePlacementTarget(step, localBaseline.current, found);
+        !!step && outsidePlacementTarget(step, localBaseline.current, found);
       if (wrong && !collector.current.moving) warningSince.current ??= now;
       else warningSince.current = null;
       const warn =
@@ -202,9 +253,15 @@ export default function RelationPractice({
       }
       if (!warn) warningSpoken.current = false;
     }
-    const current = trackedMotion ?? motionSignature(p);
+    const current = motionSignature(p);
     previous.current = current;
     if (!running.current || session.current?.finished) return;
+    if (remaining <= 0) {
+      pause(
+        "Verification allowance reached. No more automatic checks will run in this session. Stop the camera and start a new session to continue; this action has not been verified.",
+      );
+      return;
+    }
     if (!grounded.current && !grounding.current) {
       void locate();
       return;
@@ -273,7 +330,7 @@ export default function RelationPractice({
     );
     const gen = generation.current,
       image = pixels.current,
-      at = performance.now();
+      at = browserClock.monotonic();
     localHistory.current = [];
     const controller = new AbortController();
     request.current = controller;
@@ -309,33 +366,25 @@ export default function RelationPractice({
           return [];
         }
       });
-      const boxes = data.objects.flatMap((d) => (d.box ? [d.box] : []));
-      const region = {
-        left: 0.06,
-        top: Math.max(
-          0.06,
-          Math.min(0.75, ...boxes.map((b) => b.bottom - 0.12)),
-        ),
-        right: 0.94,
-        bottom: 0.94,
-      };
-      backgroundOrigin.current = {
-        x: (region.left + region.right) / 2,
-        y: (region.top + region.bottom) / 2,
-      };
-      background.current = groundOverlay(image, "work-surface", region);
       const replay = localHistory.current.filter((f) => f.at > at);
       if (replay.length && replay[0].at - at > 700) {
         tracks.current = [];
-        background.current = null;
       }
-      for (const frame of replay) {
+      for (const [index, frame] of replay.entries()) {
+        if (gen !== generation.current || controller.signal.aborted) return;
+        // Delayed setup must not freeze microphone controls and gesture input.
+        if (index % 4 === 0)
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
         tracks.current.forEach((t) => trackOverlay(frame.frame, t));
-        if (background.current) trackOverlay(frame.frame, background.current);
       }
       localBaseline.current = pixels.current
         ? tracks.current.map((t) => trackOverlay(pixels.current!, t))
         : [];
+      setTrackingNotice(
+        tracks.current.length === 0
+          ? "Local circles are unavailable in this view. Camera change checks are active; a missing circle is not a verified result."
+          : `Local tracking ready for ${tracks.current.length} item${tracks.current.length === 1 ? "" : "s"}.`,
+      );
       setMessage(
         "Watching automatically. Follow the instruction; hold each result briefly for verification.",
       );
@@ -357,7 +406,13 @@ export default function RelationPractice({
         setBusy(false);
         setLocating(false);
         localHistory.current = [];
-        collector.current.reset();
+        try {
+          seedCapture();
+        } catch {
+          pause(
+            "The starting frame was unavailable. Restore the starting view and continue.",
+          );
+        }
       }
     }
   }
@@ -393,7 +448,7 @@ export default function RelationPractice({
       setFinished(false);
       saved.current = false;
       events.current = [];
-      clock.current = createSessionClock(performance.now());
+      clock.current = createSessionClock(browserClock.monotonic());
       await startCamera();
       if (gen !== generation.current) return;
       grounded.current = false;
@@ -404,7 +459,7 @@ export default function RelationPractice({
       running.current = true;
       setArmed(true);
       setMessage(
-        "Camera ready. Show the starting arrangement, then perform the first instruction and hold the result still.",
+        "Camera ready. Keep the starting arrangement still while the items are located. Begin when watching automatically appears.",
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Camera setup failed.");
@@ -414,14 +469,14 @@ export default function RelationPractice({
   }
   async function check(frames: Snapshot[], contextFrames: Snapshot[] = []) {
     if (checking.current || !session.current || remaining <= 0) return;
-    clockPhase(clock.current, performance.now(), "verifying");
+    clockPhase(clock.current, browserClock.monotonic(), "verifying");
     checking.current = true;
     checkedSignature.current = previous.current;
     changedWhileChecking.current = false;
     setBusy(true);
     setError("");
     setMessage("Checking the visible change. Hold the result still…");
-    const startedAt = performance.now();
+    const startedAt = browserClock.monotonic();
     const gen = generation.current,
       s = session.current,
       controller = new AbortController();
@@ -454,7 +509,7 @@ export default function RelationPractice({
         })
         .parse(await readAppJson(response, "Camera observation"));
       if (gen !== generation.current) return;
-      const checkMs = performance.now() - startedAt;
+      const checkMs = browserClock.monotonic() - startedAt;
       setLatencyMs(checkMs);
       setCheckHistory((h) => [...h.slice(-19), Math.round(checkMs)]);
       setRemaining(data.remainingModelRequests);
@@ -465,7 +520,9 @@ export default function RelationPractice({
       const emitted = evaluateRelationWindow(s, data.window);
       if (changedWhileChecking.current || pending.current.length)
         s.finished = false;
-      events.current.push(...emitted.map((e) => ({ ...e, at: Date.now() })));
+      events.current.push(
+        ...emitted.map((e) => ({ ...e, at: browserClock.wall() })),
+      );
       setStates({ ...s.states });
       const active = plan.steps.find(
         (step) => s.states[step.id] !== "verified",
@@ -478,15 +535,18 @@ export default function RelationPractice({
           ? violation.message
           : recovered
             ? "Starting relationship restored. Follow the current instruction."
-            : (emitted.find((e) => e.state === "needs_verification")?.message ??
-              (active
-                ? active.instruction
-                : "Keep the final objects visible so the goal can be checked."));
+            : verified
+              ? `Step verified. ${active ? active.instruction : "Keep the final result visible for confirmation."}`
+              : (emitted.find((e) => e.state === "needs_verification")
+                  ?.message ??
+                (active
+                  ? active.instruction
+                  : "Keep the final objects visible so the goal can be checked."));
       setMessage(text);
       say(text);
       setFinished(s.finished);
       if (s.finished && !saved.current) {
-        clockPhase(clock.current, performance.now(), "complete");
+        clockPhase(clock.current, browserClock.monotonic(), "complete");
         saved.current = true;
         running.current = false;
         setArmed(false);
@@ -494,10 +554,10 @@ export default function RelationPractice({
           clock.current,
           guide,
           s.states,
-          performance.now(),
+          browserClock.monotonic(),
         );
         await guideRepository.recordAttempt(row.key, {
-          at: Date.now(),
+          at: browserClock.wall(),
           completed: true,
           activeMs: measured.activeMs,
           pausedMs: measured.pausedMs,
@@ -532,7 +592,7 @@ export default function RelationPractice({
         setBusy(false);
         // Capture continues during this request; do not erase the next action.
         if (!s.finished && running.current)
-          clockPhase(clock.current, performance.now(), "active");
+          clockPhase(clock.current, browserClock.monotonic(), "active");
       }
     }
   }
@@ -542,14 +602,14 @@ export default function RelationPractice({
     const gen = generation.current;
     checking.current = true;
     setBusy(true);
-    const frames = [snapshot(performance.now())];
+    const frames = [snapshot(browserClock.monotonic())];
     try {
       await new Promise((resolve) => setTimeout(resolve, 600));
       if (gen !== generation.current) return;
-      frames.push(snapshot(performance.now()));
+      frames.push(snapshot(browserClock.monotonic()));
       await new Promise((resolve) => setTimeout(resolve, 500));
       if (gen !== generation.current) return;
-      frames.push(snapshot(performance.now()));
+      frames.push(snapshot(browserClock.monotonic()));
     } catch (e) {
       if (gen === generation.current)
         setError(
@@ -584,6 +644,7 @@ export default function RelationPractice({
   const evidence = guide.steps.find((s) => s.id === active.id)!;
   const highlightId =
     plan.steps.find((s) => states[s.id] === "violation")?.id ?? active.id;
+  const highlightStep = plan.steps.find((s) => s.id === highlightId) ?? active;
   const highlighted = readings.find(
     (r) => r.stepId === highlightId && r.visibility === "clear",
   );
@@ -592,8 +653,136 @@ export default function RelationPractice({
     (d) =>
       d.quality === "observed" &&
       d.box &&
-      (d.objectId === active.objectId || d.objectId === active.anchorId),
+      (d.objectId === highlightStep.objectId ||
+        d.objectId === highlightStep.anchorId),
   );
+  const hasLocalPrimary = localHighlight.some(
+    (d) => d.objectId === highlightStep.objectId,
+  );
+  function downloadDiagnostics() {
+    const report = {
+      version: "practice-capture-repair-2",
+      at: new Date().toISOString(),
+      method: guide.methodId,
+      guideId: guide.id,
+      browser: navigator.userAgent,
+      camera: {
+        active: cameraActive,
+        requesting: cameraRequesting,
+        ...getCameraStats(),
+      },
+      flow: { armed, busy, locating, motion, queued, remaining, finished },
+      tracking: {
+        tracks: tracks.current.length,
+        replayFrames: localHistory.current.length,
+        notice: trackingNotice,
+      },
+      verification: {
+        states,
+        checkHistoryMs: checkHistory,
+        error,
+        events: events.current.slice(-40),
+      },
+      voice: {
+        status: voiceControl.status,
+        feedback: voiceControl.feedback,
+        disposition: voiceControl.lastDisposition,
+      },
+    };
+    const href = URL.createObjectURL(
+      new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }),
+    );
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = "steplint-practice-diagnostics.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+  }
+  function continuePractice() {
+    if (
+      !cameraActive ||
+      checking.current ||
+      !session.current ||
+      session.current.finished ||
+      remaining <= 0
+    )
+      return false;
+    running.current = true;
+    setArmed(true);
+    seedCapture();
+    pending.current = [];
+    setQueued(0);
+    setMessage(
+      "Starting view reset. Perform the current instruction and hold the result still.",
+    );
+    return true;
+  }
+  function runRelationVoice(id: string, disposition: CommandDisposition) {
+    void disposition;
+    const active = plan.steps.find((s) => states[s.id] !== "verified");
+    const verified = plan.steps.filter(
+      (s) => states[s.id] === "verified",
+    ).length;
+    const refuse = (text: string) => say(text);
+    switch (id) {
+      case "start-practice":
+        if (!cameraActive && !busy && !cameraRequesting) void start();
+        else if (remaining <= 0)
+          refuse(
+            "Verification allowance reached. Stop the camera and start a new session before continuing.",
+          );
+        else if (!armed && !busy) continuePractice();
+        else refuse("Practice is already running.");
+        break;
+      case "pause-practice":
+        if (cameraActive)
+          pause("Practice paused. Your verified steps are kept.");
+        else refuse("Nothing is running right now.");
+        break;
+      case "resume-practice":
+        if (!cameraActive)
+          refuse("Start the camera to begin a fresh observed session.");
+        else if (remaining <= 0)
+          refuse(
+            "Verification allowance reached. Stop the camera and start a new session before continuing.",
+          );
+        else if (armed) refuse("Practice is already running.");
+        else if (!continuePractice())
+          refuse("Wait for the current check to finish before continuing.");
+        break;
+      case "end-practice":
+        stop();
+        break;
+      case "repeat-instruction":
+        if (active) say(active.instruction);
+        else say("All steps are verified. Well done.");
+        break;
+      case "current-step":
+        if (active)
+          say(
+            `Step ${plan.steps.indexOf(active) + 1} of ${plan.steps.length}. ${active.instruction} State: ${states[active.id] ?? "waiting"}.`,
+          );
+        else say("All steps are verified. Well done.");
+        break;
+      case "read-progress":
+        say(`${verified} of ${plan.steps.length} steps verified.`);
+        break;
+      case "stop-speaking":
+        if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+        break;
+      case "help":
+        say(
+          "Say StepLint, start practice. Pause or end practice. Repeat the instruction. Ask the current step or your progress. Say stop speaking to silence me.",
+        );
+        break;
+    }
+  }
+  const voiceControl = useVoiceControl({
+    commands: RELATION_COMMANDS,
+    enabled: voiceOn,
+    onAction: runRelationVoice,
+    onEvent: (event) => setVoiceLog((log) => appendVoiceEvent(log, event)),
+  });
   return (
     <Workspace mode="practice">
       <div className="mb-5 flex justify-between gap-4">
@@ -621,7 +810,7 @@ export default function RelationPractice({
         <section>
           <div className="relative overflow-hidden rounded-2xl bg-slate-950">
             <video ref={video} muted playsInline className="block w-full" />
-            {cameraActive && localHighlight.length > 0 && (
+            {cameraActive && hasLocalPrimary && (
               <svg
                 className="pointer-events-none absolute inset-0 h-full w-full"
                 viewBox="0 0 1000 1000"
@@ -656,7 +845,7 @@ export default function RelationPractice({
                 </g>
               </svg>
             )}
-            {cameraActive && highlighted && !localHighlight.length && (
+            {cameraActive && highlighted && !hasLocalPrimary && (
               <svg
                 className="pointer-events-none absolute inset-0 h-full w-full"
                 viewBox="0 0 1000 1000"
@@ -728,22 +917,21 @@ export default function RelationPractice({
               <>
                 {!armed && !finished && (
                   <button
-                    disabled={busy}
+                    disabled={busy || remaining <= 0}
                     onClick={() => {
-                      running.current = true;
-                      setArmed(true);
-                      collector.current.reset();
-                      pending.current = [];
-                      setQueued(0);
-                      setMessage(
-                        "Starting view reset. Perform the current instruction and hold the result still.",
-                      );
+                      continuePractice();
                     }}
                   >
                     Continue from this starting view
                   </button>
                 )}
                 <button onClick={stop}>Stop camera</button>
+                <GestureControls
+                  videoRef={video}
+                  onPauseRequest={() =>
+                    pause("Practice paused. Your verified steps are kept.")
+                  }
+                />
                 <button
                   disabled={busy || remaining < 3}
                   onClick={() => void locate()}
@@ -792,7 +980,7 @@ export default function RelationPractice({
                   : motion
                     ? "Watching movement — correctness not yet verified"
                     : busy
-                      ? "Camera watching · AI verification pending"
+                      ? "Camera watching · verification pending"
                       : "Watching automatically"
                 : "Paused"
               : "Camera off"}
@@ -800,20 +988,83 @@ export default function RelationPractice({
               ? ` · ${queued} captured action${queued > 1 ? "s" : ""} waiting`
               : ""}
             {latencyMs !== null
-              ? ` · Last AI check: ${(latencyMs / 1000).toFixed(1)}s (median ${(
-                  percentile(checkHistory, 50) / 1000
-                ).toFixed(1)}s over ${checkHistory.length})`
+              ? ` · Last verification check: ${(latencyMs / 1000).toFixed(1)}s`
               : ""}
           </p>
           <p className="text-sm text-slate-600">
-            Muse Spark and SAM locate starting objects; Spark checks bounded
-            changes. {remaining} model requests remain. Circles show the last
-            observed locations; an unclear view never counts as success. AI
-            feedback is delayed; wait for verification before a dependent or
-            irreversible action.
+            StepLint locates the starting objects, then checks each visible
+            change automatically. Circles show the last observed locations; an
+            unclear view never counts as success. Verification takes a moment;
+            wait for confirmation before a dependent or irreversible action.
           </p>
+          <details className="text-sm text-slate-600">
+            <summary>Developer details</summary>
+            <button type="button" onClick={downloadDiagnostics}>
+              Download Practice diagnostics
+            </button>
+            <p>{trackingNotice}</p>
+            <p>
+              {remaining} verification requests remain for this session (median{" "}
+              {(percentile(checkHistory, 50) / 1000).toFixed(1)}s over{" "}
+              {checkHistory.length} checks).
+            </p>
+          </details>
         </section>
         <aside className="space-y-4">
+          <GuideAvatar
+            mode={resolveAvatarMode({
+              violation: plan.steps.some((s) => states[s.id] === "violation"),
+              complete: finished,
+              uncertain: plan.steps.some(
+                (s) => states[s.id] === "needs_verification",
+              ),
+              busy: busy || locating,
+            })}
+            speech={speaking ? "speaking" : "silent"}
+            caption={lastSpoken || undefined}
+          />
+          <div className="rounded-xl border bg-white p-3 text-sm">
+            <label className="flex items-center gap-2 font-medium">
+              <input
+                type="checkbox"
+                checked={voiceOn}
+                onChange={(e) => setVoiceOn(e.target.checked)}
+              />
+              Enable voice control
+            </label>
+            {voiceOn && (
+              <p role="status" className="mt-1 text-slate-600">
+                {voiceControl.status === "listening"
+                  ? "Listening for StepLint commands"
+                  : voiceControl.status === "requesting"
+                    ? "Requesting microphone permission…"
+                    : voiceControl.status === "unsupported"
+                      ? "Voice control is not supported in this browser — use the buttons"
+                      : voiceControl.status === "denied"
+                        ? "Microphone unavailable — use the buttons"
+                        : voiceControl.status === "error"
+                          ? "Voice recognition error — use the buttons"
+                          : "Voice control off"}
+                {voiceControl.lastHeard &&
+                  ` · Last heard: “${voiceControl.lastHeard}”`}
+              </p>
+            )}
+          </div>
+          {voiceOn && (
+            <>
+              <CommandFeedback
+                feedback={voiceControl.feedback}
+                commands={voiceControl.availableCommands}
+                onRestart={
+                  voiceControl.status === "error" ||
+                  voiceControl.status === "denied"
+                    ? voiceControl.restart
+                    : undefined
+                }
+              />
+              <VoicePanel events={voiceLog} />
+            </>
+          )}
           {(() => {
             const failed = plan.steps.find((s) => states[s.id] === "violation");
             if (finished)

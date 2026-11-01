@@ -1,3 +1,5 @@
+import { RelationEvidenceError } from "../../guide/relation-error";
+import { TeachStageError } from "../teach/security";
 import "server-only";
 import { z } from "zod";
 import type OpenAI from "openai";
@@ -92,8 +94,15 @@ export async function prepareRelations(
       ),
     });
   } catch (error) {
-    await deleteLessonFile(client, upload.fileId);
-    throw error;
+    let cleanup: "deleted" | "expiry_fallback" = "deleted";
+    try {
+      await deleteLessonFile(client, upload.fileId);
+    } catch {
+      cleanup = "expiry_fallback";
+    }
+    throw Object.assign(new TeachStageError("Finding action moments", error), {
+      analysis: { cleanup },
+    });
   }
 }
 
@@ -127,7 +136,11 @@ export async function compileRelations(
       .sort((a, b) => a - b);
     const images = needed.map((frame) => {
       const image = frames.find((f) => f.frame === frame);
-      if (!image) throw Error("A requested source image is missing.");
+      if (!image)
+        throw new RelationEvidenceError(
+          "source_evidence_missing",
+          "A requested source image is missing. Prepare the source images again; nothing was approved.",
+        );
       return image;
     });
     const result = await inspectRelationEvidence(
@@ -174,8 +187,9 @@ export async function compileRelations(
             (s.step.anchorId === o.id && s.reading.anchorBox)),
       );
       if (!sample)
-        throw Error(
-          `No identifiable source view for ${o.label}. The source remains unapproved.`,
+        throw new RelationEvidenceError(
+          "source_evidence_missing",
+          "A required part has no clear source view. Keep both parts visible and use a clearer recording; the source remains unapproved.",
         );
       return {
         ...o,

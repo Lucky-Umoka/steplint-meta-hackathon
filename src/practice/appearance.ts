@@ -192,16 +192,11 @@ export function trackPreparedAppearance(
       )
         best = candidate;
     };
-    for (let dy = -16; dy <= 16; dy += 2)
-      for (let dx = -16; dx <= 16; dx += 2)
+    // Search every pixel parity: a coarse lattice can entirely miss a sharp
+    // texture peak after an odd-pixel translation, even when refined locally.
+    for (let dy = -16; dy <= 16; dy++)
+      for (let dx = -16; dx <= 16; dx++)
         sample(Math.round(f.x + dx), Math.round(f.y + dy));
-    // Coarse search alone cannot match one-pixel camera/codec shifts. Refine
-    // its peak, then compare distinct peaks rather than adjacent pixels on
-    // the SAME correlation peak for the ambiguity test.
-    const coarse = best as Match | null;
-    if (coarse)
-      for (let dy = -1; dy <= 1; dy++)
-        for (let dx = -1; dx <= 1; dx++) sample(coarse.x + dx, coarse.y + dy);
     const chosen = best as Match | null;
     const second = chosen
       ? Math.max(

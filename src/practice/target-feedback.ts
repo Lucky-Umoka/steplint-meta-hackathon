@@ -14,6 +14,17 @@ export function outsidePlacementTarget(
   const before = get(baseline, step.objectId),
     priorTarget = get(baseline, step.anchorId);
   if (!object || !target || !before || !priorTarget) return false;
+  const width = target.right - target.left,
+    height = target.bottom - target.top;
+  const priorWidth = priorTarget.right - priorTarget.left,
+    priorHeight = priorTarget.bottom - priorTarget.top;
+  if (Math.min(width, height, priorWidth, priorHeight) <= 0) return false;
+  const shapeRatio = width / height / (priorWidth / priorHeight);
+  const scale = Math.sqrt((width * height) / (priorWidth * priorHeight));
+  // Relative positions tolerate camera translation/zoom; a changed target
+  // shape or a large scale jump makes this provisional warning unavailable.
+  if (shapeRatio < 0.85 || shapeRatio > 1.15 || scale < 0.5 || scale > 2)
+    return false;
   const point = (b: Box, a: Box) => ({
     x: ((b.left + b.right) / 2 - a.left) / (a.right - a.left),
     y: (b.bottom - a.top) / (a.bottom - a.top),

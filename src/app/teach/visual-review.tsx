@@ -183,15 +183,21 @@ export default function VisualReview({
               />
             </div>
             <p className="mt-3 text-sm text-slate-600">
-              Camera checks:{" "}
-              {
-                guide.objects.find((o) => o.id === step.condition.objectId)
-                  ?.label
-              }{" "}
-              {step.condition.kind === "separation"
-                ? `moves away from ${guide.objects.find((o) => o.id === step.condition.anchorId)?.label}.`
-                : "moves visibly from its starting position."}{" "}
-              This checks visible movement; it does not prove hidden work is
+              {step.condition.kind === "visual_relation" ? (
+                <>Camera checks: {step.explanation} </>
+              ) : (
+                <>
+                  Camera checks:{" "}
+                  {
+                    guide.objects.find((o) => o.id === step.condition.objectId)
+                      ?.label
+                  }{" "}
+                  {step.condition.kind === "separation"
+                    ? `moves away from ${guide.objects.find((o) => o.id === step.condition.anchorId)?.label}.`
+                    : "moves visibly from its starting position."}{" "}
+                </>
+              )}
+              This checks visible evidence; it does not prove hidden work is
               correct.
             </p>
             {!step.supported && (

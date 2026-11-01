@@ -131,7 +131,7 @@ function guideDoc() {
       reviewer: "QA Harness",
       at: 1,
       purpose: "published",
-      testOnly: false,
+      testOnly: true,
       contentHash: "0".repeat(64),
     },
   };
@@ -176,7 +176,7 @@ async function setup(page: import("@playwright/test").Page) {
           image.data[p + 3] = 255;
         }
       g.putImageData(image, 0, 0);
-      requestAnimationFrame(draw);
+      window.setTimeout(draw, 66);
     };
     draw();
     const stream = canvas.captureStream(15);
@@ -221,6 +221,12 @@ async function setup(page: import("@playwright/test").Page) {
   await page.goto("/practice");
   await page.evaluate(async (seed: unknown) => {
     const open = indexedDB.open("steplint-guides", 2);
+    open.onupgradeneeded = () => {
+      if (!open.result.objectStoreNames.contains("guides"))
+        open.result.createObjectStore("guides", { keyPath: "key" });
+      if (!open.result.objectStoreNames.contains("drafts"))
+        open.result.createObjectStore("drafts");
+    };
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       open.onsuccess = () => resolve(open.result);
       open.onerror = () => reject(open.error);

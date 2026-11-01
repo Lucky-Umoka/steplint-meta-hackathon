@@ -11,23 +11,40 @@ export type CapturedWindow = {
 };
 /** Local capture only. Motion is never evidence that an action was correct. */
 export function motionSignature(p: Pixels) {
-  return Array.from({ length: 768 }, (_, i) => {
-    const x = Math.min(
-      p.width - 1,
-      Math.floor((((i % 32) + 0.5) * p.width) / 32),
-    );
-    const y = Math.min(
-      p.height - 1,
-      Math.floor(((Math.floor(i / 32) + 0.5) * p.height) / 24),
-    );
-    const j = (y * p.width + x) * 4;
-    return (p.data[j] + p.data[j + 1] + p.data[j + 2]) / 3;
+  const signature = Array.from({ length: 768 }, (_, i) => {
+    // Average a grid inside each cell rather than one noisy sensor pixel.
+    let sum = 0;
+    for (let sy = 0; sy < 4; sy++)
+      for (let sx = 0; sx < 4; sx++) {
+        const x = Math.min(
+          p.width - 1,
+          Math.floor((((i % 32) + (sx + 0.5) / 4) * p.width) / 32),
+        );
+        const y = Math.min(
+          p.height - 1,
+          Math.floor(((Math.floor(i / 32) + (sy + 0.5) / 4) * p.height) / 24),
+        );
+        const j = (y * p.width + x) * 4;
+        sum += (p.data[j] + p.data[j + 1] + p.data[j + 2]) / 3;
+      }
+    return sum / 16;
   });
+  // Camera auto-exposure is not an action. This is a capture trigger only;
+  // original, unmodified images still go to the evidence verifier.
+  const mean =
+    signature.reduce((sum, value) => sum + value, 0) / signature.length;
+  return signature.map((value) => value - mean);
 }
 export function signatureDifference(a: number[], b: number[]) {
-  return a.length && a.length === b.length
-    ? a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length
-    : Infinity;
+  if (!a.length || a.length !== b.length) return Infinity;
+  // A small tool must not disappear into the average of the whole workbench.
+  const differences = a
+    .map((value, i) => Math.abs(value - b[i]))
+    .sort((x, y) => y - x);
+  const count = Math.max(1, Math.ceil(differences.length / 10));
+  return (
+    differences.slice(0, count).reduce((sum, value) => sum + value, 0) / count
+  );
 }
 export class MotionWindows {
   private baseline: CameraSnapshot | null = null;

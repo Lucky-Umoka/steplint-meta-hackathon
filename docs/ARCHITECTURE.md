@@ -133,3 +133,19 @@ Practice shares one prepared greyscale frame across local feature tracks. Bounde
 Automatic source analysis now separates video/Voice moment discovery from exact browser frame extraction and grounding. Authenticated encrypted source references reuse one Meta upload across two requests. Initial coarse stills are unnecessary. Planned action/reference invariants prevent a final object pose from replacing required history; uncertain steps remain blocked. Small opaque parts can use SAM noun concepts; transparent/reflective parts use location prompts. These latest routing and cross-view changes passed local checks but still require live acceptance. Detailed failures and remaining gaps are recorded in ACCURACY_ROUND3.md and ACCURACY_GAPS.md.
 
 Fourth acceptance allowance: bounded native close-ups and official SAM image refinement can improve seed prompts, but rejected image masks never become observations. Video may independently establish evidence; its existing source continuity gates remain mandatory. Limit prompts to each object's declared identity views to exclude incidental detections. The five real trials still failed before approval/Practice; see [ACCURACY_ROUND4.md](ACCURACY_ROUND4.md). The remaining perception contract is unresolved, not a completed physical-task verifier.
+
+
+## Visible-relationship Practice repair
+
+The versioned `visual-relations-v1` guide plan drafts and checks explicit before/result relationships, including support by the actual destination surface. Human review and signed approval remain required. Generic movement is insufficient to verify a placement destination. Existing signed movement-only guides retain their original contract and display a rebuild notice; they are not silently upgraded.
+
+Practice uses two distinct forms of evidence: local mask-seeded appearance tracking supplies moving highlights and provisional position warnings; bounded Spark image observations supply physical relationship labels and identity/scene correspondence. `relation-evaluator.ts` alone evaluates transitions, chronology, recovery, duplicates and current repeated goal evidence. Appearance matching and box overlap cannot issue semantic success. Automatic capture continues during an in-flight model request, with a bounded pending-action queue and explicit backpressure.
+
+MediaPipe gestures and Web Speech recognition are optional interface controls. Gesture landmarks are processed locally with self-hosted assets. Browser speech recognition can use the browser vendor's speech service; it is not the Meta integration. App-owned Meta credentials and requests stay server-side. Neither interface input can approve or verify a procedure.
+
+
+## Physical Practice follow-up (2026-11-01)
+
+Relationship capture now uses one brightness-normalized image signature rather than switching to a different box-coordinate domain when local tracks appear. Cell averaging and changed-cell aggregation are capture triggers only; evidence images and deterministic verification rules remain unchanged. Advisory tracking/replay is bounded to 320×240 and 160 retained frames, with yielding replay and target-relative provisional warnings. No generic background-texture match is required merely to display observed local outlines.
+
+MediaPipe inference now executes in a dedicated local worker with one transferable image in flight. Pinch is hand-relative landmark geometry with unavailable category confidence explicitly represented; it is not inferred from a built-in pose score. Voice listening follows the recognizer's actual start event, explicit pause/stop can interrupt guidance, and ignored speech does not consume the duplicate-action cache. Runtime diagnostics and physical acceptance status are recorded in PHYSICAL_PRACTICE_REPAIR.md.

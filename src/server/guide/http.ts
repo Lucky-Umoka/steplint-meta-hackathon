@@ -284,14 +284,21 @@ export function sourceStream(
         } catch (error) {
           const response = responseError(error),
             body = (await response.json()) as { error: string };
-          send(
-            buildStreamErrorEvent({
-              analysisId,
-              baseMessage: body.error,
-              error,
-              origin: "model_output",
-            }),
-          );
+          const event = buildStreamErrorEvent({
+            analysisId,
+            baseMessage: body.error,
+            error,
+            origin: "model_output",
+          });
+          console.error("Teach analysis stopped", {
+            analysisId,
+            stage: event.diagnostic.stage,
+            failureClass: event.diagnostic.failureClass,
+            code: event.diagnostic.code,
+            schemaPaths: event.diagnostic.schemaPaths,
+            cleanup: event.diagnostic.cleanup,
+          });
+          send(event);
         } finally {
           try {
             output.close();

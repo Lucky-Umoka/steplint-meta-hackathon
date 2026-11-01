@@ -1,3 +1,4 @@
+import { RelationEvidenceError } from "../../guide/relation-error";
 import "server-only";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { SESSION_MS } from "../../teach/schema";
@@ -84,6 +85,7 @@ export function authorize(request: Request) {
   return session;
 }
 export function safeError(error: unknown): { status: number; message: string } {
+  if (error instanceof RelationEvidenceError) return { status: 422, message: error.message };
   if (error instanceof TeachError) return { status: error.status, message: error.message };
   if (error instanceof Error && error.message === "MODEL_API_KEY is required for model requests.") return { status: 503, message: "Model credentials are not configured on this server." };
   if (error instanceof Error && ["APIConnectionError", "APIConnectionTimeoutError", "TimeoutError", "AbortError"].includes(error.name)) return { status: 502, message: "Meta connection failed or timed out. No automatic retry was made." };

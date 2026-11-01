@@ -209,3 +209,20 @@ One owner-approved MP4 upload, one sam-3.1 video request (prompt selected from a
 - Final trial (round-5 trial 5) gave steplint_video2.mp4 its third run: guide returned, step-1 [108→117→126] unsupported again, goal supported. Approval and Practice not reached. 16 calls, 83.4 s, 0 retries.
 - Per-clip totals: video2 = 3 runs (0 Teach passes), video3 = 5 runs (2 Teach passes). Both ledgers full: repair-round5 5/5, repair-clips 4/4. No agent live trials remain in any allowance.
 - Standing result: the only approved-path candidate remains the video3 supported guide (tight interval inside clean tracking). Everything else fails honestly on occlusion-driven discontinuity. Any further live work needs a fresh owner grant plus the model/count/cost notice.
+
+
+## Practice review and control repair (2026-10-31)
+
+- Preserve the distinction between advisory local appearance tracking and deterministic evaluation of model-observed physical relationships. Correct the prior documentation that claimed local box geometry could establish general touching/containment/closure. Retain explicit destination support rules and repeated, current goal evidence.
+- Review the actual SDK landmark type (`NormalizedLandmark[][]`): one list per hand. Map the designated control strip across the viewport so ordinary controls outside the video can be reached. Open-palm pause requires that same control zone.
+- Stop and release speech recognition when disabled/paused; do not automatically restart after permission/service errors. Bound duplicate suppression to immediate repetitions, cancel stale destructive confirmation on another executed command, and require an activation prefix.
+- Render immutable Practice display snapshots rather than reading mutable evaluator/timing refs in JSX. Maintain event-time measurements through an explicit browser-clock adapter; no verification rules or lint rules were disabled. Exclude only vendored MediaPipe runtime code and ignored private lab artifacts from authored-code linting.
+- Record paid tests separately from provider mocks and recorded replay separately from physical-camera acceptance. Preserve the new owner caps of seven tests per additional clip; do not spend remaining tests merely to repeat an unchanged failed configuration.
+
+### 2026-10-31 — Command dispatch and source diagnostics acceptance
+
+Accept explicit `Guide` and `StepLint` activation (including spaced `Step lint`) with allowlisted screen-specific commands. Show why ignored speech did not act. Relationship resume shares the button's fresh-baseline continuation; instruction requests never verify or skip steps. Acceptance includes actual browser recorder/camera state changes, not parser-only tests. Keep physical microphone acceptance separate.
+
+Use typed, authored relationship evidence errors and stage wrappers for source failures. Return specific safe validation reasons, preserve the primary cause if cleanup fails, and log only sanitized correlation metadata. Reference 1979985f could not be reconstructed from retained logs. Do not infer a historical cause or relax evidence gates.
+
+Timing medians average the middle pair; other percentiles use nearest-rank. A bounded appearance search visits all pixel parities because refining one coarse peak cannot recover an arbitrary skipped sharp texture peak. Missing/competing evidence still abstains. See LIVE_FLOW_AUDIT.md for real replay and browser acceptance evidence.

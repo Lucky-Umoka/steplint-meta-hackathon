@@ -1,3 +1,4 @@
+import { RelationEvidenceError } from "./relation-error";
 import { z } from "zod";
 
 /**
@@ -34,6 +35,9 @@ export const FailureCodeSchema = z.enum([
   "invalid_configuration",
   "unauthorized",
   "forbidden_origin",
+  "invalid_relation_plan",
+  "source_evidence_missing",
+  "observation_mismatch",
   "unknown",
 ]);
 export type FailureCode = z.infer<typeof FailureCodeSchema>;
@@ -114,6 +118,7 @@ const AttachedAnalysisSchema = z.object({
 export type ErrorOrigin = "model_output" | "request";
 
 const STAGE_KEYS: Record<string, string> = {
+  "Checking source relationships": "draft",
   "Finding action moments": "discover",
   "Finding objects": "discover",
   "Tracking objects": "track",
@@ -224,6 +229,12 @@ export function classifyError(
   try {
     const inner = unwrapStage(error);
     if (inner !== error) return classifyError(inner, origin);
+    if (error instanceof RelationEvidenceError)
+      return {
+        failureClass: "invalid_model_data",
+        code: error.code,
+        schemaPaths: [],
+      };
     const provider = readProviderDiagnostic(error);
     if (provider)
       return {

@@ -4,7 +4,27 @@ import { useRouter } from "next/navigation";
 import { z } from "zod";
 import Workspace from "@/components/workspace";
 import FlowDialog from "@/components/flow-dialog";
-import LessonCapture, { type PreparedLesson } from "./capture";
+import LessonCapture, {
+  type ControlMark,
+  type PreparedLesson,
+} from "./capture";
+import { type VoiceCommand } from "@/voice/commands";
+import { useVoiceControl, type VoiceEvent } from "@/voice/use-voice-control";
+import CommandFeedback from "@/voice/CommandFeedback";
+import VoicePanel, { appendVoiceEvent } from "@/voice/VoicePanel";
+
+const BUILD_COMMANDS: VoiceCommand[] = [
+  {
+    id: "build-guide",
+    phrases: [
+      "build my guide",
+      "build the guide",
+      "build guide",
+      "create my guide",
+    ],
+  },
+  { id: "help", phrases: ["help", "what can i say"] },
+];
 import ManualMarks from "./manual-marks";
 import VisualReview from "./visual-review";
 import {
@@ -30,6 +50,86 @@ import {
   type DiagnosticBundle,
 } from "@/guide/diagnostics";
 import DraftRepair from "./draft-repair";
+function BuildVoiceControls({
+  enabled,
+  onToggle,
+  canBuild,
+  onBuild,
+  log,
+  onLog,
+}: {
+  enabled: boolean;
+  onToggle: (on: boolean) => void;
+  canBuild: boolean;
+  onBuild: () => void;
+  log: VoiceEvent[];
+  onLog: (event: VoiceEvent) => void;
+}) {
+  const voice = useVoiceControl({
+    commands: BUILD_COMMANDS,
+    enabled,
+    onAction: (id) => {
+      if (id === "build-guide") {
+        if (canBuild) onBuild();
+        else {
+          const text = "Review the consent checkbox first, then build.";
+          onLog({ at: Date.now(), source: "steplint", text });
+          try {
+            if ("speechSynthesis" in window)
+              window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+          } catch {
+            // On-screen log is authoritative.
+          }
+        }
+      } else {
+        const text =
+          "Say StepLint, build my guide once preview and consent are ready.";
+        onLog({ at: Date.now(), source: "steplint", text });
+      }
+    },
+    onEvent: onLog,
+  });
+  return (
+    <div className="mt-3 rounded-xl border bg-white p-3 text-sm">
+      <label className="flex items-center gap-2 font-medium">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => onToggle(e.target.checked)}
+        />
+        Enable voice control
+      </label>
+      {enabled && (
+        <CommandFeedback
+          feedback={voice.feedback}
+          commands={voice.availableCommands}
+          onRestart={
+            voice.status === "error" || voice.status === "denied"
+              ? voice.restart
+              : undefined
+          }
+        />
+      )}
+      {enabled && (
+        <p role="status" className="mt-1 text-slate-600">
+          {voice.status === "listening"
+            ? "Listening — say StepLint, build my guide"
+            : voice.status === "unsupported"
+              ? "Voice control is not supported in this browser — use the buttons"
+              : voice.status === "denied"
+                ? "Microphone unavailable — use the buttons"
+                : voice.status === "error"
+                  ? "Voice recognition error — use the buttons"
+                  : voice.status === "requesting"
+                    ? "Requesting microphone permission…"
+                    : "Voice control off"}
+          {voice.lastHeard && ` · Last heard: “${voice.lastHeard}”`}
+        </p>
+      )}
+      {enabled && <VoicePanel events={log} />}
+    </div>
+  );
+}
 import { frameImage } from "@/teach/media";
 import { prepareGuideImages } from "@/guide/images";
 import { readAppJson } from "@/teach/api-response";
@@ -66,7 +166,10 @@ export default function Teach() {
     [diagnostic, setDiagnostic] = useState<DiagnosticBundle | null>(null),
     [saved, setSaved] = useState<GuideArtifact | null>(null),
     [library, setLibrary] = useState<SavedGuide[]>([]),
-    [restoring, setRestoring] = useState(true);
+    [restoring, setRestoring] = useState(true),
+    [controlMarks, setControlMarks] = useState<ControlMark[]>([]),
+    [buildVoiceOn, setBuildVoiceOn] = useState(false),
+    [buildVoiceLog, setBuildVoiceLog] = useState<VoiceEvent[]>([]);
   const request = useRef<AbortController | null>(null),
     latch = useRef(false),
     clip = useRef("");
@@ -675,7 +778,12 @@ export default function Teach() {
             )}
             {!prepared ? (
               <>
-                <LessonCapture onPrepared={accept} />
+                <LessonCapture
+                  onPrepared={accept}
+                  onControlMark={(mark) =>
+                    setControlMarks((marks) => [...marks, mark])
+                  }
+                />
                 {library.filter(
                   (r) => r.artifact.guide.approval?.purpose === "published",
                 ).length > 0 && (
@@ -771,14 +879,27 @@ export default function Teach() {
                       <span>
                         I previewed this lesson and approve{" "}
                         {marks.length
-                          ? "one Voice, one SAM and one Spark"
+                          ? "three paid AI analysis requests (voice transcription, video tracking, procedure drafting)"
                           : relationshipMode
-                            ? "one Voice and up to nine Spark"
-                            : "one Voice, up to seven SAM and up to ten Spark"}{" "}
-                        request{marks.length ? " each" : "s"}. No automatic
-                        retries.
+                            ? "up to ten paid AI requests (voice transcription plus verification analysis)"
+                            : "up to eighteen paid AI requests (voice transcription, video tracking, procedure drafting)"}
+                        . No automatic retries.
                       </span>
                     </label>
+                    {controlMarks.length > 0 && (
+                      <p className="my-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm">
+                        Voice-control commands heard during this recording
+                        (audit only — the narration transcript is unchanged, so
+                        check the drafted steps carefully):{" "}
+                        {controlMarks
+                          .map(
+                            (m) =>
+                              `“${m.text}” at ${(m.recordingMs ?? 0) / 1000}s`,
+                          )
+                          .join("; ")}
+                        . The narration transcript itself is unchanged.
+                      </p>
+                    )}
                     <div className="flex flex-wrap gap-3">
                       <button
                         className="primary"
@@ -789,6 +910,16 @@ export default function Teach() {
                       </button>
                       <button onClick={() => void reset()}>Discard</button>
                     </div>
+                    <BuildVoiceControls
+                      enabled={buildVoiceOn}
+                      onToggle={setBuildVoiceOn}
+                      canBuild={!!prepared && consent && !busy}
+                      onBuild={() => void analyse()}
+                      log={buildVoiceLog}
+                      onLog={(event) =>
+                        setBuildVoiceLog((log) => appendVoiceEvent(log, event))
+                      }
+                    />
                     <details className="mt-3 text-sm text-slate-500">
                       <summary>Processing and privacy</summary>
                       <p>
@@ -796,16 +927,18 @@ export default function Teach() {
                         One-hour provider expiry is the fallback. Reference
                         images stay in this browser.{" "}
                         {relationshipMode ? (
-                          "Voice and Spark costs depend on duration and token usage. No SAM video tracking is requested for this mode."
+                          "Voice transcription and verification-analysis costs depend on duration and token usage. No video tracking is requested for this mode. Models: Muse Voice Transcribe and Muse Spark."
                         ) : (
                           <>
-                            Estimated SAM video cost $
+                            Estimated video-tracking cost $
                             {(
                               (prepared.media.frameTimesMs.length * 0.2) /
                               1000
                             ).toFixed(4)}
                             , plus up to $0.015 for image masks and bounded
-                            Voice/Spark processing; final cost varies.
+                            voice-transcription and procedure-analysis
+                            processing; final cost varies. Models: Muse Voice
+                            Transcribe, SAM and Muse Spark.
                           </>
                         )}
                       </p>

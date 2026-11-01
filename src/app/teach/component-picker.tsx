@@ -14,10 +14,10 @@ export default function ComponentPicker({ lesson, video, busy, onCompile, onAuto
   const size = lesson.media.info.video;
   if (!size) return null;
   return <section className="space-y-4 rounded border p-4">
-    <h2 className="text-xl font-bold">3. Let AI build your lesson</h2>
+    <h2 className="text-xl font-bold">3. Create your lesson automatically</h2>
     <p>AI will identify up to four task components, propose their marks, track them through the clip and draft steps with suggested starting/target zones. You review, edit and approve the result before Practice can use it.</p>
-    <label className="flex gap-2"><input type="checkbox" checked={automaticConsent} disabled={busy} onChange={(e) => setAutomaticConsent(e.target.checked)} />I approve automatic lesson analysis: Muse Spark identifies components, SAM 3.1 tracks them, then Muse Spark drafts the procedure. Two Spark requests and one SAM request; no automatic retries.</label>
-    <p>Estimated SAM tracking: ${(lesson.media.frameTimesMs.length * .20 / 1000).toFixed(4)}. Spark adds video analysis, bounded text processing and up to 7,944 output tokens across two calls. Total cost varies; the earlier one-Spark estimate does not apply.</p>
+    <label className="flex gap-2"><input type="checkbox" checked={automaticConsent} disabled={busy} onChange={(e) => setAutomaticConsent(e.target.checked)} />I approve automatic lesson analysis: paid AI analysis identifies components, tracks them through the video, then drafts the procedure. Two analysis requests and one video-tracking request; no automatic retries.</label>
+    <p>Estimated video-tracking cost: ${(lesson.media.frameTimesMs.length * .20 / 1000).toFixed(4)}. Analysis adds video understanding, bounded text processing and up to 7,944 output tokens across two calls. Total cost varies; the earlier one-request estimate does not apply. Models: Muse Spark and SAM; details in the project docs.</p>
     <button disabled={busy || !automaticConsent} onClick={onAutomatic}>Automatically create my lesson</button>
     <details><summary>Optional: correct component marks manually</summary>
     <p>Choose up to four physical components. Points and boxes identify objects; they do not prove an action.</p>
@@ -28,8 +28,8 @@ export default function ComponentPicker({ lesson, video, busy, onCompile, onAuto
     <label>Component description <input aria-label="Component description" value={name} maxLength={100} disabled={busy} onChange={(e) => setName(e.target.value)} /></label>
     <button disabled={busy || image?.frame !== frame || !mark || !name.trim() || selections.length >= 4} onClick={() => { if (mark) { const id = [1, 2, 3, 4].map((n) => `component-${n}`).find((id) => !selections.some((s) => s.id === id)); if (id) setSelections([...selections, { id, description: name.trim(), frame, mark }]); setMark(null); setName(""); } }}>Add component</button>
     <ul>{selections.map((s) => <li key={s.id}>{s.id}: {s.description} (frame {s.frame}, {s.mark.kind}) <button disabled={busy} onClick={() => setSelections(selections.filter((item) => item.id !== s.id))}>Remove {s.description}</button></li>)}</ul>
-    <label className="flex gap-2"><input type="checkbox" disabled={busy} checked={consent} onChange={(e) => setConsent(e.target.checked)} />Process these selections with SAM 3.1, then draft rules with Muse Spark 1.3. This makes one request to each model; no automatic retries.</label>
-    <p>SAM estimate: ${(lesson.media.frameTimesMs.length * 0.20 / 1000).toFixed(4)}. Spark adds bounded text processing and up to 6,144 output tokens; normal short-lesson inference is expected below $0.20 combined, not a billing guarantee.</p>
+    <label className="flex gap-2"><input type="checkbox" disabled={busy} checked={consent} onChange={(e) => setConsent(e.target.checked)} />Process these selections with paid AI video tracking, then draft rules with paid AI procedure analysis. This makes one request for each; no automatic retries.</label>
+    <p>Tracking estimate: ${(lesson.media.frameTimesMs.length * 0.20 / 1000).toFixed(4)}. Analysis adds bounded text processing and up to 6,144 output tokens; normal short-lesson inference is expected below $0.20 combined, not a billing guarantee. Models: SAM and Muse Spark.</p>
     <button disabled={busy || !consent || !selections.length} onClick={() => onCompile(selections)}>Track components and draft procedure</button>
     {error && <p role="alert">{error}</p>}
     </details>
