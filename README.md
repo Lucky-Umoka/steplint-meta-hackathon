@@ -191,3 +191,15 @@ Use the [demo runbook](docs/DEMO.md). Show a reviewed source lesson and its fina
 - `.media-lab`: ignored private recordings and local evidence; not required to build or deploy.
 
 The official SAM parser/model license is retained under `docs/licenses/SAM-LICENSE.txt`; do not assume all dependencies or assets share one license. Do not claim certification, guaranteed safety, arbitrary-task accuracy or unmeasured performance.
+
+## Optional Baseten final procedure drafting
+
+Set `SPARK_PROVIDER=baseten` and configure server-only `BASETEN_API_KEY` to route the **final default Teach procedure draft** to `https://inference.baseten.co/v1/chat/completions`, model `meta-models/muse-spark-open-1026`. The default is `SPARK_PROVIDER=meta`. There is no automatic fallback. The final call uses bounded transcript/tracking JSON; it sends no Meta video file ID to Baseten. The adapter also supports up to eight bounded base64 image frames; video input is deliberately rejected.
+
+Automatic component discovery, explicit legacy Spark operations, **SAM 3.1 and Muse Voice Transcribe remain on Meta using `MODEL_API_KEY`**. Keep that key and `TEACH_ACCESS_TOKEN` configured. In Vercel, add/set `SPARK_PROVIDER=baseten` alongside the already configured `BASETEN_API_KEY`, then redeploy. No other new variables are needed.
+
+Baseten JSON is requested in the prompt, without JSON mode or `response_format`, and validated with the same compiler Zod contract and subsequent evidence checks. Truncated, invalid or schema-incompatible output fails explicitly; no provider response or key is logged. Provider/model diagnostics accompany the server compiler result. `reasoning_effort` is omitted pending a separately authorized live compatibility check.
+
+Offline tests: `npx vitest run tests/spark-provider.test.ts`. Optional paid smoke: `npm run smoke:baseten -- --approved` makes at most three requests (text, one image, two identical synthetic image frames), stopping on first failure with no retries. Without the flag it makes no call. This checks API compatibility, not real video sequencing or lesson accuracy.
+
+This migration targets the open-weight bonus. **Partner verification determines prize eligibility; it has not been independently verified here.** No live Baseten request or prize acceptance is claimed by the mocked tests.

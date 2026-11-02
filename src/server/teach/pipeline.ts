@@ -1,3 +1,4 @@
+import { sparkStructured } from "../meta/spark";
 import { ExecutionSchema } from "../../procedure/schema";
 import { localExecutionDraft } from "../../teach/local-execution";
 import "server-only";
@@ -380,6 +381,9 @@ export async function compileLesson(
   let result: {
     context: TeachContext;
     draft: ReturnType<typeof parseSparkDraft>;
+    providerDiagnostic: Awaited<
+      ReturnType<typeof sparkStructured>
+    >["diagnostic"];
   } | null = null;
   let failure: TeachStageError | null = null;
   try {
@@ -428,15 +432,23 @@ export async function compileLesson(
     });
     progress("Drafting candidate steps and review questions…");
     stage = "Spark request";
-    const response = await client.responses.create(
-      sparkRequest(context, options),
-      {
-        signal,
-        timeout: 120_000,
-      },
-    );
+    const request = sparkRequest(context, options);
+    const { data, diagnostic } = await sparkStructured({
+      instructions: request.instructions,
+      text: request.input,
+      schema: compilerWireSchema(!!options),
+      name: "StepLintTeachDraft",
+      maxTokens: request.max_output_tokens,
+      signal,
+      metaClient: client,
+    });
+    const response = { status: "completed", output_text: JSON.stringify(data) };
     stage = "Spark draft validation";
-    result = { context, draft: parseSparkDraft(response, context, options) };
+    result = {
+      context,
+      draft: parseSparkDraft(response, context, options),
+      providerDiagnostic: diagnostic,
+    };
   } catch (error) {
     failure = new TeachStageError(stage, error);
   }

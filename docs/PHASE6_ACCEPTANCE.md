@@ -37,7 +37,7 @@ Command: `VERCEL=1 npm start -- --hostname 127.0.0.1 --port 3002`, then `QA_BASE
 
 - Initial full run: **33 passed / 2 failed**, 4.1 minutes. Failure causes and test repairs are listed above; no evidence threshold or production control was weakened.
 - First targeted recheck: automatic Practice passed; calibration voice command initially arrived before the restarted camera had a fresh frame. Added an assertion that the real capture control was enabled before speaking. Subsequent targeted gesture check passed.
-- Final full run: **pending at report draft; updated below when complete**.
+- Final full run: **35 passed / 0 failed**, 3.9 minutes.
 
 Covered paths include canonical Teach upload/review/approval/save → selected Practice room; token-free pre-room lesson choice; actual local worker automatic start, green completion, red reversal and recovery; gesture hit-testing/native page actions from simulated recognizer readings; mocked browser speech delivery; camera denial/uncertainty; preserved explicit legacy workflow regressions. The generated recorder test parses the actual uploaded browser-generated H.264 MP4 and extracted mono 24 kHz PCM16 WAV and checks the complete upload size, then stops at a mocked failure response without contacting models.
 
@@ -70,13 +70,15 @@ This address is a local test server, **not a deployment URL**.
 
 ### Secret handling
 
-`npm run security:check -- .next <log paths...>` inspected the configured `MODEL_API_KEY` value without displaying it. Initial scan: **341 files, 45 client artifacts and 619 reachable historical Git blobs; zero findings**. Final scan including new documentation/tests and all Phase 6 logs is recorded below. No tracked real environment file was found. The provider client remains `server-only`; no `NEXT_PUBLIC_MODEL_API_KEY` is used.
+`npm run security:check -- .next <log paths...>` inspected the configured `MODEL_API_KEY` value without displaying it. Initial scan: **341 files, 45 client artifacts and 619 reachable historical Git blobs; zero findings**. Final scan including new documentation/tests and all nominated Phase 6 logs: **361 files, 45 client artifacts, 619 historical blobs; zero findings**. No tracked real environment file was found. The provider client remains `server-only`; no `NEXT_PUBLIC_MODEL_API_KEY` is used.
 
 This is an exact-value scan for the configured key, not proof that every unknown historical secret or every external log system is clean. Provider/server/browser code was not modified to expose credentials. Build and checked test logs did not contain the configured key.
 
 ## Deployment status
 
-**Deployment URL: none available. Hosted deployment tested: no.** No linked `.vercel` project, Vercel account token or connected Vercel deployment tool was available. No commit, push, merge, project creation, production deployment or external environment-variable mutation was performed. The Vercel-mode local build verifies the reported output mismatch; it does not test Vercel's deployed execution.
+**Deployment URL: none available. Hosted deployment tested: no.** No linked `.vercel` project, Vercel account token or connected Vercel deployment tool was available. The agent performed no commit, push, merge, project creation, production deployment or external environment-variable mutation. An external checkpoint commit `5469272` appeared during finalization and was preserved; the final result updates in this report remain working-tree edits. The Vercel-mode local build verifies the reported output mismatch; it does not test Vercel's deployed execution.
+
+At final inspection no local Next.js server, Playwright or Vitest process remained running.
 
 The owner must deploy the repaired revision and configure the server-side values in the target Preview/Production environment. Then execute the HTTPS acceptance checklist in [DEPLOYMENT.md](DEPLOYMENT.md). Current Vercel constraints are documented with official sources; whole-video pipeline reliability under those limits is unaccepted until measured on the deployment. The smallest proposed fallback is the same TypeScript/Next.js app on a persistent Node web service; it was not provisioned or tested.
 
