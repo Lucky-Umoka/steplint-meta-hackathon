@@ -279,3 +279,10 @@ Only `compileLesson`'s final structured procedure draft now uses `sparkStructure
 Live reasoning-effort support and hackathon model availability remain unverified; reasoning_effort is omitted. The gated smoke script permits at most three calls on explicit operator approval; none was run during this implementation. This targets the open-weight bonus; partner verification determines eligibility and has not occurred here. UI/Practice architecture unchanged.
 
 Baseten follow-up: owner authorized exactly two live checks after implementation. Text-only and synthetic-image JSON requests both passed through the actual adapter (2,636 ms / 3,111 ms), without retries or fallback. Exact hackathon slug was accepted. These checks establish request transport/schema validation, not semantic image accuracy, full Teach acceptance, reasoning_effort support or prize verification. See `BASETEN_MIGRATION.md`.
+
+
+### 2026-11-02 — 60-second Teach with host-aware transport
+
+Owner approved 60-second lessons and clarified that Vercel restrictions must not constrain other hosts. Shared media limits now select Vercel-safe 4 MB body/1.98 MB video at 180 kbps constant bitrate, or standard 12 MB body/8 MB video at 1 Mbps. Both normalize to 10 fps/600 frames and mono PCM16 16 kHz audio. Actual output bytes are checked. Canonical and legacy upload schemas/handlers use the same bounds. Vercel Hobby remains 300 seconds with a 280-second application abort; standard Node uses 580 seconds. No Practice file/engine changes or live calls. See TEACH_60_SECONDS.md for budgets, constraints and test evidence.
+
+The initial 250 kbps target exceeded the cap in Chromium on complex footage (2,293,727 bytes). A measured 180 kbps candidate fit at 1,975,335 bytes; actual-byte guards remain authoritative. AAC padding is trimmed to validated source duration, and the recorder minimum reserves two encoded frames without weakening duration validation.

@@ -1,3 +1,4 @@
+import { mediaBudget } from "../src/media/limits";
 import { afterEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import {
@@ -32,7 +33,7 @@ it("keeps local production and verification builds isolated", async () => {
   expect((await import("../next.config")).default.distDir).toBe(".next-verify");
 });
 it("keeps complete upload and JSON envelopes below Vercel's body cap", () => {
-  expect(MAX_TEACH_BODY).toBe(4_000_000);
+  expect(mediaBudget("vercel").bodyBytes).toBe(4_000_000);
   expect(MAX_TEACH_VIDEO + 1_100_000).toBeLessThan(MAX_TEACH_BODY);
   expect(MAX_TEACH_JSON).toBeLessThan(4_500_000);
   for (const route of ["lesson", "compile"])

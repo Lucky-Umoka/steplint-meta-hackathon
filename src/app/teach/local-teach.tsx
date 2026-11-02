@@ -401,6 +401,9 @@ function LocalTeachFlow() {
                 ) : !uploaded ? (
                   <section className="space-y-3 rounded-2xl border bg-white p-4">
                     <RecordingPreview video={prepared.video} />
+                    <p className="text-sm text-slate-600">
+                      Video tracking estimate: ${((Math.max(50, prepared.media.info.video?.frames ?? 0) / 1000) * 0.20).toFixed(3)} for {prepared.media.info.durationSeconds.toFixed(1)} seconds, plus transcription and Spark token use. Provider billing is authoritative.
+                    </p>
                     <label className="flex gap-2">
                       <input
                         type="checkbox"

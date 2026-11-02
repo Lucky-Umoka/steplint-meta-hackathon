@@ -36,12 +36,12 @@ StepLint already enforces:
 | Boundary | Limit / behavior |
 | --- | --- |
 | Complete multipart Teach request | 4,000,000 bytes, including multipart overhead |
-| Source video | 2,800,000 bytes |
-| PCM WAV | 1,100,000 bytes |
+| Source video | 1,980,000 bytes |
+| PCM WAV | 1,930,000 bytes |
 | JSON review/compile envelopes | Bounded by `MAX_TEACH_JSON` |
 | Upload route | 300-second host declaration; 180-second application abort signal |
 | Compile route | 300-second host declaration; 280-second application abort signal |
-| Source media | 10–20.5 seconds, ≤600 frames, ≤1280×720 pixels; actual format validation |
+| Source media | 10–60 seconds, ≤600 frames, ≤1280×720 pixels; actual format validation |
 | Provider behavior | No automatic SDK retries; upload cleanup on success/failure and requested one-hour expiration in Teach |
 
 `boundedBody` checks declared size and counts actual streamed bytes before parsing multipart input or spending on models. Browser checks reject oversized MP4s. A request exceeding Vercel's own limit can be rejected before the application handles it; keep the whole request under the smaller application cap. Tests cover oversized declared and streamed bodies, malformed input and no paid requests on rejected input.
@@ -71,3 +71,5 @@ Use build command `npm ci && npm run build`, start command `npm start -- --hostn
 - Scan deployed browser assets and never include credentials in the demo recording.
 
 Local smoke checks and mocked browser checks do not check this list on a deployed URL.
+
+For non-Vercel Node hosting, the standard profile now allows a 12 MB body / 8 MB video at 1 Mbps. Vercel uses 4 MB / 1.98 MB at 180 kbps. Both process up to 60 seconds at 10 fps with 16 kHz mono WAV. See [current 60-second policy](TEACH_60_SECONDS.md); no live 60-second completion time is guaranteed.

@@ -32,7 +32,7 @@ describe("media bytes and format bounds", () => {
     expect(inspectWav(makeWav(rate, 1))).toMatchObject({ sampleRate: rate, channels: 1, bitsPerSample: 16, durationSeconds: 10 });
   });
   it("rejects stereo, wrong sample rate, too short, too long, empty and forged WAV", () => {
-    for (const data of [makeWav(), makeWav(48000, 1), makeWav(16000, 1, 1), makeWav(24000, 1, 21), new Uint8Array(), new Uint8Array(100)]) {
+    for (const data of [makeWav(), makeWav(48000, 1), makeWav(16000, 1, 1), makeWav(16000, 1, 61), new Uint8Array(), new Uint8Array(100)]) {
       expect(() => inspectWav(data)).toThrow();
     }
   });
@@ -42,12 +42,12 @@ describe("media bytes and format bounds", () => {
       expect(() => inspectWav(bytes)).toThrow();
     }
   });
-  it("converts actual stereo 48 kHz PCM bytes to mono 24 kHz PCM16 using Mediabunny", async () => {
-    const result = await extractWav(new Blob([makeWav()]), new AbortController().signal);
-    expect(result.info).toMatchObject({ channels: 1, sampleRate: 24000, bitsPerSample: 16 });
-    expect(result.info.durationSeconds).toBeCloseTo(10, 1);
+  it.each([10, 60])("converts %is stereo 48 kHz PCM bytes to mono 16 kHz PCM16 using Mediabunny", async (seconds) => {
+    const result = await extractWav(new Blob([makeWav(48000, 2, seconds)]), new AbortController().signal);
+    expect(result.info).toMatchObject({ channels: 1, sampleRate: 16000, bitsPerSample: 16 });
+    expect(result.info.durationSeconds).toBeCloseTo(seconds, 1);
     const parsed = await inspectMedia(result.blob);
-    expect(parsed.audio).toMatchObject({ codec: "pcm-s16", channels: 1, sampleRate: 24000 });
+    expect(parsed.audio).toMatchObject({ codec: "pcm-s16", channels: 1, sampleRate: 16000 });
   });
   it("honors cancellation without producing an artifact", async () => {
     const controller = new AbortController(); controller.abort();
@@ -64,7 +64,7 @@ describe("media bytes and format bounds", () => {
     expect(requireSamVideo({ ...media, audio: null }).audio).toBeNull();
   });
   it.each([
-    { container: "webm" }, { bytes: 20_000_001 }, { durationSeconds: 9 }, { durationSeconds: 21 },
+    { container: "webm" }, { bytes: 20_000_001 }, { durationSeconds: 9 }, { durationSeconds: 61 },
     { video: { ...media.video, codec: "vp9" } }, { video: { ...media.video, frames: 601 } },
     { video: { ...media.video, width: 1920, height: 1080 } }, { audio: { ...media.audio, codec: "opus" } },
   ])("rejects out-of-contract video %j", (patch) => { expect(() => requireSamVideo({ ...media, ...patch })).toThrow(); });

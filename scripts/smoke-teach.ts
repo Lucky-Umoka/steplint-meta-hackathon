@@ -1,3 +1,4 @@
+import { MAX_TEACH_VIDEO_BYTES, MAX_WAV_BYTES } from "../src/media/limits";
 import { parseArgs } from "node:util";
 import { writeFile } from "node:fs/promises";
 import { z } from "zod";
@@ -12,7 +13,7 @@ async function main() {
   if (!values.mp4 || !values.wav || !values["mp4-sha256"] || !values["wav-sha256"] || (!values.automatic && !values.selections) || (values.automatic && values.selections)) throw new Error("Require approved MP4/WAV paths and hashes, plus either --automatic or --selections JSON_PATH.");
   const base = new URL(values["base-url"]);
   if (!["localhost", "127.0.0.1"].includes(base.hostname) || !["http:", "https:"].includes(base.protocol)) throw new Error("This Phase 4 smoke script only targets a local StepLint server.");
-  const mp4 = await readMedia(values.mp4, 2_800_000), wav = await readMedia(values.wav, 1_100_000);
+  const mp4 = await readMedia(values.mp4, MAX_TEACH_VIDEO_BYTES), wav = await readMedia(values.wav, MAX_WAV_BYTES);
   if (sha256(mp4) !== values["mp4-sha256"] || sha256(wav) !== values["wav-sha256"]) throw new Error("Media hashes differ from the approved recording.");
   const media = await inspectLessonVideo(new Blob([mp4])); validateLessonAudio(wav, media);
   const selections = values.selections ? validateSelections(JSON.parse((await readMedia(values.selections, 16_000)).toString()), media) : undefined;

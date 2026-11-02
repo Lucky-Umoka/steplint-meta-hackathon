@@ -1,3 +1,4 @@
+import { MAX_LESSON_FRAMES } from "../media/limits";
 import {
   BlobSource,
   CanvasSink,
@@ -11,7 +12,7 @@ import { LessonMediaSchema, MAX_TEACH_VIDEO, type LessonMedia } from "./schema";
 export async function inspectLessonVideo(video: Blob): Promise<LessonMedia> {
   if (video.size > MAX_TEACH_VIDEO)
     throw new Error(
-      "Lesson MP4 exceeds 2.8 MB. Record a shorter clip or lower its bitrate.",
+      `Lesson MP4 exceeds the Teach video budget (${MAX_TEACH_VIDEO} bytes). Record a shorter clip or lower its bitrate.`,
     );
   const info = requireSamVideo(await inspectMedia(video));
   const input = new Input({ formats: [MP4], source: new BlobSource(video) });
@@ -24,7 +25,8 @@ export async function inspectLessonVideo(video: Blob): Promise<LessonMedia> {
       undefined,
       { metadataOnly: true },
     )) {
-      if (timestamps.length >= 600) throw new Error("Too many video frames.");
+      if (timestamps.length >= MAX_LESSON_FRAMES)
+        throw new Error("Too many video frames.");
       timestamps.push(Math.round(packet.timestamp * 1000));
     }
     timestamps.sort((a, b) => a - b);

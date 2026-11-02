@@ -9,3 +9,5 @@ The encoded mock SAM mask in `tests/foundation.test.ts` is taken from the offici
 `teach-preview.mp4`: the existing repository-owned synthetic video with a silent mono AAC track added using ffmpeg as a development tool. Used for browser preview/audio-extraction tests without personal media or model calls. Silence is sufficient for this local preview check; it is not a successful transcript or lesson-analysis fixture.
 
 `guide-reference.jpg`: a 640×480 JPEG derived from the owned red-square fixture for image-header/approval contract tests. Guide fixtures are explicitly synthetic and are never sent to providers by normal tests. `guide.ts` defines synthetic schema/evaluator data.
+
+`teach-60s.mp4`: repository-owned synthetic grey 640×480 H.264 video, 60 seconds at 10 fps (600 frames), no audio. Generated locally with FFmpeg for duration/container and mocked upload/pipeline boundary tests. It is not evidence of real lesson accuracy or live model success.

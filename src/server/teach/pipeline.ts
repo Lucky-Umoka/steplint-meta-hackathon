@@ -1,3 +1,4 @@
+import { SAM_REQUEST_TIMEOUT_MS } from "../../media/limits";
 import { sparkStructured } from "../meta/spark";
 import { ExecutionSchema } from "../../procedure/schema";
 import { localExecutionDraft } from "../../teach/local-execution";
@@ -406,7 +407,7 @@ export async function compileLesson(
       body: samSelectionRequest(upload.fileId, selections, upload.lesson.media),
       stream: true,
       signal,
-      timeout: 120_000,
+      timeout: SAM_REQUEST_TIMEOUT_MS,
     });
     const parsed = parseVideoStream(events);
     let revisions = 0;
