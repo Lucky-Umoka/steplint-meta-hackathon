@@ -3,6 +3,13 @@ import { devOrigins } from "./src/config/dev-origins";
 
 const config: NextConfig = {
   poweredByHeader: false,
+  // Public transport policy only; never expose provider keys.
+  env: {
+    NEXT_PUBLIC_TEACH_UPLOAD_PROFILE:
+      process.env.VERCEL === "1"
+        ? "vercel"
+        : process.env.NEXT_PUBLIC_TEACH_UPLOAD_PROFILE || "standard",
+  },
   // Vercel's Next.js adapter expects .next. Keep local test builds isolated
   // so rebuilding never replaces files served by the development server.
   distDir:

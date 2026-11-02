@@ -1,3 +1,4 @@
+import { MAX_LESSON_MS } from "../media/limits";
 import { z } from "zod";
 import { ApprovedArtifactSchema } from "./approved-artifact";
 export const ProcedureReferencesSchema = z.strictObject({
@@ -9,8 +10,8 @@ export const ProcedureReferencesSchema = z.strictObject({
     .string()
     .max(1_000_000)
     .regex(/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/),
-  beforeMs: z.number().nonnegative().max(20_500),
-  goalMs: z.number().nonnegative().max(20_500),
+  beforeMs: z.number().nonnegative().max(MAX_LESSON_MS),
+  goalMs: z.number().nonnegative().max(MAX_LESSON_MS),
 });
 export type ProcedureReferences = z.infer<typeof ProcedureReferencesSchema>;
 export type SavedProcedure = {

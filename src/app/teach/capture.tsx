@@ -1,4 +1,11 @@
 "use client";
+import {
+  MAX_LESSON_SECONDS,
+  MIN_LESSON_SECONDS,
+  LESSON_FRAME_RATE,
+  LESSON_VIDEO_BITRATE,
+  MULTIPART_RESERVE_BYTES,
+} from "@/media/limits";
 import FeedbackPopup, { useFeedback } from "@/components/feedback";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -7,6 +14,8 @@ import {
   probeEncoding,
   type EncodingSupport,
 } from "@/media/convert";
+import { MAX_TEACH_VIDEO_BYTES, MAX_LESSON_FRAMES } from "@/media/limits";
+import { inspectMedia } from "@/media/inspect";
 import { inspectLessonVideo } from "@/teach/media";
 import { MAX_TEACH_BODY, type LessonMedia } from "@/teach/schema";
 
@@ -55,7 +64,11 @@ export default function LessonCapture({
           pauseMarks.current.pausedMs) /
         1000;
       setSeconds(elapsed);
-      if (elapsed >= 20 && recorder && recorder.state === "recording")
+      if (
+        elapsed >= MAX_LESSON_SECONDS - 0.2 &&
+        recorder &&
+        recorder.state === "recording"
+      )
         recorder.stop();
     }, 100);
   }
@@ -109,22 +122,24 @@ export default function LessonCapture({
   ) {
     setState("preparing");
     try {
-      if (existing && source.size > 2_800_000)
-        throw new Error(
-          "Existing MP4 exceeds 2.8 MB; choose a shorter or lower-bitrate recording.",
-        );
       const audio = await extractWav(source, controller.signal);
-      const video = existing
-        ? source
-        : (
-            await createMp4(
-              source,
-              support ?? { h264: false, aac: false, pcm: true },
-              controller.signal,
-            )
-          ).blob;
+      const video =
+        existing &&
+        source.size <= MAX_TEACH_VIDEO_BYTES &&
+        (await inspectMedia(source)).video!.frames <= MAX_LESSON_FRAMES
+          ? source
+          : (
+              await createMp4(
+                source,
+                support ?? { h264: false, aac: false, pcm: true },
+                controller.signal,
+              )
+            ).blob;
       const media = await inspectLessonVideo(video);
-      if (video.size + audio.blob.size + 10_000 > MAX_TEACH_BODY)
+      if (
+        video.size + audio.blob.size + MULTIPART_RESERVE_BYTES >
+        MAX_TEACH_BODY
+      )
         throw new Error(
           "This lesson is too large. Use a shorter or lower-bitrate recording.",
         );
@@ -180,7 +195,7 @@ export default function LessonCapture({
         video: {
           width: { ideal: 640, max: 640 },
           height: { ideal: 480, max: 480 },
-          frameRate: { ideal: 15, max: 15 },
+          frameRate: { ideal: LESSON_FRAME_RATE, max: LESSON_FRAME_RATE },
         },
         audio: true,
       });
@@ -225,7 +240,7 @@ export default function LessonCapture({
         video: {
           width: { ideal: 640, max: 640 },
           height: { ideal: 480, max: 480 },
-          frameRate: { ideal: 15, max: 15 },
+          frameRate: { ideal: LESSON_FRAME_RATE, max: LESSON_FRAME_RATE },
         },
         audio: true,
       });
@@ -240,7 +255,7 @@ export default function LessonCapture({
       }
       const recorder = new MediaRecorder(stream, {
         mimeType: type,
-        videoBitsPerSecond: 1_000_000,
+        videoBitsPerSecond: LESSON_VIDEO_BITRATE,
         audioBitsPerSecond: 96_000,
       });
       resources.current.recorder = recorder;
@@ -288,7 +303,7 @@ export default function LessonCapture({
     <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <h2 className="text-lg font-bold">1. Record or choose a lesson</h2>
       <p className="text-sm">
-        Record 10–20 seconds with the full movement visible, or upload a
+        Record up to 60 seconds with the full movement visible, or upload a
         recording.
       </p>
       <label className="flex gap-2">
@@ -360,13 +375,13 @@ export default function LessonCapture({
           disabled={state !== "idle"}
           onClick={() => fileInput.current?.click()}
           aria-controls="teach-mp4-upload"
-          title="MP4/H.264 with audio, 10–20 s, ≤2.8 MB. No consent checkbox needed."
+          title="MP4/H.264 with audio, 10–60 s; compressed before upload. No consent checkbox needed."
         >
           Upload video recording
         </button>
         <button
           disabled={
-            (state !== "recording" && state !== "paused") || seconds < 10
+            (state !== "recording" && state !== "paused") || seconds < MIN_LESSON_SECONDS + 2 / LESSON_FRAME_RATE
           }
           onClick={() => resources.current.recorder?.stop()}
         >
@@ -403,7 +418,7 @@ export default function LessonCapture({
       </div>
       <div className="space-y-2">
         <p className="text-sm text-slate-500">
-          Upload: MP4/H.264 with audio, 10–20 s, ≤2.8 MB.
+          Upload: MP4/H.264 with audio, 10–60 s; compressed before upload.
         </p>
         <input
           ref={fileInput}

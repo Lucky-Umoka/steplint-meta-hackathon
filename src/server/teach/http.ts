@@ -1,3 +1,4 @@
+import { MAX_WAV_BYTES, TEACH_ANALYSIS_TIMEOUT_MS } from "../../media/limits";
 import "server-only";
 import sharp from "sharp";
 import {
@@ -165,10 +166,10 @@ export async function lesson(request: Request) {
         400,
         "Preview and confirm your lesson before uploading.",
       );
-    if (video.size > MAX_TEACH_VIDEO || audio.size > 1_100_000)
+    if (video.size > MAX_TEACH_VIDEO || audio.size > MAX_WAV_BYTES)
       throw new TeachError(
         413,
-        "MP4 must be ≤2.8 MB and WAV ≤1.1 MB; record a short lesson.",
+        `MP4 must be ≤${MAX_TEACH_VIDEO} bytes and WAV ≤${MAX_WAV_BYTES} bytes.`,
       );
     const signal = AbortSignal.any([
       request.signal,
@@ -215,7 +216,7 @@ export async function compile(request: Request) {
     const signal = AbortSignal.any([
       request.signal,
       controller.signal,
-      AbortSignal.timeout(280_000),
+      AbortSignal.timeout(TEACH_ANALYSIS_TIMEOUT_MS),
     ]);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({

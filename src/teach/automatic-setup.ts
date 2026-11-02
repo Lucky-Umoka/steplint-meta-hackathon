@@ -1,3 +1,4 @@
+import { MAX_LESSON_FRAMES } from "../media/limits";
 import { z } from "zod";
 import { BoxSchema } from "../guide/schema";
 import type { TeachContext, TeachReview } from "./schema";
@@ -7,16 +8,28 @@ const jpeg = z
   .max(120_000)
   .regex(/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/);
 export const SetupFrameSchema = z.strictObject({
-  frame: z.number().int().nonnegative().max(599),
+  frame: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(MAX_LESSON_FRAMES - 1),
   image: jpeg,
 });
 export const AutomaticSetupSchema = z.strictObject({
-  sceneFrame: z.number().int().nonnegative().max(599),
+  sceneFrame: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(MAX_LESSON_FRAMES - 1),
   objects: z
     .array(
       z.strictObject({
         id: z.string().min(1).max(100),
-        frame: z.number().int().nonnegative().max(599),
+        frame: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(MAX_LESSON_FRAMES - 1),
         box: BoxSchema,
         fixed: z.boolean(),
       }),

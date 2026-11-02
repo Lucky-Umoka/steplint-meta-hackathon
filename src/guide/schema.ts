@@ -1,3 +1,4 @@
+import { MAX_LESSON_FRAMES, MAX_LESSON_MS } from "../media/limits";
 import { z } from "zod";
 import { TranscriptSchema, RegionSchema } from "../teach/schema";
 import {
@@ -117,10 +118,10 @@ export const GuideCoverageSchema = z
   .min(1)
   .max(24);
 export const GuideSourceSchema = z.strictObject({
-  durationMs: z.number().positive().max(20500),
+  durationMs: z.number().positive().max(MAX_LESSON_MS),
   width: z.number().int().positive().max(1280),
   height: z.number().int().positive().max(720),
-  frameTimesMs: z.array(z.number().int().nonnegative()).min(2).max(600),
+  frameTimesMs: z.array(z.number().int().nonnegative()).min(2).max(MAX_LESSON_FRAMES),
   transcript: TranscriptSchema,
   teachingIntent: z.string().trim().min(1).max(400).optional(),
   tracking: z

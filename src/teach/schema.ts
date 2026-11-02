@@ -1,9 +1,10 @@
+import { MAX_LESSON_FRAMES, MAX_LESSON_MS } from "../media/limits";
 import { z } from "zod";
 import { ProcedureSpecSchema } from "../procedure/schema";
 import { MediaInfoSchema } from "../media/inspect";
 
-export const MAX_TEACH_BODY = 4_000_000;
-export const MAX_TEACH_VIDEO = 2_800_000;
+export { MAX_TEACH_BODY } from "../media/limits";
+export { MAX_TEACH_VIDEO_BYTES as MAX_TEACH_VIDEO } from "../media/limits";
 export const MAX_TEACH_JSON = 1_500_000;
 export const SESSION_MS = 30 * 60 * 1000;
 export const RegionSchema = z
@@ -56,12 +57,12 @@ export const TranscriptSchema = z.strictObject({
         .refine((t) => t.endMs >= t.startMs, "Reversed transcript times."),
     )
     .max(100),
-  durationMs: z.number().positive().max(20_500),
+  durationMs: z.number().positive().max(MAX_LESSON_MS),
 });
 export type Transcript = z.infer<typeof TranscriptSchema>;
 export const LessonMediaSchema = z.strictObject({
   info: MediaInfoSchema,
-  frameTimesMs: z.array(pixel).min(1).max(600),
+  frameTimesMs: z.array(pixel).min(1).max(MAX_LESSON_FRAMES),
 });
 export type LessonMedia = z.infer<typeof LessonMediaSchema>;
 export const LessonSchema = z.strictObject({
@@ -85,7 +86,7 @@ export const TrackingSchema = z
   .array(
     z.strictObject({
       componentId: z.string(),
-      samples: z.array(TrackingSampleSchema).max(600),
+      samples: z.array(TrackingSampleSchema).max(MAX_LESSON_FRAMES),
       missingFrames: z.number().int().nonnegative(),
     }),
   )

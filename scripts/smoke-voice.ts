@@ -1,3 +1,4 @@
+import { MAX_WAV_BYTES } from "../src/media/limits";
 import { parseArgs } from "node:util";
 import { createMetaClient } from "../src/server/meta/client";
 import { transcribeWav, VOICE_MODEL } from "../src/server/meta/media";
@@ -9,7 +10,7 @@ async function main() {
   const { values } = parseArgs({ options: { approved: { type: "boolean" }, wav: { type: "string" }, sha256: { type: "string" } } });
   prepareMediaSmoke(values.approved);
   if (!values.wav || !values.sha256) throw new Error("Require --wav PATH --sha256 HASH; inspect and approve the file first.");
-  const bytes = await readMedia(values.wav, 1_100_000);
+  const bytes = await readMedia(values.wav, MAX_WAV_BYTES);
   if (sha256(bytes) !== values.sha256) throw new Error("WAV hash differs from approved input.");
   const media = inspectWav(bytes);
   const client = createMetaClient();

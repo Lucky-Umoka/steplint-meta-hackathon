@@ -254,7 +254,7 @@ test("Teach recorder buttons drive recording, pause, resume and stop", async ({
     expect(info.info.video?.height).toBe(480);
     expect(wav).toMatchObject({
       channels: 1,
-      sampleRate: 24000,
+      sampleRate: 16000,
       bitsPerSample: 16,
     });
     expect(bytes.length).toBeLessThan(4_000_000);

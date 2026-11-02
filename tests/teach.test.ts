@@ -1,3 +1,4 @@
+import { MAX_TEACH_VIDEO_BYTES, MAX_TEACH_BODY } from "../src/media/limits";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import OpenAI from "openai";
@@ -27,7 +28,7 @@ function draftFor(id = lessonId): TeachDraft { return {
   notes: [{ stepId: "move-base", explanation: "Candidate observable motion.", candidateErrors: ["Wrong order remains a candidate rule."], uncertainties: ["A human must confirm the target zone."], supportingFrames: [0, 1] }],
 }; }
 const review: TeachReview = { reviewer: "Test reviewer", confirmed: true, steps: [{ stepId: "move-base", reviewed: true, conditionConfirmed: true, fromFrame: 0, toFrame: 1, fromRegion: { left: 0, top: 0, right: 0.2, bottom: 0.2 }, toRegion: { left: 0.5, top: 0.5, right: 0.7, bottom: 0.7 } }] };
-function wav(seconds = 15) { const bytes = new Uint8Array(44 + seconds * 24000 * 2); const v = new DataView(bytes.buffer); const ascii = (i: number, s: string) => [...s].forEach((c, n) => { bytes[i + n] = c.charCodeAt(0); }); ascii(0, "RIFF"); v.setUint32(4, bytes.length - 8, true); ascii(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 24000, true); v.setUint32(28, 48000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); ascii(36, "data"); v.setUint32(40, bytes.length - 44, true); return new Blob([bytes], { type: "audio/wav" }); }
+function wav(seconds = 15, rate = 24000) { const bytes = new Uint8Array(44 + seconds * rate * 2); const v = new DataView(bytes.buffer); const ascii = (i: number, s: string) => [...s].forEach((c, n) => { bytes[i + n] = c.charCodeAt(0); }); ascii(0, "RIFF"); v.setUint32(4, bytes.length - 8, true); ascii(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); ascii(36, "data"); v.setUint32(40, bytes.length - 44, true); return new Blob([bytes], { type: "audio/wav" }); }
 const rawTranscript = { sessionId: "mock-session", transcript: "Move the base.", audioDurationMs: 15000, turns: [{ turnId: 1, startMs: 0, endMs: 1000, transcript: "Move the base." }] };
 beforeEach(() => { vi.stubEnv("TEACH_ACCESS_TOKEN", token); vi.stubEnv("MODEL_API_KEY", "unit-test-key"); vi.stubGlobal("fetch", vi.fn(() => { throw new Error("Live network forbidden"); })); vi.mocked(media.transcribeWav).mockResolvedValue(rawTranscript); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -109,7 +110,7 @@ describe("media and timestamp handling", () => {
     expect(result.frameTimesMs.every((t, i, a) => i === 0 || t > a[i - 1])).toBe(true);
   });
   it("rejects oversize, forged and incompatible duration audio before any API call", async () => {
-    await expect(inspectLessonVideo(new Blob([new Uint8Array(2_800_001)]))).rejects.toThrow("2.8 MB");
+    await expect(inspectLessonVideo(new Blob([new Uint8Array(MAX_TEACH_VIDEO_BYTES + 1)]))).rejects.toThrow("Teach video");
     await expect(inspectLessonVideo(new Blob(["fake MP4"]))).rejects.toThrow();
     expect(() => validateLessonAudio(new Uint8Array(10), context.lesson.media)).toThrow();
     expect(() => validateLessonAudio(new Uint8Array(480044), context.lesson.media)).toThrow();
@@ -144,8 +145,9 @@ describe("server batch pipeline (mock provider)", () => {
     await expect(uploadLesson(client, new Blob([bytes]), wav(), new AbortController().signal)).rejects.toThrow("Invalid transcript");
     expect(calls).toEqual(["POST", "DELETE"]);
   });
-  it.each([false, true])("uploads once, requests expiry, reuses file ID and always deletes; Spark invalid=%s", async (invalid) => {
-    const bytes = await readFile(new URL("./fixtures/teach-synthetic.mp4", import.meta.url)); const video = new Blob([bytes]); const calls: string[] = []; let currentId = "";
+  it.each([{ invalid: false, seconds: 15 }, { invalid: true, seconds: 15 }, { invalid: false, seconds: 60 }])("uploads once, requests expiry, reuses file ID and always deletes; %j", async ({ invalid, seconds }) => {
+    const bytes = await readFile(new URL(seconds === 60 ? "./fixtures/teach-60s.mp4" : "./fixtures/teach-synthetic.mp4", import.meta.url));
+    vi.mocked(media.transcribeWav).mockResolvedValue({ ...rawTranscript, audioDurationMs: seconds * 1000 }); const video = new Blob([bytes]); const calls: string[] = []; let currentId = "";
     const transport: typeof fetch = async (url, options) => {
       if (url === "data:,") return new Response("");
       const req = new Request(url, options); const path = new URL(req.url).pathname; calls.push(`${req.method} ${path}`);
@@ -157,7 +159,7 @@ describe("server batch pipeline (mock provider)", () => {
       return Response.json({ id: "resp-mock", object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: invalid ? "{}" : JSON.stringify(draftFor(currentId)), annotations: [] }] }] });
     };
     const client = new OpenAI({ apiKey: "mock-key", baseURL: "https://api.meta.ai/v1", fetch: transport, maxRetries: 0 });
-    const upload = await uploadLesson(client, video, wav(), new AbortController().signal); currentId = upload.lesson.lessonId;
+    const upload = await uploadLesson(client, video, wav(seconds, seconds === 60 ? 16000 : 24000), new AbortController().signal); currentId = upload.lesson.lessonId;
     expect(vi.mocked(media.transcribeWav)).toHaveBeenCalledWith(expect.any(Blob), "mock-key", fetch, expect.objectContaining({ mode: "ENDPOINTING" }));
     const promise = compileLesson(client, upload, context.selections, () => {}, new AbortController().signal);
     if (invalid) await expect(promise).rejects.toThrow(); else expect((await promise).draft.procedure.approval).toBeNull();
@@ -211,7 +213,7 @@ describe("Teach HTTP/security boundaries", () => {
   it("bounds streamed bodies even without content-length", async () => { await expect(boundedBody(new Request("http://localhost", { method: "POST", body: "123456" }), 5)).rejects.toThrow("size limit"); });
   it("rejects malformed/oversize uploads before constructing a Meta client", async () => {
     const factory = vi.spyOn(providerClient, "createMetaClient");
-    const response = await lessonRoute(new Request("http://localhost/api/teach/lesson", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "multipart/form-data; boundary=x", "Content-Length": "4000001" }, body: "fake" }));
+    const response = await lessonRoute(new Request("http://localhost/api/teach/lesson", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "multipart/form-data; boundary=x", "Content-Length": String(MAX_TEACH_BODY + 1) }, body: "fake" }));
     expect(response.status).toBe(413); expect(factory).not.toHaveBeenCalled();
   });
   it("requires signed context and explicit approval; never trusts approval metadata sent by a client", async () => {

@@ -1,3 +1,8 @@
+import {
+  MAX_TEACH_BODY,
+  MAX_TEACH_VIDEO_BYTES,
+  MAX_WAV_BYTES,
+} from "../../media/limits";
 import "server-only";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
@@ -34,7 +39,7 @@ import {
 } from "./security";
 export async function readGuideJson(
   request: Request,
-  max = 4_000_000,
+  max = MAX_TEACH_BODY,
 ): Promise<unknown> {
   try {
     return JSON.parse(
@@ -55,7 +60,7 @@ export async function analyse(request: Request) {
       !request.headers.get("content-type")?.startsWith("multipart/form-data;")
     )
       throw new TeachError(415, "Choose a supported lesson video.");
-    const bytes = await boundedBody(request, 4_000_000);
+    const bytes = await boundedBody(request, MAX_TEACH_BODY);
     const form = await new Request(request.url, {
       method: "POST",
       headers: { "Content-Type": request.headers.get("content-type")! },
@@ -86,10 +91,10 @@ export async function analyse(request: Request) {
       form.get("confirmed") !== "true"
     )
       throw new TeachError(400, "Preview and confirm the lesson first.");
-    if (video.size > 2_800_000 || audio.size > 1_100_000)
+    if (video.size > MAX_TEACH_VIDEO_BYTES || audio.size > MAX_WAV_BYTES)
       throw new TeachError(
         413,
-        "Choose a short lesson: video up to 2.8 MB and audio up to 1.1 MB.",
+        `Video must be at most ${MAX_TEACH_VIDEO_BYTES} bytes and audio at most ${MAX_WAV_BYTES} bytes.`,
       );
     const goal = form.get("intent");
     if (

@@ -113,11 +113,11 @@ The verifier checks prerequisites and ordered state changes, rejects duplicate a
 
 ## Supported media and practical limits
 
-- Teach accepts **10–20 seconds** of demonstration (validation tolerates up to 20.5 seconds); use a short narrated clip.
+- Teach accepts **10–60 seconds** of demonstration; use a short narrated clip.
 - MP4 with **H.264/AVC**, optional AAC audio in the video; the supplied source must have decodable audio to extract the required WAV. No transcript/audio is invented for a silent or missing track.
-- Normal browser conversion targets **640×480 at 15 fps**; inspected source must have at most 1280×720 total pixels and 600 frames. Browser WebCodecs support is checked. If recording cannot encode H.264, use an existing supported MP4.
-- Teach MP4 ≤ **2,800,000 bytes**; extracted WAV ≤ **1,100,000 bytes**; complete multipart request ≤ **4,000,000 bytes**, including overhead.
-- WAV is mono signed PCM16 at **16 or 24 kHz**; browser extraction produces 24 kHz. WAV and video durations must agree within 0.5 seconds.
+- Normal browser conversion targets **640×480 at 10 fps, video-only H.264 targeting 180 kbps**; inspected source must have at most 1280×720 total pixels and 600 frames. Browser WebCodecs support is checked. If recording cannot encode H.264, use an existing supported MP4.
+- Vercel profile: Teach MP4 ≤ **1,980,000 bytes**, WAV ≤ **1,930,000 bytes**, complete multipart ≤ **4,000,000 bytes**. Self-hosted Node defaults to **8 MB video / 12 MB body**, with a 1 Mbps video target instead of Vercel’s 180 kbps. See [60-second hosting policy](docs/TEACH_60_SECONDS.md).
+- WAV is mono signed PCM16 at **16 or 24 kHz**; browser extraction produces 16 kHz. WAV and video durations must agree within 0.5 seconds.
 - Standalone media-inspection/video smoke tools have a separate **20 MB** input bound. That does **not** increase the web-upload limit.
 - Current local Teach bounds include four tracked objects and up to twenty supported steps. Unsupported coverage must be reviewed, not silently called verified.
 - Automatic setup expects roughly the demonstrated workbench view and distinctive visible objects. A different table may work using stable object references; substantial scale/rotation/perspective changes, visually identical objects, occlusion and low contrast remain limitations.
@@ -191,3 +191,17 @@ Use the [demo runbook](docs/DEMO.md). Show a reviewed source lesson and its fina
 - `.media-lab`: ignored private recordings and local evidence; not required to build or deploy.
 
 The official SAM parser/model license is retained under `docs/licenses/SAM-LICENSE.txt`; do not assume all dependencies or assets share one license. Do not claim certification, guaranteed safety, arbitrary-task accuracy or unmeasured performance.
+
+## Optional Baseten final procedure drafting
+
+Set `SPARK_PROVIDER=baseten` and configure server-only `BASETEN_API_KEY` to route the **final default Teach procedure draft** to `https://inference.baseten.co/v1/chat/completions`, model `meta-models/muse-spark-open-1026`. The default is `SPARK_PROVIDER=meta`. There is no automatic fallback. The final call uses bounded transcript/tracking JSON; it sends no Meta video file ID to Baseten. The adapter also supports up to eight bounded base64 image frames; video input is deliberately rejected.
+
+Automatic component discovery, explicit legacy Spark operations, **SAM 3.1 and Muse Voice Transcribe remain on Meta using `MODEL_API_KEY`**. Keep that key and `TEACH_ACCESS_TOKEN` configured. In Vercel, add/set `SPARK_PROVIDER=baseten` alongside the already configured `BASETEN_API_KEY`, then redeploy. No other new variables are needed.
+
+Baseten JSON is requested in the prompt, without JSON mode or `response_format`, and validated with the same compiler Zod contract and subsequent evidence checks. Truncated, invalid or schema-incompatible output fails explicitly; no provider response or key is logged. Provider/model diagnostics accompany the server compiler result. `reasoning_effort` is omitted pending a separately authorized live compatibility check.
+
+Offline tests: `npx vitest run tests/spark-provider.test.ts`. Optional paid smoke: `npm run smoke:baseten -- --approved` makes at most three requests (text, one image, two identical synthetic image frames), stopping on first failure with no retries. Without the flag it makes no call. This checks API compatibility, not real video sequencing or lesson accuracy.
+
+This migration targets the open-weight bonus. **Partner verification determines prize eligibility; it has not been independently verified here.** No live Baseten request or prize acceptance is claimed by the mocked tests.
+
+Teach supports 60 seconds through shared duration/media bounds. Vercel auto-selects the safe upload profile; other Node hosts default to the larger standard profile. Optional public build setting: `NEXT_PUBLIC_TEACH_UPLOAD_PROFILE=vercel|standard` (rebuild required; Vercel forces vercel). No live 60-second performance guarantee has been measured.
