@@ -7,7 +7,7 @@ import {
   RegionSchema,
   ReviewSchema,
 } from "./schema";
-/** Validate, but retain original JSON ordering when saving: the receipt hashes those bytes. */
+/** Validate human-approved learner exports; preserve optional legacy receipt bytes when saving. */
 export const ApprovedArtifactSchema = z
   .object({
     procedure: ProcedureSpecSchema.refine(
@@ -25,7 +25,7 @@ export const ApprovedArtifactSchema = z
     notes: DraftSchema.shape.notes,
     sourceLesson: LessonSchema,
     automaticSetup: AutomaticSetupSchema.optional(),
-    approvalReceipt: z.string().min(1).max(1_000_000),
+    approvalReceipt: z.string().min(1).max(1_000_000).optional(),
   })
   .superRefine((a, ctx) => {
     if (a.lessonId !== a.procedure.id || a.sourceLesson.lessonId !== a.lessonId)

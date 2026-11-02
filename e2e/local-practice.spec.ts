@@ -206,7 +206,6 @@ test("default Practice uses local worker automatically, corrects reversal and ke
     JSON.stringify(artifact),
   );
   await page.goto("/practice");
-  await page.getByLabel("Approved lessons").selectOption(artifact.procedure.id);
   await page.getByLabel("Enable microphone voice controls").check();
   await utter(page, "Muse, start camera");
   await expect(
@@ -453,9 +452,7 @@ test("default Teach reviews the full goal and source moments, then hands the app
     return route.abort();
   });
   await page.goto("/teach");
-  await page
-    .getByRole("button", { name: "Create new teach" })
-    .click();
+  await page.getByRole("button", { name: "Create new teach" }).click();
   await page.getByLabel(/Everyone visible or audible/).check();
   await page
     .getByLabel("Existing lesson MP4")
@@ -483,10 +480,7 @@ test("default Teach reviews the full goal and source moments, then hands the app
   await page
     .getByRole("button", { name: "Save and open Practice", exact: true })
     .click();
-  await expect(page).toHaveURL(/\/practice$/);
-  await page
-    .getByLabel("Approved lessons")
-    .selectOption(context.lesson.lessonId);
+  await expect(page).toHaveURL(new RegExp(`lesson=${context.lesson.lessonId}`));
   await expect(page.getByText("Goal: Object at destination")).toBeVisible();
   await expect(
     page.getByRole("img", { name: "Demonstrated starting state", exact: true }),
@@ -495,9 +489,6 @@ test("default Teach reviews the full goal and source moments, then hands the app
     page.getByRole("img", { name: "Demonstrated final goal", exact: true }),
   ).toBeVisible();
   await page.reload();
-  await page
-    .getByLabel("Approved lessons")
-    .selectOption(context.lesson.lessonId);
   await expect(
     page.getByRole("img", { name: "Demonstrated final goal", exact: true }),
   ).toBeVisible();
@@ -518,7 +509,6 @@ test("default Practice gestures activate voice settings and camera buttons; desk
     JSON.stringify(artifact),
   );
   await page.goto("/practice");
-  await page.getByLabel("Approved lessons").selectOption(artifact.procedure.id);
   const cameraPanel = page.getByTestId("practice-camera"),
     companion = page.getByTestId("practice-companion");
   const left = await cameraPanel.boundingBox(),
@@ -610,7 +600,6 @@ test("automatic Practice starts from reviewed Teach references without calibrati
     JSON.stringify(artifact),
   );
   await page.goto("/practice");
-  await page.getByLabel("Approved lessons").selectOption(artifact.procedure.id);
   await expect(page.locator("#local-practice-status")).toContainText(
     "Automatic tracking active",
     { timeout: 20000 },
@@ -691,9 +680,118 @@ test("automatic Practice starts from reviewed Teach references without calibrati
   await expect(
     page.getByRole("heading", { name: "Calibrate this view" }),
   ).toHaveCount(0);
+  const spokenAuto = await page.evaluate(
+    () => (window as unknown as { localSpoken: string[] }).localSpoken,
+  );
+  expect(
+    spokenAuto.some((text) => text.startsWith("Practice started")),
+    "automatic starts and retries must stay silent",
+  ).toBe(false);
   await page.evaluate(() => scrollTo(0, 0));
   await page.screenshot({
     path: ".media-lab/restored-practice-correction.png",
     fullPage: true,
   });
+});
+
+test("Teach library opens the selected approved lesson without a learner token or a second selection", async ({
+  page,
+}) => {
+  const { artifact } = fixture();
+  const { approvalReceipt: _receipt, ...portable } = artifact;
+  void _receipt;
+  await camera(page);
+  let teachRequests = 0;
+  await page.route("**/api/teach/**", (route) => {
+    teachRequests++;
+    return route.fulfill({
+      status: 401,
+      json: { error: "No creator session" },
+    });
+  });
+  await page.goto("/practice");
+  await page.evaluate(async (raw) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("steplint-approved-procedures", 1);
+      request.onupgradeneeded = () =>
+        request.result.createObjectStore("procedures", { keyPath: "id" });
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const item = JSON.parse(raw);
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("procedures", "readwrite");
+      tx.objectStore("procedures").put({
+        id: item.procedure.id,
+        title: item.procedure.title,
+        raw,
+        savedAt: Date.now(),
+      });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  }, JSON.stringify(portable));
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Choose a lesson" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("practice-camera")).toHaveCount(0);
+  await expect(page.getByTestId("practice-companion")).toHaveCount(0);
+  await expect(page.getByLabel("Enable microphone voice controls")).toHaveCount(
+    0,
+  );
+  for (const [name, width, height] of [
+    ["desktop", 1280, 832],
+    ["mobile", 390, 844],
+  ] as const) {
+    await page.setViewportSize({ width, height });
+    await page.screenshot({
+      path: `.media-lab/entry-flow/after-${name}.png`,
+      fullPage: true,
+    });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  }
+  await page.setViewportSize({ width: 1280, height: 832 });
+  await page
+    .getByRole("article")
+    .filter({ hasText: artifact.procedure.title })
+    .getByRole("link", { name: "Practice", exact: true })
+    .click();
+  await expect(page.getByTestId("practice-camera")).toBeVisible();
+  await expect(page.getByLabel("Approved lessons")).toHaveCount(0);
+  await expect(page.getByText("Goal: Object at destination")).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Practice", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Choose a lesson" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("practice-camera")).toHaveCount(0);
+  expect(teachRequests).toBe(0);
+  // Creator library access is separate; learner navigation below has no token.
+  await page.route("**/api/teach/access", (route) =>
+    route.fulfill({ json: { unlocked: true } }),
+  );
+  await page.goto("/teach");
+  await page
+    .getByRole("article")
+    .filter({ hasText: artifact.procedure.title })
+    .getByRole("button", { name: "Practice", exact: true })
+    .click();
+  await expect(page).toHaveURL(new RegExp(`lesson=${artifact.procedure.id}`));
+  await expect(page.getByText("Goal: Object at destination")).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("Goal: Object at destination")).toBeVisible();
+  await page.goto("/practice?lesson=missing-lesson");
+  await expect(
+    page.getByRole("alert").filter({ hasText: "not saved in this browser" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("practice-camera")).toHaveCount(0);
+  expect(teachRequests).toBe(0);
 });

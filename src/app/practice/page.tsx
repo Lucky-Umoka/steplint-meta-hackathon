@@ -1,9 +1,15 @@
 import Practice from "./practice";
-import LocalPractice from "./local-practice";
+import PracticeEntry from "./practice-entry";
 export default async function Page({
   searchParams,
 }: {
-  searchParams: Promise<{ legacy?: string; guide?: string; test?: string }>;
+  searchParams: Promise<{
+    legacy?: string;
+    guide?: string;
+    test?: string;
+    lesson?: string;
+    rehearsal?: string;
+  }>;
 }) {
   const query = await searchParams;
   return query.legacy === "1" || !!query.guide || !!query.test ? (
@@ -19,6 +25,6 @@ export default async function Page({
       <Practice />
     </>
   ) : (
-    <LocalPractice />
+    <PracticeEntry lessonId={query.lesson} rehearsal={query.rehearsal} />
   );
 }

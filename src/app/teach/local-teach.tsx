@@ -369,7 +369,7 @@ function LocalTeachFlow() {
                     <div className="flex flex-wrap gap-2">
                       <button
                         className="primary"
-                        onClick={() => router.push("/practice")}
+                        onClick={() => router.push(`/practice?lesson=${encodeURIComponent(row.id)}`)}
                       >
                         Practice
                       </button>

@@ -16,7 +16,7 @@ import Workspace from "@/components/workspace";
 import FrameMark from "../teach/frame-mark";
 import { useGuideCamera } from "./use-guide-camera";
 import type { ObjectDetection } from "@/guide/schema";
-import { ApprovedArtifactSchema } from "@/teach/approved-artifact";
+import { loadApprovedLesson } from "@/practice/load-approved-lesson";
 import {
   listApprovedProcedures,
   saveApprovedProcedure,
@@ -35,7 +35,6 @@ import {
 import type { Region } from "@/teach/schema";
 import type { Pixels } from "@/practice/tracker";
 import type { VerificationResult } from "@/procedure/schema";
-import { readAppJson } from "@/teach/api-response";
 import { useVoiceControl, type VoiceEvent } from "@/voice/use-voice-control";
 import CommandFeedback from "@/voice/CommandFeedback";
 import VoicePanel, { appendVoiceEvent } from "@/voice/VoicePanel";
@@ -67,7 +66,8 @@ export default function LocalPractice() {
   const loadGeneration = useRef(0);
   const automaticWanted = useRef(false),
     automaticAttemptAt = useRef(-Infinity),
-    automaticLoading = useRef(false);
+    automaticLoading = useRef(false),
+    autoFailures = useRef(0);
   const automaticSource = useRef<{
     scene: Pixels;
     objects: { id: string; box: Region; fixed: boolean; image: Pixels }[];
@@ -92,6 +92,7 @@ export default function LocalPractice() {
     } | null>(null);
   const [speaking, setSpeaking] = useState(false);
   const speechGeneration = useRef(0);
+  const speechWatchdog = useRef(0);
   const [guidanceOn, setGuidanceOn] = useState(true);
   const [voiceOn, setVoiceOn] = useState(true),
     [voiceLog, setVoiceLog] = useState<VoiceEvent[]>([]);
@@ -208,6 +209,29 @@ export default function LocalPractice() {
         try {
           window.speechSynthesis.resume?.();
           window.speechSynthesis.speak(utterance);
+          // A stuck engine reports speaking forever, which suppresses every
+          // voice command. Reset it past a generous per-word budget.
+          const budget = Math.min(
+            30000,
+            Math.max(8000, text.split(/\s+/).length * 700 + 6000),
+          );
+          window.clearTimeout(speechWatchdog.current);
+          speechWatchdog.current = window.setTimeout(() => {
+            if (gen !== speechGeneration.current) return;
+            try {
+              if (window.speechSynthesis?.speaking) {
+                window.speechSynthesis.cancel();
+                setSpeaking(false);
+                log({
+                  at: Date.now(),
+                  source: "control",
+                  text: "Speech engine stuck; reset so voice commands work.",
+                });
+              }
+            } catch {
+              /* Engine reset is best effort. */
+            }
+          }, budget);
         } catch {
           setSpeaking(false);
           log({
@@ -248,6 +272,7 @@ export default function LocalPractice() {
   ) {
     automaticWanted.current = false;
     speechGeneration.current++;
+    window.clearTimeout(speechWatchdog.current);
     setSpeaking(false);
     window.speechSynthesis?.cancel();
     if (stallTimer.current) {
@@ -348,6 +373,7 @@ export default function LocalPractice() {
       worker.current?.terminate();
       if (stallTimer.current) clearInterval(stallTimer.current);
       speechGeneration.current++;
+      window.clearTimeout(speechWatchdog.current);
       window.speechSynthesis?.cancel();
     },
     [],
@@ -395,9 +421,14 @@ export default function LocalPractice() {
         const ordered = [...rows].sort((a, b) => b.savedAt - a.savedAt);
         if (!active) return;
         setSaved(ordered);
-        // The guide is already chosen before reaching this screen (Teach sends
-        // it directly), so open the most recent one instead of asking again.
-        if (ordered.length > 0) await load(ordered[0].raw);
+        const selectedId = new URLSearchParams(window.location.search).get("lesson");
+        const selected = selectedId
+          ? ordered.find((row) => row.id === selectedId)
+          : undefined;
+        if (selectedId && !selected)
+          throw Error("This lesson is not saved in this browser. Import the approved lesson or choose another lesson.");
+        if (selected) await load(selected.raw);
+        else if (handoff) await load(handoff);
       } catch (e) {
         if (active)
           setError(
@@ -422,21 +453,7 @@ export default function LocalPractice() {
             ...JSON.parse(raw),
             origin: "teach" as const,
           })
-        : await (async () => {
-            const artifact = ApprovedArtifactSchema.parse(JSON.parse(raw));
-            if (!artifact.procedure.execution)
-              throw Error(
-                "This older approval needs a new executable review in Teach. Its original export is preserved.",
-              );
-            const response = await fetch("/api/teach/practice-lesson", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: raw,
-            });
-            return PracticeLessonSchema.parse(
-              await readAppJson(response, "Approval verification"),
-            );
-          })();
+        : loadApprovedLesson(raw);
       if (loading !== loadGeneration.current) return;
       setLesson(validated);
       setManualSetupOpen(false);
@@ -654,16 +671,21 @@ export default function LocalPractice() {
       if (!resuming && !automatic) archiveSession();
       session.current = next;
       setResult(next.result);
-      const firstPending = next.procedure.steps.find(
-        (step) =>
-          next.result.steps.find((state) => state.stepId === step.id)
-            ?.status !== "passed",
-      );
-      speak(
-        firstPending
-          ? `Practice started. ${firstPending.description}`
-          : "Practice started. Goal verified; keep required states in place.",
-      );
+      // Announce only learner-initiated starts: automatic retries must stay
+      // silent, or repeated setup failures would stutter speech and suppress
+      // voice commands while the engine is always speaking.
+      if (!automatic) {
+        const firstPending = next.procedure.steps.find(
+          (step) =>
+            next.result.steps.find((state) => state.stepId === step.id)
+              ?.status !== "passed",
+        );
+        speak(
+          firstPending
+            ? `Practice started. ${firstPending.description}`
+            : "Practice started. Goal verified; keep required states in place.",
+        );
+      }
       lastEvent.current = resuming ? next.result.events.length : 0;
       lastAlert.current = "";
       if (!resuming) metrics.current = [];
@@ -682,8 +704,10 @@ export default function LocalPractice() {
           const reply = parsed.data;
           if (reply.generation !== generation.current) return;
           busy.current = false;
-          if (reply.type !== "error")
+          if (reply.type !== "error") {
             trackingMeasurements.current = reply.measurements;
+            autoFailures.current = 0;
+          }
           if (reply.type === "error" && automatic && automaticWanted.current) {
             localWorker.terminate();
             worker.current = null;
@@ -692,8 +716,21 @@ export default function LocalPractice() {
             if (previousSession) previousSession.stopped = true;
             setResult(previousSession?.result ?? null);
             setStarting(false);
-            setNotice(reply.message);
             setDetections([]);
+            // Repeated setup failures must not retry forever: each attempt
+            // re-announces and re-chokes speech while suppressing voice
+            // commands, so stop asking after a short bounded run.
+            if (++autoFailures.current >= 5) {
+              automaticWanted.current = false;
+              setNotice(
+                "Automatic setup keeps failing. Adjust the view or set up manually.",
+              );
+              speak(
+                "Automatic setup keeps failing. Adjust the view, or capture the setup for manual calibration.",
+              );
+            } else {
+              setNotice(reply.message);
+            }
             return;
           }
           if (reply.type === "error") {
@@ -1124,6 +1161,32 @@ export default function LocalPractice() {
     if (event.source === "you") lastHeard = event.text;
     else lastGuide = event.text;
   }
+  // Live tracking boxes must sit on the rendered video pixels, not the panel:
+  // measure the fitted video rect inside its area every render (cheap reads,
+  // refreshed by each tracking frame while running).
+  const trackingOverlay = (() => {
+    const v = videoRef.current;
+    const vw = v?.videoWidth || cameraSize.width;
+    const vh = v?.videoHeight || cameraSize.height;
+    const box = v?.getBoundingClientRect();
+    const area = v?.parentElement?.getBoundingClientRect();
+    if (!vw || !vh || !box?.width || !box?.height || !area?.width || !area?.height)
+      return null;
+    const ratio = vw / vh;
+    let cw = box.width,
+      ch = box.width / ratio;
+    if (ch > box.height) {
+      ch = box.height;
+      cw = box.height * ratio;
+    }
+    return {
+      left: ((box.left - area.left + (box.width - cw) / 2) / area.width) * 100,
+      top: ((box.top - area.top + (box.height - ch) / 2) / area.height) * 100,
+      width: (cw / area.width) * 100,
+      height: (ch / area.height) * 100,
+    };
+  })();
+  const calibrating = still && lesson && !running;
   function objectColour(id: string) {
     const matching =
       lesson?.procedure.steps.filter(
@@ -1157,24 +1220,7 @@ export default function LocalPractice() {
       <div className="w-full space-y-2">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <h1 className="text-lg font-bold">Practice</h1>
-          <label className="text-sm text-slate-600">
-            Approved lessons{" "}
-            <select
-              disabled={running || starting}
-              value={lesson?.procedure.id ?? ""}
-              onChange={(e) => {
-                const row = saved.find((r) => r.id === e.target.value);
-                if (row) void load(row.raw);
-              }}
-            >
-              <option value="">Choose a lesson</option>
-              {saved.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.title}
-                </option>
-              ))}
-            </select>
-          </label>
+          <span className="text-sm text-slate-600">{lesson?.procedure.title}</span>
           {!cameraActive ? (
             <button
               disabled={!lesson || cameraRequesting}
@@ -1245,6 +1291,7 @@ export default function LocalPractice() {
             {notice}
           </p>
         </div>
+        <div className={calibrating ? "hidden" : "contents space-y-2"}>
         <div className="flex flex-wrap items-stretch gap-2 text-xs">
           {lesson && (
             <section
@@ -1359,28 +1406,28 @@ export default function LocalPractice() {
                   : "Camera off"}
               </span>
             </div>
-            <div className="flex min-h-0 flex-1 items-center justify-center bg-slate-950">
-              <div
-                className="relative max-h-full max-w-full"
-                style={{
-                  aspectRatio: `${cameraSize.width} / ${cameraSize.height}`,
-                }}
-              >
-                <video
-                  ref={videoRef}
-                  muted
-                  playsInline
-                  className="absolute inset-0 h-full w-full bg-slate-950"
-                  aria-label="Live work camera"
-                />
-                {!cameraActive && (
-                  <p className="absolute inset-0 flex items-center justify-center p-4 text-center text-sm text-slate-400">
-                    Choose a guide and start the camera when you’re ready.
-                  </p>
-                )}
-              {running && (
+            <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-950">
+              <video
+                ref={videoRef}
+                muted
+                playsInline
+                className="block h-full w-full bg-slate-950 object-contain"
+                aria-label="Live work camera"
+              />
+              {!cameraActive && (
+                <p className="absolute inset-0 flex items-center justify-center p-4 text-center text-sm text-slate-400">
+                  Choose a guide and start the camera when you’re ready.
+                </p>
+              )}
+              {running && trackingOverlay && (
                 <svg
-                  className="pointer-events-none absolute inset-0 h-full w-full"
+                  className="pointer-events-none absolute"
+                  style={{
+                    left: `${trackingOverlay.left}%`,
+                    top: `${trackingOverlay.top}%`,
+                    width: `${trackingOverlay.width}%`,
+                    height: `${trackingOverlay.height}%`,
+                  }}
                   viewBox="0 0 100 100"
                   preserveAspectRatio="none"
                   aria-label="Live object tracking"
@@ -1423,8 +1470,7 @@ export default function LocalPractice() {
                       ),
                   )}
                 </svg>
-                )}
-              </div>
+              )}
             </div>
             {lesson && !running && references && (
               <div className="p-2" aria-label="Before and after goal">
@@ -1540,6 +1586,7 @@ export default function LocalPractice() {
             </div>
           </div>
         </div>
+        </div>
         {!saved.length && !lesson && (
           <p className="text-sm text-slate-600">
             Your first guide starts in Teach. Create and review a lesson, then
@@ -1547,23 +1594,13 @@ export default function LocalPractice() {
           </p>
         )}
         {still && lesson && !running && (
-          <section className="space-y-3 rounded-2xl border bg-white p-5">
-            <h2 className="text-xl font-bold">Calibrate this view</h2>
-            <p>
-              Keep the camera fixed. Mark each movable object tightly. For a
-              fixed destination, mark a stable visible edge or feature. Then
-              mark the starting/destination zones and a separate stationary
-              textured reference. Fixed destination objects must remain in the
-              marked zones. If a destination moves, stop and recalibrate.
+          <section className="space-y-2 rounded-2xl border bg-white p-3">
+            <h2 className="text-base font-bold">Calibrate this view</h2>
+            <p className="text-sm font-semibold">
+              Goal: {lesson.procedure.execution?.goal}
             </p>
-            <select value={field} onChange={(e) => setField(e.target.value)}>
-              {fields.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {marks[f.id] ? "✓ " : ""}
-                  {f.name}
-                </option>
-              ))}
-            </select>
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_300px]">
+            <div className="mx-auto w-full max-w-xl">
             <FrameMark
               image={still.url}
               width={still.image.width}
@@ -1594,17 +1631,29 @@ export default function LocalPractice() {
                 setCalibrationConsent(false);
               }}
             />
-            <label className="flex gap-2">
+            </div>
+            <div className="min-w-0 space-y-2">
+            <select value={field} onChange={(e) => setField(e.target.value)}>
+              {fields.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {marks[f.id] ? "✓ " : ""}
+                  {f.name}
+                </option>
+              ))}
+            </select>
+            <label className="flex gap-2 text-sm">
               <input
                 type="checkbox"
                 checked={calibrationConsent}
                 onChange={(e) => setCalibrationConsent(e.target.checked)}
               />
-              I checked object identities, zone meanings and fixed destinations
-              against the approved lesson.{" "}
-              {resumeRequested
-                ? "Completed states remain in place; unfinished actions are at their starting positions."
-                : "The objects are in the demonstrated starting positions."}
+              <span>
+                I checked object identities, zone meanings and fixed
+                destinations against the approved lesson.{" "}
+                {resumeRequested
+                  ? "Completed states remain in place; unfinished actions are at their starting positions."
+                  : "The objects are in the demonstrated starting positions."}
+              </span>
             </label>
             <button
               disabled={
@@ -1618,6 +1667,18 @@ export default function LocalPractice() {
                 ? "Resume automatic practice"
                 : "Start automatic practice"}
             </button>
+            <details className="text-sm text-slate-600">
+              <summary className="cursor-pointer font-medium">
+                How to mark this view
+              </summary>
+              Keep the camera fixed. Mark each movable object tightly. For a
+              fixed destination, mark a stable visible edge or feature. Then
+              mark the starting/destination zones and a separate stationary
+              textured reference. Fixed destination objects must remain in the
+              marked zones. If a destination moves, stop and recalibrate.
+            </details>
+            </div>
+            </div>
           </section>
         )}
         {rehearsal && lesson && (
