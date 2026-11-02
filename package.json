@@ -21,7 +21,8 @@
     "smoke:teach": "node --conditions=react-server --import tsx scripts/smoke-teach.ts",
     "test:e2e": "playwright test",
     "smoke:workflow": "node --conditions=react-server --import tsx scripts/smoke-workflow.ts",
-    "format:check": "prettier --check src/guide src/server/guide e2e"
+    "format:check": "prettier --check src/guide src/server/guide e2e",
+    "security:check": "node scripts/security-check.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.2.0",

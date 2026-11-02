@@ -1,0 +1,9 @@
+.git
+.env*
+!.env.example
+.media-lab
+.next*
+node_modules
+coverage
+*.log
+*.tsbuildinfo

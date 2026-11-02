@@ -1,3 +1,4 @@
+import { approvedFixture } from "./approved-fixture";
 import { test, expect } from "./safe-test";
 test("voice controls release the recognizer, cancel stale confirmations and do not restart after permission denial", async ({
   page,
@@ -42,6 +43,10 @@ test("voice controls release the recognizer, cancel stale confirmations and do n
     window.speechSynthesis.speak = () => {};
     window.speechSynthesis.cancel = () => {};
   });
+  await page.addInitScript(
+    (raw) => sessionStorage.setItem("steplint-approved-handoff", raw),
+    JSON.stringify(approvedFixture().artifact),
+  );
   await page.goto("/practice");
   await expect
     .poll(() =>
@@ -183,20 +188,26 @@ test("Teach recorder buttons drive recording, pause, resume and stop", async ({
     r.fulfill({ json: { unlocked: true } }),
   );
   await page.goto("/teach");
-  await page
-    .getByRole("button", { name: "Create new teach" })
-    .click();
+  await page.getByRole("button", { name: "Create new teach" }).click();
   await page.getByLabel(/Everyone visible or audible/).check();
   await expect(
     page.getByRole("button", { name: "Start recording", exact: true }),
   ).toBeEnabled({ timeout: 20000 });
-  await page.getByRole("button", { name: "Preview camera", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Preview camera", exact: true })
+    .click();
   await expect(page.getByText(/Camera preview — not recording/)).toBeVisible();
-  await page.getByRole("button", { name: "Start recording", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Start recording", exact: true })
+    .click();
   await expect(page.getByText(/● REC — camera/)).toBeVisible();
-  await page.getByRole("button", { name: "Pause recording", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Pause recording", exact: true })
+    .click();
   await expect(page.getByText(/❚❚ Paused/)).toBeVisible();
-  await page.getByRole("button", { name: "Resume recording", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Resume recording", exact: true })
+    .click();
   await expect(page.getByText(/● REC — camera/)).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Done", exact: true }),
@@ -215,4 +226,47 @@ test("Teach recorder buttons drive recording, pause, resume and stop", async ({
     .toBe(true);
   await expect(page.getByText(/● REC — camera/)).toHaveCount(0);
   await expect(page.getByLabel("Prepared lesson preview")).toBeVisible();
+  // Check the actual browser-encoded MP4 and extracted WAV sent by Teach,
+  // stopping at the mocked upload boundary before any model request.
+  let mediaChecked = false;
+  await page.route("**/api/teach/lesson", async (route) => {
+    const bytes = route.request().postDataBuffer();
+    if (!bytes) throw Error("Teach upload had no body");
+    const form = await new Request("http://localhost/upload", {
+      method: "POST",
+      headers: { "Content-Type": route.request().headers()["content-type"] },
+      body: new Uint8Array(bytes),
+    }).formData();
+    const video = form.get("video"),
+      audio = form.get("audio");
+    if (!(video instanceof File) || !(audio instanceof File))
+      throw Error("Missing encoded media");
+    const { inspectLessonVideo, validateLessonAudio } = await import(
+      "../src/teach/media"
+    );
+    const info = await inspectLessonVideo(video);
+    const wav = validateLessonAudio(
+      new Uint8Array(await audio.arrayBuffer()),
+      info,
+    );
+    expect(info.info.video?.codec).toBe("avc");
+    expect(info.info.video?.width).toBe(640);
+    expect(info.info.video?.height).toBe(480);
+    expect(wav).toMatchObject({
+      channels: 1,
+      sampleRate: 24000,
+      bitsPerSample: 16,
+    });
+    expect(bytes.length).toBeLessThan(4_000_000);
+    mediaChecked = true;
+    await route.fulfill({
+      status: 422,
+      json: { error: "Offline media checked; no provider called." },
+    });
+  });
+  await page.getByLabel(/I reviewed this recording/).check();
+  await page
+    .getByRole("button", { name: "Build my lesson", exact: true })
+    .click();
+  await expect.poll(() => mediaChecked).toBe(true);
 });

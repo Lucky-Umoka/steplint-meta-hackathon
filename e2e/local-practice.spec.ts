@@ -1,3 +1,4 @@
+import { approvedFixture as fixture } from "./approved-fixture";
 import { test, expect, type Page } from "./safe-test";
 import { installHandFixture, pinchControl } from "./hand-fixture";
 import { localFixture } from "../tests/fixtures/local-procedure";
@@ -7,7 +8,6 @@ import {
   bindAutomaticSetup,
 } from "../src/teach/automatic-setup";
 import { approveDraft } from "../src/teach/schema";
-import { suggestReviews } from "../src/teach/review-suggestions";
 
 async function camera(page: Page) {
   await page.addInitScript(() => {
@@ -148,47 +148,7 @@ async function draw(
       .locator("select option:checked"),
   ).toHaveText(/^✓/);
 }
-function fixture() {
-  const { context, draft } = localFixture();
-  const local = localExecutionDraft(draft, "Object at destination");
-  local.procedure.execution!.requirements[0] = {
-    description: "Visible transfer",
-    status: "covered",
-    stepIds: ["transfer"],
-    reason: "Synthetic human review",
-  };
-  const checks = suggestReviews(local, context);
-  const artifact = {
-    ...approveDraft(
-      local,
-      {
-        reviewer: "Browser test",
-        confirmed: true,
-        goalConfirmed: true,
-        steps: [
-          {
-            stepId: "transfer",
-            ...checks.transfer,
-            reviewed: true,
-            conditionConfirmed: true,
-          },
-        ],
-      },
-      context,
-      1000,
-    ),
-    approvalReceipt: "mock-only-not-a-real-receipt",
-  };
-  return {
-    artifact,
-    lesson: {
-      procedure: artifact.procedure,
-      zoneBindings: artifact.zoneBindings,
-      sourceLesson: artifact.sourceLesson,
-      origin: "teach",
-    },
-  };
-}
+
 test("default Practice uses local worker automatically, corrects reversal and keeps monitoring the goal", async ({
   page,
 }) => {
@@ -532,10 +492,6 @@ test("default Practice gestures activate voice settings and camera buttons; desk
   await expect(voice).not.toBeChecked();
   await voice.check();
   await expect(voice).toBeChecked();
-  await utter(page, "Muse, capture setup");
-  await expect(
-    page.getByRole("heading", { name: "Calibrate this view" }),
-  ).toBeVisible();
   await pinchControl(
     page,
     page.getByRole("button", { name: "Stop camera", exact: true }),
@@ -564,41 +520,48 @@ test("default Practice gestures activate voice settings and camera buttons; desk
     path: ".media-lab/restored-practice-desktop.png",
     fullPage: true,
   });
+  // Optional manual calibration intentionally hides the live panels. Exercise
+  // gesture clicks while the camera/gesture panel is visible, then check voice
+  // capture separately without pretending a hidden pointer is an active UI.
+  await page.getByRole("button", { name: "Start camera", exact: true }).click();
+  await expect(
+    page.getByRole("button", {
+      name: "Capture setup for calibration",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  await utter(page, "Muse, capture setup");
+  await expect(
+    page.getByRole("heading", { name: "Calibrate this view" }),
+  ).toBeVisible();
 });
 
 test("automatic Practice starts from reviewed Teach references without calibration buttons and produces green, red and spoken correction", async ({
   page,
 }) => {
   await camera(page);
-  const { artifact, lesson } = fixture();
-  await page.route("**/api/teach/practice-lesson", async (route) => {
-    const image = await page.evaluate(
-      () =>
-        (window as unknown as { localReferenceImage: string })
-          .localReferenceImage,
-    );
-    return route.fulfill({
-      json: {
-        ...lesson,
-        automaticSetup: {
-          sceneFrame: 0,
-          objects: [
-            {
-              id: "component-1",
-              frame: 0,
-              box: { left: 0.15, top: 0.3, right: 0.35, bottom: 0.65 },
-              fixed: false,
-            },
-          ],
-          frames: [{ frame: 0, image }],
+  const { artifact } = fixture();
+  await page.addInitScript((raw) => {
+    const image = (window as unknown as { localReferenceImage: string })
+      .localReferenceImage;
+    const approved = JSON.parse(raw);
+    approved.automaticSetup = {
+      sceneFrame: 0,
+      objects: [
+        {
+          id: "component-1",
+          frame: 0,
+          box: { left: 0.15, top: 0.3, right: 0.35, bottom: 0.65 },
+          fixed: false,
         },
-      },
-    });
-  });
-  await page.addInitScript(
-    (raw) => sessionStorage.setItem("steplint-approved-handoff", raw),
-    JSON.stringify(artifact),
-  );
+      ],
+      frames: [{ frame: 0, image }],
+    };
+    sessionStorage.setItem(
+      "steplint-approved-handoff",
+      JSON.stringify(approved),
+    );
+  }, JSON.stringify(artifact));
   await page.goto("/practice");
   await expect(page.locator("#local-practice-status")).toContainText(
     "Automatic tracking active",
