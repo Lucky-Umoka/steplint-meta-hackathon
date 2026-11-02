@@ -1,3 +1,4 @@
+import { maskForeground, coversFrame } from "./mask-geometry";
 import { SAM_REQUEST_TIMEOUT_MS } from "../../media/limits";
 import { sparkStructured } from "../meta/spark";
 import { ExecutionSchema } from "../../procedure/schema";
@@ -11,7 +12,6 @@ import {
   parseVideoStream,
   recordsOfKind,
   frameIndexOf,
-  decodeMaskToRaster,
   type ResponsesEvent,
   type VideoSegmentationResult,
 } from "@meta-sam/parser";
@@ -208,22 +208,23 @@ export function summarizeTracking(
       mask.mask.width * mask.mask.height > 1280 * 720
     )
       throw new Error("Invalid segmentation geometry.");
-    const pixels = decodeMaskToRaster(mask.mask).reduce(
-      (sum, value) => sum + value,
-      0,
-    );
-    if (!pixels) continue; // Empty/missing geometry remains absent evidence.
+    const foreground = maskForeground(mask, video.width, video.height);
+    if (!foreground) continue;
+    const providerBox = {
+      left: box.left / video.width, top: box.top / video.height,
+      right: box.right / video.width, bottom: box.bottom / video.height,
+    };
+    // Some responses use the full image as a mask canvas/box. Its constant
+    // centre is not the object trajectory: use the observed foreground pixels.
+    const measuredBox = coversFrame(providerBox, video.width, video.height)
+      ? foreground.region : providerBox;
+    if (coversFrame(measuredBox, video.width, video.height)) continue;
     tracking[selectionIndex].samples.push({
       frame,
       timestampMs: media.frameTimesMs[frame],
-      box: {
-        left: box.left / video.width,
-        top: box.top / video.height,
-        right: box.right / video.width,
-        bottom: box.bottom / video.height,
-      },
+      box: measuredBox,
       confidence: box.confidence ?? null,
-      maskPixels: pixels,
+      maskPixels: foreground.pixels,
     });
   }
   for (const track of tracking) {
@@ -422,9 +423,9 @@ export async function compileLesson(
       selections,
       upload.lesson.media,
     );
-    if (tracking.every((track) => !track.samples.length))
+    if (tracking.some((track) => !track.samples.length))
       throw new Error(
-        "No selected components were tracked; no procedure was invented.",
+        "A selected object has no usable object outline (SAM may have returned the whole scene). Correct its mark or use a clearer view; no procedure was invented.",
       );
     const context = ContextSchema.parse({
       lesson: upload.lesson,

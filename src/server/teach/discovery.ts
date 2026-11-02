@@ -116,6 +116,16 @@ export function parseDiscovery(
   const selections = parsed.data.components.map((c, index) => {
     if (c.timestampMs >= info.durationSeconds * 1000)
       throw new TeachError(422, "Proposed component time is outside the clip.");
+    if (
+      c.box.left === 0 &&
+      c.box.top === 0 &&
+      c.box.right === 1000 &&
+      c.box.bottom === 1000
+    )
+      throw new TeachError(
+        422,
+        "Component discovery selected the whole scene. Correct the object mark before tracking.",
+      );
     if (c.box.right <= c.box.left || c.box.bottom <= c.box.top)
       throw new TeachError(422, "Proposed component box has no area.");
     const positive =
