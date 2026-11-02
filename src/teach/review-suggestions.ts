@@ -5,6 +5,8 @@ import {
   type Region,
 } from "./schema";
 export type SuggestedCheck = {
+  evidenceStatus?: "supported" | "unsupported";
+  evidenceReason?: string;
   reviewed: boolean;
   conditionConfirmed: boolean;
   fromFrame: number;
@@ -34,12 +36,47 @@ export function suggestReviews(
   let priorEnd = -1;
   const sharedRegions = new Map<string, Region>();
   for (const step of draft.procedure.steps) {
+    const v3 = draft.procedure.execution?.schemaVersion === 3;
+    const window = step.execution?.evidenceWindow;
+    const ownFrames =
+      draft.notes.find((note) => note.stepId === step.id)?.supportingFrames ??
+      [];
+    const start =
+      window?.startFrame ??
+      step.measurement?.sourceFrames?.start ??
+      Math.min(...ownFrames);
+    const end =
+      window?.resultFrame ??
+      step.measurement?.sourceFrames?.result ??
+      Math.max(...ownFrames);
     const samples =
-      context.tracking.find((t) => t.componentId === step.condition.componentId)
-        ?.samples ?? [];
+      context.tracking
+        .find((t) => t.componentId === step.condition.componentId)
+        ?.samples.filter(
+          (sample) => sample.frame >= start && sample.frame <= end,
+        ) ?? [];
+    const explicitChange =
+      window?.changeFrame ?? step.measurement?.sourceFrames?.change;
+    const validWindow =
+      !v3 ||
+      (!!window &&
+        window.startFrame < window.changeFrame &&
+        window.changeFrame < window.resultFrame &&
+        [window.startFrame, window.changeFrame, window.resultFrame].every(
+          (frame) =>
+            ownFrames.includes(frame) &&
+            samples.some(
+              (s) =>
+                s.frame === frame &&
+                s.confidence !== null &&
+                s.confidence >= step.condition.minimumConfidence,
+            ),
+        ));
     let best: { i: number; j: number; distance: number } | null = null;
     for (let i = 0; i < samples.length; i++) {
       if (
+        !validWindow ||
+        (v3 && samples[i].frame !== start) ||
         (draft.procedure.execution
           ? samples[i].timestampMs < priorEnd
           : samples[i].timestampMs <= priorEnd) ||
@@ -57,7 +94,11 @@ export function suggestReviews(
         const a = centre(samples[i].box, step.measurement?.point),
           b = centre(samples[j].box, step.measurement?.point),
           distance = Math.hypot(a.x - b.x, a.y - b.y);
-        if (distance >= 0.05 && (!best || distance > best.distance))
+        if (
+          (!v3 || samples[j].frame === end) &&
+          distance >= 0.05 &&
+          (!best || distance > best.distance)
+        )
           best = { i, j, distance };
       }
     }
@@ -66,12 +107,16 @@ export function suggestReviews(
         to = samples[best.j],
         radius = Math.min(0.04, best.distance / 4);
       suggestions[step.id] = {
+        ...(v3 ? { evidenceStatus: "supported" as const } : {}),
         reviewed: false,
         conditionConfirmed: false,
         fromFrame: from.frame,
         toFrame: to.frame,
         ...(draft.procedure.execution
-          ? { changeFrame: Math.floor((from.frame + to.frame) / 2) }
+          ? {
+              changeFrame:
+                explicitChange ?? Math.floor((from.frame + to.frame) / 2),
+            }
           : {}),
         fromRegion:
           sharedRegions.get(step.condition.fromZone) ??
@@ -88,6 +133,13 @@ export function suggestReviews(
       priorEnd = to.timestampMs;
     } else
       suggestions[step.id] = {
+        ...(v3
+          ? {
+              evidenceStatus: "unsupported" as const,
+              evidenceReason:
+                "This action has no usable, ordered source evidence within its own window. Correct its evidence or keep its requirement unsupported.",
+            }
+          : {}),
         reviewed: false,
         conditionConfirmed: false,
         fromFrame: samples[0]?.frame ?? 0,
@@ -212,9 +264,18 @@ export function reviewBlockers(
   checks: Record<string, SuggestedCheck>,
 ): string[] {
   const issues: string[] = [];
+  for (const requirement of draft.procedure.execution?.requirements ?? [])
+    if (requirement.status === "unsupported")
+      issues.push(`Unsupported required work: ${requirement.description}`);
+  if (draft.procedure.execution?.schemaVersion === 3)
+    issues.push(
+      "V3 approval and Practice execution are deferred to Phase 2; this procedure remains a reviewable draft.",
+    );
   for (const [index, step] of draft.procedure.steps.entries()) {
     const check = checks[step.id],
       label = `Step ${index + 1}`;
+    if (check?.evidenceStatus === "unsupported")
+      issues.push(`${label} — ${check.evidenceReason}`);
     if (!check?.fromRegion || !check.toRegion)
       issues.push(
         `${label} — starting/target zones are missing. Recheck suggestions or choose clear moments.`,

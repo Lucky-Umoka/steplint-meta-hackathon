@@ -2,6 +2,7 @@ import { MAX_LESSON_FRAMES, MAX_LESSON_MS } from "../media/limits";
 import { z } from "zod";
 import { ProcedureSpecSchema } from "../procedure/schema";
 import { MediaInfoSchema } from "../media/inspect";
+import { validateV3Evidence } from "./v3-evidence";
 
 export { MAX_TEACH_BODY } from "../media/limits";
 export { MAX_TEACH_VIDEO_BYTES as MAX_TEACH_VIDEO } from "../media/limits";
@@ -228,6 +229,7 @@ export function validateDraft(
     )
       throw new Error("Step has no matching tracked supporting frames.");
   }
+  validateV3Evidence(draft, context);
   return draft;
 }
 
@@ -282,6 +284,17 @@ export function validateReviewEvidence(
         "Review requires ordered, distinct before/after evidence after earlier steps.",
       );
     if (p.execution) {
+      if (p.execution.schemaVersion === 3) {
+        const window = step.execution!.evidenceWindow;
+        if (
+          check.fromFrame !== window.startFrame ||
+          check.changeFrame !== window.changeFrame ||
+          check.toFrame !== window.resultFrame
+        )
+          throw Error(
+            "Changing a V3 action window requires editing and revalidating the draft before review.",
+          );
+      }
       const change = track.samples.find(
         (sample) => sample.frame === check.changeFrame,
       );
@@ -355,6 +368,34 @@ export function validateReviewEvidence(
     }
     priorEnd = to.timestampMs;
   }
+  if (p.execution?.schemaVersion === 3) {
+    for (const predicate of [
+      ...p.execution.initialConditions,
+      ...p.execution.finalConditions,
+    ]) {
+      if (predicate.kind !== "object_in_zone") continue;
+      const region = zoneBindings.get(predicate.zoneId);
+      const track = context.tracking.find(
+        (t) => t.componentId === predicate.objectId,
+      );
+      if (
+        !region ||
+        predicate.evidenceFrames.some((frame) => {
+          const box = track?.samples.find((s) => s.frame === frame)?.box;
+          return (
+            !box ||
+            !contains(region, {
+              x: (box.left + box.right) / 2,
+              y: (box.top + box.bottom) / 2,
+            })
+          );
+        })
+      )
+        throw Error(
+          "The reviewed zone does not support its initial/final source condition.",
+        );
+    }
+  }
   return {
     draft,
     zoneBindings: [...zoneBindings].map(([zoneId, region]) => ({
@@ -370,6 +411,12 @@ export function approveDraft(
   context: TeachContext,
   nowMs: number,
 ) {
+  // Phase 1 creates reviewable V3 drafts only; approval migration is separate.
+  const candidate = validateDraft(input, context);
+  if (candidate.procedure.execution?.schemaVersion === 3)
+    throw Error(
+      "V3 approval and Practice execution are not enabled in Phase 1. Keep this procedure as a reviewed draft.",
+    );
   const review = ReviewSchema.parse(reviewInput);
   const { draft, zoneBindings } = validateReviewEvidence(
     input,

@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { localFixture } from "./fixtures/local-procedure";
+import { teachV3Fixture } from "./fixtures/teach-v3";
 import { localExecutionDraft } from "../src/teach/local-execution";
 import { approveDraft } from "../src/teach/schema";
 import { suggestReviews } from "../src/teach/review-suggestions";
@@ -167,51 +168,38 @@ it("approves V2 through real server handlers and verifies its unchanged receipt 
 });
 it("local compiler accepts repeated-object transfer chains and retains unsupported goal coverage", async () => {
   const { parseSparkDraft } = await import("../src/server/teach/pipeline");
-  const { context, draft } = localFixture();
-  const second = structuredClone(draft.procedure.steps[0]);
-  second.id = "return";
-  second.prerequisites = ["transfer"];
-  second.condition = {
-    ...second.condition,
-    fromZone: "destination",
-    toZone: "origin",
-  };
-  draft.procedure.steps.push(second);
-  draft.notes.push({ ...structuredClone(draft.notes[0]), stepId: "return" });
-  const coverage = [
-    {
-      description: "Visible return",
-      status: "covered",
-      stepIds: ["return"],
-      reason: "Observed position change",
-    },
-    {
-      description: "Hidden contact force",
-      status: "unsupported",
-      stepIds: [],
-      reason: "No force sensor or approved visual measurement",
-    },
-  ];
+  const { context, draft, execution } = teachV3Fixture(true);
+  execution.requirements.push({
+    id: "unsupported-force",
+    description: "Hidden contact force",
+    capability: "unsupported",
+    status: "unsupported",
+    stepIds: [],
+    goalPredicateIds: [],
+    reason: "No force sensor or approved visual measurement",
+  });
   const parsed = parseSparkDraft(
     {
       status: "completed",
-      output_text: JSON.stringify({ ...draft, coverage }),
+      output_text: JSON.stringify(draft),
     },
     context,
     { goal: "Transfer and return with correct force" },
   );
   expect(parsed.procedure.steps).toHaveLength(2);
-  expect(parsed.procedure.steps[0].measurement?.releaseStepId).toBe("return");
+  expect(parsed.procedure.steps[0].measurement?.releaseStepId).toBe(
+    "transfer-again",
+  );
   expect(parsed.procedure.execution?.requirements[1].status).toBe(
     "unsupported",
   );
+  const incomplete = structuredClone(draft);
+  delete incomplete.procedure.execution;
   expect(() =>
     parseSparkDraft(
-      {
-        status: "completed",
-        output_text: JSON.stringify({ ...draft, coverage }),
-      },
+      { status: "completed", output_text: JSON.stringify(incomplete) },
       context,
+      { goal: "Transfer and return with correct force" },
     ),
   ).toThrow();
 });

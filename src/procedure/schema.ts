@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  ComponentExecutionSchema,
+  StepExecutionSchema,
+  ExecutionV3Schema,
+} from "./execution-v3";
 
 const id = z.string().trim().min(1).max(100);
 const description = z.string().trim().min(1).max(2000);
@@ -12,7 +17,11 @@ export const EvidenceReferenceSchema = z.strictObject({
   timestampMs: TimestampSchema,
   description,
 });
-export const ComponentSchema = z.strictObject({ id, description });
+export const ComponentSchema = z.strictObject({
+  id,
+  description,
+  execution: ComponentExecutionSchema.optional(),
+});
 export const VisualConditionSchema = z.strictObject({
   kind: z.literal("enters_zone"),
   componentId: id,
@@ -66,6 +75,7 @@ export const ExecutionSchema = z.strictObject({
 export const StepSchema = z.strictObject({
   id,
   description,
+  execution: StepExecutionSchema.optional(),
   prerequisites: z.array(id).max(100),
   measurement: MeasurementSchema.optional(),
   condition: VisualConditionSchema,
@@ -90,7 +100,7 @@ export const ProcedureSpecSchema = z
     components: z.array(ComponentSchema).min(1).max(100),
     zones: z.array(z.strictObject({ id, description })).min(2).max(100),
     steps: z.array(StepSchema).min(1).max(100),
-    execution: ExecutionSchema.optional(),
+    execution: z.union([ExecutionSchema, ExecutionV3Schema]).optional(),
     approval: z
       .strictObject({ reviewer: id, timestampMs: TimestampSchema })
       .nullable(),
@@ -121,6 +131,177 @@ export const ProcedureSpecSchema = z
       );
     const components = new Set(spec.components.map((x) => x.id));
     const zones = new Set(spec.zones.map((x) => x.id));
+    if (spec.execution?.schemaVersion === 3) {
+      const execution = spec.execution;
+      if (spec.approval)
+        issue(
+          "V3 approval and Practice execution are not enabled in Phase 1. Keep this procedure as a reviewed draft.",
+        );
+      unique(
+        execution.requirements.map((r) => r.id),
+        "requirement IDs",
+      );
+      unique(
+        [...execution.initialConditions, ...execution.finalConditions].map(
+          (p) => p.id,
+        ),
+        "scene predicate IDs",
+      );
+      const required = (objectId: string) => {
+        const object = spec.components.find((c) => c.id === objectId);
+        if (!object || object.execution?.role !== "required")
+          issue("Semantic conditions must reference known required objects.");
+        return object;
+      };
+      for (const object of spec.components) {
+        const e = object.execution;
+        if (!e) {
+          issue(
+            "V3 objects require roles, motion, activation and reference frames.",
+          );
+          continue;
+        }
+        unique(e.referenceFrames.map(String), "identity reference frames");
+        if (
+          e.role === "required" &&
+          (!e.referenceFrames.length || e.firstRequiredAt === "never")
+        )
+          issue("Required objects need identity evidence and an activation.");
+        if (e.role !== "required" && e.firstRequiredAt !== "never")
+          issue("Supporting and irrelevant objects must not gate activation.");
+        const activation = e.firstRequiredAt;
+        if (
+          typeof activation === "object" &&
+          !spec.steps.some((s) => s.id === activation.stepId)
+        )
+          issue("Unknown object activation step.");
+        if (e.role === "irrelevant" && e.referenceFrames.length)
+          issue(
+            "Irrelevant objects must not carry runtime identity references.",
+          );
+      }
+      let previousEnd = -1;
+      for (const step of spec.steps) {
+        const e = step.execution;
+        if (!e) {
+          issue(
+            "V3 steps require an evidence window, required objects and supported claim.",
+          );
+          continue;
+        }
+        unique(e.requiredObjectIds, "required step objects");
+        if (!e.requiredObjectIds.includes(step.condition.componentId))
+          issue("A step must require its moving object.");
+        if (
+          required(step.condition.componentId)?.execution?.motion !== "movable"
+        )
+          issue("A transfer requires a movable object.");
+        for (const objectId of e.requiredObjectIds) {
+          const object = required(objectId);
+          const at = object?.execution?.firstRequiredAt;
+          if (
+            typeof at === "object" &&
+            spec.steps.findIndex((s) => s.id === at.stepId) >
+              spec.steps.indexOf(step)
+          )
+            issue("An object is required before its activation step.");
+        }
+        if (e.evidenceWindow.startFrame < previousEnd)
+          issue("Action evidence windows overlap beyond a shared boundary.");
+        previousEnd = e.evidenceWindow.resultFrame;
+        if (
+          step.measurement?.sourceFrames &&
+          (step.measurement.sourceFrames.start !==
+            e.evidenceWindow.startFrame ||
+            step.measurement.sourceFrames.change !==
+              e.evidenceWindow.changeFrame ||
+            step.measurement.sourceFrames.result !==
+              e.evidenceWindow.resultFrame)
+        )
+          issue("Measurement evidence must match the action window.");
+      }
+      for (const predicate of [
+        ...execution.initialConditions,
+        ...execution.finalConditions,
+      ]) {
+        const object = required(predicate.objectId);
+        if (
+          execution.initialConditions.includes(predicate) &&
+          object?.execution?.firstRequiredAt !== "initial"
+        )
+          issue("Initial conditions cannot require a later object.");
+        if (predicate.kind === "object_in_zone" && !zones.has(predicate.zoneId))
+          issue("Unknown scene predicate zone.");
+        if (predicate.kind === "projected_separation") {
+          required(predicate.otherObjectId);
+          if (predicate.objectId === predicate.otherObjectId)
+            issue("Projected separation needs distinct identities.");
+        }
+      }
+      const finals = new Set(execution.finalConditions.map((p) => p.id));
+      for (const requirement of execution.requirements) {
+        unique(requirement.stepIds, "requirement step IDs");
+        unique(requirement.goalPredicateIds, "requirement goal predicates");
+        if (requirement.goalPredicateIds.some((id) => !finals.has(id)))
+          issue("Unknown requirement goal predicate.");
+        if (
+          requirement.status === "covered" &&
+          (requirement.capability === "unsupported" ||
+            !requirement.goalPredicateIds.length)
+        )
+          issue(
+            "Covered claims require a supported visual capability and final predicate.",
+          );
+      }
+      for (const predicate of execution.finalConditions)
+        if (
+          !execution.requirements.some(
+            (r) =>
+              r.status === "covered" &&
+              r.goalPredicateIds.includes(predicate.id) &&
+              r.stepIds.some((id) =>
+                spec.steps
+                  .find((s) => s.id === id)
+                  ?.execution?.requiredObjectIds.includes(predicate.objectId),
+              ),
+          )
+        )
+          issue(
+            "Every final predicate needs a covered requirement relationship to its required object.",
+          );
+      for (const object of spec.components) {
+        if (object.execution?.role !== "required") continue;
+        if (
+          !spec.steps.some((s) =>
+            s.execution?.requiredObjectIds.includes(object.id),
+          ) &&
+          ![...execution.initialConditions, ...execution.finalConditions].some(
+            (p) =>
+              p.objectId === object.id ||
+              (p.kind === "projected_separation" &&
+                p.otherObjectId === object.id),
+          )
+        )
+          issue(
+            "Required objects need an explicit action or scene-condition relationship.",
+          );
+      }
+      for (const step of spec.steps)
+        if (!execution.requirements.some((r) => r.stepIds.includes(step.id)))
+          issue("Every action needs explicit requirement coverage.");
+      for (const goalId of execution.goalStepIds)
+        if (
+          !execution.requirements.some(
+            (r) => r.status === "covered" && r.stepIds.includes(goalId),
+          )
+        )
+          issue("Goal steps must have covered requirement relationships.");
+    } else if (
+      spec.components.some((c) => c.execution) ||
+      spec.steps.some((s) => s.execution)
+    ) {
+      issue("V3 object and step fields require a V3 execution contract.");
+    }
     const validateCondition = (
       condition: z.infer<typeof VisualConditionSchema>,
     ) => {

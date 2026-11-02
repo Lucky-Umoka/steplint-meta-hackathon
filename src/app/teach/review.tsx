@@ -19,7 +19,6 @@ import {
 import {
   suggestReviews,
   keyFrames,
-  narrowToVerifiableScope,
   reviewBlockers,
   reviewErrorMessage,
   type SuggestedCheck,
@@ -117,24 +116,8 @@ export default function Review({
 }) {
   const router = useRouter();
   const feedback = useFeedback();
-  // Automatic self-repair: an unverifiable goal is narrowed to its covered
-  // scope before review starts. Nothing verifiable → keep the draft and show
-  // re-record guidance instead.
-  const autoNarrowed = useMemo(() => {
-    try {
-      const unsupported = initial.procedure.execution?.requirements.filter(
-        (r) => r.status === "unsupported",
-      );
-      if (!unsupported?.length) return null;
-      return {
-        draft: narrowToVerifiableScope(initial),
-        dropped: unsupported.map((r) => r.description),
-      };
-    } catch {
-      return null;
-    }
-  }, [initial]);
-  const base = autoNarrowed?.draft ?? initial;
+  // Preserve the creator's entire intended scope, including unsupported work.
+  const base = initial;
   const [draft, setDraft] = useState(base),
     [editor, setEditor] = useState(JSON.stringify(base, null, 2));
   const [checks, setChecks] = useState<Record<string, Check>>(() =>
@@ -396,18 +379,12 @@ export default function Review({
               </li>
             ))}
           </ul>
-          {autoNarrowed && (
-            <p role="status" className="text-sm font-medium text-emerald-800">
-              Automatically kept the verifiable steps. Dropped:{" "}
-              {autoNarrowed.dropped.join("; ")}
-            </p>
-          )}
           {draft.procedure.execution.requirements.some(
             (r) => r.status === "unsupported",
           ) && (
             <p role="status" className="text-sm font-medium text-red-700">
-              Nothing verifiable to keep. Re-record showing only the visible
-              movement, or re-run analysis.
+              Required work is unsupported and remains in this draft. Correct its
+              evidence or explicitly revise the scope before approval.
             </p>
           )}
         </div>
