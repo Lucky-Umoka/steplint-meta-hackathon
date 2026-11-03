@@ -24,7 +24,8 @@ All notable changes, newest first. Versions follow semantic versioning (see CLAU
 - 696 unit tests; type-check; lint 0 errors; production build; full browser suite 45 passed, 1 expected skip.
 - Paid run 5 (Baseten): real Teach → approve → automatic Practice → first final goal verified; it then stopped on the late-reply halt fixed above.
 - Paid runs: 5 reached the first real end-to-end final goal, then hit the late-reply halt (fixed); 6 failed at drafting on the video-goal frame mismatch (fixed); 7 failed at discovery schema validation (fixed). Fixes after run 7 are verified offline only; no authorized paid run remains.
-- Not yet: a clean paid end-to-end pass after these fixes, camera switch on a real phone, physical-camera acceptance.
+- Paid run 8: Teach passed end to end on the two-client setup; Practice did not verify the goal (colour-profile exposure fragility, open).
+- Not yet: a clean paid end-to-end pass, camera switch on a real phone, physical-camera acceptance.
 
 ## 0.4.0 — 2026-11-03
 
