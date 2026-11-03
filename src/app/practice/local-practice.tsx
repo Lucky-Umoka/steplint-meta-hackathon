@@ -471,7 +471,9 @@ export default function LocalPractice() {
         !worker.current &&
         automaticWanted.current &&
         automaticSource.current &&
-        now - automaticAttemptAt.current > 3000
+        // Local setup retry (no model call): once per second, so a starting
+        // view shown only briefly is not missed between attempts.
+        now - automaticAttemptAt.current > 1000
       ) {
         automaticAttemptAt.current = now;
         handlers.current.automaticStart(image);
@@ -1063,6 +1065,7 @@ export default function LocalPractice() {
         droppedBusy: 0,
         droppedStale: 0,
       };
+      staleSince.current = null;
       if (!resuming) evidence.current = new EvidenceBuffer();
       localWorker.onmessage = (event: MessageEvent<unknown>) => {
         try {

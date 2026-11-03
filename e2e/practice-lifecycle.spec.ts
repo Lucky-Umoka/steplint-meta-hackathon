@@ -209,3 +209,16 @@ test("real-browser voice shapes drive the canonical page: narration prefix, spli
   await manual.getByRole("button", { name: "Close" }).click();
   await expect(manual).toBeHidden();
 });
+
+test("one late tracker reply is discarded without stopping Practice", async ({ page }) => {
+  await lifecycleHarness(page);
+  await page.goto("/practice");
+  await running(page);
+  await page.evaluate(() => {
+    (window as unknown as { qaLifecycle: { delayNext: boolean } }).qaLifecycle.delayNext = true;
+  });
+  await page.waitForTimeout(2500);
+  expect(await lifecycleState(page)).toBe("running");
+  await expect(page.locator("#local-practice-status")).not.toContainText("too late");
+  await expect(page.getByTestId("tracking-readiness")).toHaveAttribute("data-live", "yes");
+});

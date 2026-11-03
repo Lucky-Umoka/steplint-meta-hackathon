@@ -116,7 +116,10 @@ export async function utter(page: Page, text: string) {
  */
 export async function lifecycleHarness(
   page: Page,
-  options: { denyCamera?: boolean; findingSetup?: boolean } = {},
+  options: {
+    denyCamera?: boolean;
+    findingSetup?: boolean;
+  } = {},
 ) {
   await camera(page);
   await page.addInitScript((options) => {
@@ -124,6 +127,8 @@ export async function lifecycleHarness(
       workers: 0,
       silent: false,
       findingSetup: !!options.findingSetup,
+      /** Hold the next frame 800 ms before the tracker sees it (late reply). */
+      delayNext: false,
     };
     Object.assign(window, { qaLifecycle: qa });
     const Native = window.Worker;
@@ -157,6 +162,19 @@ export async function lifecycleHarness(
                 }),
               ),
             0,
+          );
+          return;
+        }
+        if (
+          qa.delayNext &&
+          message &&
+          typeof message === "object" &&
+          (message as { type?: string }).type === "frame"
+        ) {
+          qa.delayNext = false;
+          setTimeout(
+            () => super.postMessage(message, transfer as Transferable[]),
+            800,
           );
           return;
         }

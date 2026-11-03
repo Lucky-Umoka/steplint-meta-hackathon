@@ -834,6 +834,12 @@ export function bootstrapLocal(
       )
       .map((object) => object.id),
   );
+  // On resume, movers are expected at their last verified zones, which may
+  // rest on a stationary reference (bottle on the plate after the goal). Those
+  // regions are excluded from reference matching, as during normal tracking.
+  const expectedMovers = movers.flatMap((object) =>
+    object.expectedBox ? [object.expectedBox] : [],
+  );
   const anchors = source.objects
     .filter(
       (object) =>
@@ -843,7 +849,13 @@ export function bootstrapLocal(
       const profile = fromSource(
         groundNative(object.image, object.id, object.box, true),
       );
-      const detection = measureNative(image, frame, profile);
+      const detection = measureNative(
+        image,
+        frame,
+        profile,
+        0.8,
+        expectedMovers,
+      );
       return detection.quality === "observed" &&
         detection.box &&
         detection.score !== null &&
@@ -930,7 +942,13 @@ export function bootstrapLocal(
         y: point.y + dy,
       }));
     }
-    let detection = measureNative(image, frame, profile);
+    let detection = measureNative(
+      image,
+      frame,
+      profile,
+      0.8,
+      object.fixed ? expectedMovers : [],
+    );
     // The approved colour profile can miss on a given live frame (exposure,
     // blur); the approved dense template is then tried under the same gate.
     if (
