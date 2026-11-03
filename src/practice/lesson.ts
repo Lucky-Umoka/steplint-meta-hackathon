@@ -1,4 +1,7 @@
-import { AutomaticSetupSchema } from "../teach/automatic-setup";
+import {
+  AutomaticSetupSchema,
+  automaticSetupIssue,
+} from "../teach/automatic-setup";
 import { z } from "zod";
 import { ProcedureSpecSchema } from "../procedure/schema";
 import { LessonSchema } from "../teach/schema";
@@ -26,6 +29,11 @@ export const PracticeLessonSchema = z
         code: "custom",
         message: "Teaching source identity mismatch.",
       });
+    const setupIssue = automaticSetupIssue(
+      lesson.procedure,
+      lesson.automaticSetup,
+    );
+    if (setupIssue) ctx.addIssue({ code: "custom", message: setupIssue });
     try {
       validateSetup(lesson.procedure, lesson.zoneBindings);
     } catch (error) {

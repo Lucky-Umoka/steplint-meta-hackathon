@@ -1,11 +1,7 @@
 import { MAX_WAV_BYTES, TEACH_ANALYSIS_TIMEOUT_MS } from "../../media/limits";
 import "server-only";
 import sharp from "sharp";
-import {
-  SetupFrameSchema,
-  automaticSetupPlan,
-  bindAutomaticSetup,
-} from "../../teach/automatic-setup";
+import { SetupFrameSchema } from "../../teach/automatic-setup";
 import { z } from "zod";
 import {
   ContextSchema,
@@ -28,8 +24,14 @@ import {
 } from "./security";
 import { compileLesson, deleteLessonFile, uploadLesson } from "./pipeline";
 import { createHash, randomUUID } from "node:crypto";
+import { bindTeachVideo } from "./video-evidence";
+import { finalizeApprovedLesson } from "../../teach/finalize-approval";
 
 const UploadReferenceSchema = z.strictObject({
+  videoSha256: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   fileId: z.string().regex(/^file-[A-Za-z0-9_-]+$/),
   lesson: LessonSchema,
 });
@@ -194,12 +196,24 @@ export async function compile(request: Request) {
         selections: z.unknown().optional(),
         automatic: z.boolean().optional(),
         goal: z.string().trim().min(1).max(2000).optional(),
+        videoBase64: z.string().optional(),
         confirmed: z.literal(true),
       })
-      .parse(await readJson(request));
+      .parse(await readJson(request, MAX_TEACH_BODY));
     const upload = UploadReferenceSchema.parse(
       unseal(input.token, "upload", session),
     );
+    if (input.videoBase64) bindTeachVideo(input.videoBase64, upload);
+    if (input.videoBase64 && !input.goal)
+      throw new TeachError(
+        400,
+        "Visual action drafting requires an explicit lesson goal.",
+      );
+    if (input.automatic === true && input.goal && !input.videoBase64)
+      throw new TeachError(
+        422,
+        "Visual Teach drafting requires the reviewed video. Refresh Teach and upload the clip before analysis.",
+      );
     // Validate marks before creating a stream or spending on provider requests.
     const { validateSelections } = await import("../../teach/schema");
     if (
@@ -232,7 +246,9 @@ export async function compile(request: Request) {
             input.automatic === true ? undefined : input.selections,
             (message) => send({ type: "progress", message }),
             signal,
-            input.goal ? { goal: input.goal } : undefined,
+            input.goal
+              ? { goal: input.goal, videoBase64: input.videoBase64 }
+              : undefined,
           );
           send({
             type: "draft",
@@ -288,6 +304,8 @@ export async function approve(request: Request) {
         draft: z.unknown(),
         review: z.unknown(),
         setupFrames: z.array(SetupFrameSchema).min(1).max(6).optional(),
+        /** Browser-reported rehearsal; bound only if its revision matches. */
+        rehearsal: z.unknown().optional(),
       })
       .parse(await readJson(request));
     const context = ContextSchema.parse(unseal(input.token, "review", session));
@@ -327,16 +345,18 @@ export async function approve(request: Request) {
             );
         }),
       );
-    const approved =
-      input.setupFrames && reviewed.procedure.execution
-        ? {
-            ...reviewed,
-            automaticSetup: bindAutomaticSetup(
-              automaticSetupPlan(reviewed.procedure, reviewed.review, context),
-              input.setupFrames,
-            ),
-          }
-        : reviewed;
+    const v3 = reviewed.procedure.execution?.schemaVersion === 3;
+    if (v3 && !input.setupFrames)
+      throw new TeachError(
+        422,
+        "Automatic setup frames are required to approve this lesson. Frame extraction did not complete; keep the review open and approve again.",
+      );
+    const approved = finalizeApprovedLesson(
+      reviewed,
+      context,
+      input.setupFrames,
+      input.rehearsal,
+    );
     const digest = createHash("sha256")
       .update(JSON.stringify(approved))
       .digest("hex");

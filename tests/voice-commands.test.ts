@@ -54,7 +54,9 @@ describe("commandBody", () => {
   it("requires the activation prefix", () => {
     expect(commandBody("StepLint, stop recording")).toBe("stop recording");
     expect(commandBody("stop recording")).toBe(null);
-    expect(commandBody("Please tell StepLint to stop")).toBe(null);
+    // Owner fix 2026-11-03: the last wake word anywhere starts the command,
+    // because continuous recognition prepends earlier speech to the result.
+    expect(commandBody("Please tell StepLint to stop")).toBe("to stop");
     expect(commandBody("stop steplint")).toBe(null);
   });
 });
@@ -65,8 +67,9 @@ describe("matchCommand", () => {
       "start-recording",
     );
   });
-  it("rejects near-misses instead of fuzzy matching", () => {
-    expect(matchCommand("start recording now", COMMANDS)).toBe(null);
+  it("finds a whole-word phrase inside a sentence, never a partial word", () => {
+    expect(matchCommand("start recording now", COMMANDS)?.id).toBe("start-recording");
+    expect(matchCommand("restarting", COMMANDS)).toBe(null);
     expect(matchCommand("stop", COMMANDS)?.id).toBe("stop-recording");
   });
 });
@@ -163,8 +166,8 @@ it.each([
 it("explains ignored speech without inventing an executed action", async () => {
   const { commandFeedback } = await import("../src/voice/commands");
   expect(
-    commandFeedback("start recording", { kind: "ignored" }, COMMANDS, false),
-  ).toContain("Begin with");
+    commandFeedback("open the window", { kind: "ignored" }, COMMANDS, false),
+  ).toContain("No command recognized");
   expect(
     commandFeedback(
       "Guide, open the door",

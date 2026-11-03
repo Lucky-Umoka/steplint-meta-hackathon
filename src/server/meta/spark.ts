@@ -3,14 +3,29 @@ import OpenAI from "openai";
 import { z } from "zod";
 import { createMetaClient, SPARK_MODEL } from "./client";
 import { TeachError } from "../teach/security";
+import { decodeTeachVideo } from "../teach/video-evidence";
+import { sparkCompletionLimit } from "./spark-limits";
 
 export class SparkError extends TeachError {
+  /** Server-only candidate for the bounded correction path; never serialized. */
+  readonly candidateText?: string;
   constructor(
     public readonly code: string,
     message: string,
     status = 502,
+    public readonly tokenUsage?: {
+      outputTokens: number | null;
+      reasoningTokens: number | null;
+      answerCharacters: number;
+    },
+    candidateText?: string,
   ) {
     super(status, message);
+    if (candidateText !== undefined)
+      Object.defineProperty(this, "candidateText", {
+        value: candidateText,
+        enumerable: false,
+      });
   }
 }
 export async function sparkStructured<T>({
@@ -23,6 +38,7 @@ export async function sparkStructured<T>({
   maxTokens,
   signal,
   metaClient,
+  metaVideoFileId,
 }: {
   instructions: string;
   text: string;
@@ -34,6 +50,7 @@ export async function sparkStructured<T>({
   signal?: AbortSignal;
   /** Existing server transport injection, used by the compiler and offline tests. */
   metaClient?: OpenAI;
+  metaVideoFileId?: string;
 }) {
   const provider = process.env.SPARK_PROVIDER || "meta";
   if (provider !== "meta" && provider !== "baseten")
@@ -47,7 +64,7 @@ export async function sparkStructured<T>({
     instructions.length > 20000 ||
     !Number.isInteger(maxTokens) ||
     maxTokens < 1 ||
-    maxTokens > 12000 ||
+    maxTokens > sparkCompletionLimit(provider) ||
     images.length > 8 ||
     images.some(
       (image) =>
@@ -60,12 +77,18 @@ export async function sparkStructured<T>({
       "Spark input exceeds supported bounds.",
       400,
     );
-  if (videoBase64)
-    throw new SparkError(
-      "unsupported_video",
-      "Use bounded image frames; video input is not enabled for this adapter.",
-      400,
-    );
+  if (videoBase64) {
+    decodeTeachVideo(videoBase64);
+    if (
+      provider === "meta" &&
+      !/^file-[A-Za-z0-9_-]+$/.test(metaVideoFileId ?? "")
+    )
+      throw new SparkError(
+        "invalid_input",
+        "Meta video drafting requires the matching uploaded file reference.",
+        400,
+      );
+  }
   const modelId =
     provider === "baseten" ? "meta-models/muse-spark-open-1026" : SPARK_MODEL;
   let output: string;
@@ -85,35 +108,52 @@ export async function sparkStructured<T>({
         maxRetries: 0,
         timeout: 120000,
       });
-      const response = await client.chat.completions.create(
-        {
-          model: modelId,
-          max_tokens: maxTokens,
-          messages: [
-            {
-              role: "system",
-              content: `${instructions}\nReturn ONLY raw JSON, with no markdown or commentary, matching this schema: ${JSON.stringify(z.toJSONSchema(schema))}`,
-            },
-            {
-              role: "user",
-              content: [
-                { type: "text", text },
-                ...images.map((url) => ({
-                  type: "image_url" as const,
-                  image_url: { url },
-                })),
+      // Baseten documents video_url; OpenAI's generated Chat types omit that
+      // provider extension. Use the SDK's typed raw POST, without type casts.
+      const response =
+        await client.post<OpenAI.Chat.Completions.ChatCompletion>(
+          "/chat/completions",
+          {
+            body: {
+              model: modelId,
+              max_tokens: maxTokens,
+              messages: [
+                {
+                  role: "system",
+                  content: `${instructions}\nReturn ONLY raw JSON, with no markdown or commentary, matching this schema: ${JSON.stringify(z.toJSONSchema(schema))}`,
+                },
+                {
+                  role: "user",
+                  content: [
+                    { type: "text", text },
+                    ...images.map((url) => ({
+                      type: "image_url" as const,
+                      image_url: { url },
+                    })),
+                    ...(videoBase64
+                      ? [{ type: "video_url", video_url: { url: videoBase64 } }]
+                      : []),
+                  ],
+                },
               ],
+              // Muse Spark Open always reasons; Baseten documents no depth control.
             },
-          ],
-          // reasoning_effort omitted until this hackathon deployment is live-tested.
-        },
-        { signal },
-      );
+            signal,
+          },
+        );
       const choice = response.choices[0];
       if (choice?.finish_reason === "length")
         throw new SparkError(
           "truncated_output",
           "Spark output exhausted its token budget. No JSON was parsed.",
+          502,
+          {
+            outputTokens: response.usage?.completion_tokens ?? null,
+            reasoningTokens:
+              response.usage?.completion_tokens_details?.reasoning_tokens ??
+              null,
+            answerCharacters: choice.message.content?.length ?? 0,
+          },
         );
       if (choice?.finish_reason !== "stop" || !choice.message.content)
         throw new SparkError(
@@ -132,21 +172,30 @@ export async function sparkStructured<T>({
           instructions,
           max_output_tokens: maxTokens,
           reasoning: { effort: "low" },
-          input: images.length
-            ? [
-                {
-                  role: "user",
-                  content: [
-                    { type: "input_text", text },
-                    ...images.map((image_url) => ({
-                      type: "input_image" as const,
-                      image_url,
-                      detail: "auto" as const,
-                    })),
-                  ],
-                },
-              ]
-            : text,
+          input:
+            images.length || videoBase64
+              ? [
+                  {
+                    role: "user",
+                    content: [
+                      { type: "input_text", text },
+                      ...images.map((image_url) => ({
+                        type: "input_image" as const,
+                        image_url,
+                        detail: "auto" as const,
+                      })),
+                      ...(videoBase64
+                        ? [
+                            {
+                              type: "input_file" as const,
+                              file_id: metaVideoFileId!,
+                            },
+                          ]
+                        : []),
+                    ],
+                  },
+                ]
+              : text,
           text: {
             format: {
               type: "json_schema",
@@ -176,6 +225,21 @@ export async function sparkStructured<T>({
     }
   } catch (error) {
     if (error instanceof SparkError) throw error;
+    if (error instanceof OpenAI.APIConnectionTimeoutError)
+      throw new SparkError(
+        "timeout",
+        `${provider} Spark request timed out. No retry was attempted.`,
+      );
+    if (error instanceof OpenAI.APIUserAbortError)
+      throw new SparkError(
+        "request_cancelled",
+        `${provider} Spark request was cancelled. No retry was attempted.`,
+      );
+    if (error instanceof OpenAI.APIConnectionError)
+      throw new SparkError(
+        "connection_error",
+        `${provider} Spark could not connect. No retry was attempted.`,
+      );
     if (
       error instanceof OpenAI.APIError &&
       (error.status === 401 || error.status === 403)
@@ -184,6 +248,24 @@ export async function sparkStructured<T>({
         "auth_failure",
         `${provider} Spark authentication failed. Check server credentials.`,
       );
+    if (error instanceof OpenAI.APIError && error.status !== undefined) {
+      const status = error.status;
+      if (status === 429)
+        throw new SparkError(
+          "rate_limited",
+          `${provider} Spark rate limit reached (HTTP 429). No retry was attempted.`,
+          429,
+        );
+      if (status === 400 || status === 422)
+        throw new SparkError(
+          "request_rejected",
+          `${provider} Spark rejected the request (HTTP ${status}). Check the selected provider and its supported request/schema format. No retry or fallback was attempted.`,
+        );
+      throw new SparkError(
+        "provider_error",
+        `${provider} Spark request failed (HTTP ${status}). No retry or provider fallback was attempted.`,
+      );
+    }
     throw new SparkError(
       "provider_error",
       `${provider} Spark request failed. No retry or provider fallback was attempted.`,
@@ -194,11 +276,21 @@ export async function sparkStructured<T>({
       "invalid_model_data",
       "Spark JSON exceeds the response bound.",
     );
+  // A single whole-response JSON fence is presentation, not a JSON repair.
+  // Prose, multiple payloads and malformed/truncated JSON remain rejected.
+  const fenced = /^\s*```json\s*\r?\n([\s\S]*?)\r?\n```\s*$/i.exec(output);
+  const jsonText = fenced ? fenced[1] : output;
   let raw: unknown;
   try {
-    raw = JSON.parse(output);
+    raw = JSON.parse(jsonText);
   } catch {
-    throw new SparkError("invalid_model_data", "Spark returned invalid JSON.");
+    throw new SparkError(
+      "invalid_model_data",
+      "Spark returned invalid JSON.",
+      502,
+      undefined,
+      output,
+    );
   }
   const parsed = schema.safeParse(raw);
   if (!parsed.success)
@@ -206,5 +298,13 @@ export async function sparkStructured<T>({
       "schema_validation_failed",
       "Spark JSON failed procedure schema validation.",
     );
-  return { data: parsed.data, diagnostic: { provider, modelId, outputTokens } };
+  return {
+    data: parsed.data,
+    diagnostic: {
+      provider,
+      modelId,
+      outputTokens,
+      visualInput: videoBase64 ? "video" : images.length ? "images" : "none",
+    },
+  };
 }

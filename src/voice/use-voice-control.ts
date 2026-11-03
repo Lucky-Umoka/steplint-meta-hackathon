@@ -2,7 +2,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   decideDisposition,
+  commandBody,
   commandFeedback,
+  isWakeOnly,
   requestConfirmation,
   type CommandDisposition,
   type PendingConfirmation,
@@ -16,6 +18,16 @@ export type VoiceStatus =
   | "unsupported"
   | "denied"
   | "error";
+/** Explicit command handling stages (Phase 4). */
+export type CommandStage =
+  | "received"
+  | "accepted"
+  | "rejected"
+  | "dispatched"
+  | "completed"
+  | "failed";
+/** A host action may confirm its real outcome asynchronously. */
+export type ActionOutcome = { ok: boolean; message: string };
 export type VoiceEvent = {
   at: number;
   source: "you" | "steplint" | "verdict" | "control" | "guidance";
@@ -58,13 +70,25 @@ export function useVoiceControl({
   paused,
   onAction,
   onEvent,
+  halfDuplex,
+  recentSpeech,
+  onInterruptSpeech,
 }: {
   commands: VoiceCommand[];
   enabled: boolean;
   /** Host-driven pause (e.g. while a confirmation dialog owns the mic). */
   paused?: boolean;
-  onAction: (id: string, disposition: CommandDisposition) => void | boolean;
+  onAction: (
+    id: string,
+    disposition: CommandDisposition,
+  ) => void | boolean | Promise<ActionOutcome>;
   onEvent?: (event: VoiceEvent) => void;
+  /** Valid commands interrupt app speech instead of being dropped. */
+  halfDuplex?: boolean;
+  /** What the app said recently, so its own speech is never a command. */
+  recentSpeech?: () => string[];
+  /** Stop the app's speech before handling an interrupting command. */
+  onInterruptSpeech?: () => void;
 }) {
   const [status, setStatus] = useState<VoiceStatus>("off");
   const [lastHeard, setLastHeard] = useState("");
@@ -77,12 +101,18 @@ export function useVoiceControl({
   const [lastDisposition, setLastDisposition] =
     useState<CommandDisposition | null>(null);
   const [pending, setPending] = useState<PendingConfirmation | null>(null);
+  const [stage, setStage] = useState<CommandStage | null>(null);
   const live = useRef({
     commands,
     enabled,
     paused: paused ?? false,
     onAction,
     onEvent,
+    halfDuplex: halfDuplex ?? false,
+    recentSpeech,
+    onInterruptSpeech,
+    /** Commands dispatched and not yet completed/failed. */
+    inFlight: new Set<string>(),
     lastFinal: "",
     lastFinalAt: 0,
     pending: null as PendingConfirmation | null,
@@ -94,6 +124,9 @@ export function useVoiceControl({
     live.current.paused = paused ?? false;
     live.current.onAction = onAction;
     live.current.onEvent = onEvent;
+    live.current.halfDuplex = halfDuplex ?? false;
+    live.current.recentSpeech = recentSpeech;
+    live.current.onInterruptSpeech = onInterruptSpeech;
   });
   const dispatch = useCallback((text: string) => {
     const L = live.current;
@@ -103,6 +136,7 @@ export function useVoiceControl({
     const now = Date.now();
     const speaking =
       typeof window !== "undefined" && !!window.speechSynthesis?.speaking;
+    setStage("received");
     const decision = decideDisposition({
       text,
       lastFinal: now - L.lastFinalAt < 1500 ? L.lastFinal : "",
@@ -110,6 +144,8 @@ export function useVoiceControl({
       commands: L.commands,
       speaking,
       now,
+      halfDuplex: L.halfDuplex,
+      recentSpeech: L.recentSpeech?.(),
     });
     // Rejected/ignored speech never consumed an action. Do not suppress the
     // user's immediate retry after narration ends or a command becomes valid.
@@ -122,7 +158,22 @@ export function useVoiceControl({
     }
     setLastDisposition(decision.kind);
     setFeedback(commandFeedback(text, decision, L.commands, speaking));
+    if (decision.kind === "ignored" || decision.kind === "rejected")
+      setStage("rejected");
     if (decision.kind === "ignored") return;
+    // Half-duplex: a valid command stops our own speech, then runs.
+    if (L.halfDuplex && speaking) L.onInterruptSpeech?.();
+    if (
+      L.halfDuplex &&
+      decision.kind === "executed" &&
+      L.inFlight.has(decision.command.id)
+    ) {
+      setStage("rejected");
+      setFeedback(
+        `“${decision.command.phrases[0]}” is already in progress; no second action was applied.`,
+      );
+      return;
+    }
     if (decision.kind === "needs-confirmation") {
       L.pending = requestConfirmation(decision.command.id, now);
       setPending(L.pending);
@@ -132,8 +183,33 @@ export function useVoiceControl({
       setPending(null);
     }
     try {
+      if (decision.kind === "executed") setStage("accepted");
       const applied = L.onAction(decision.command.id, decision.kind);
+      if (applied instanceof Promise && decision.kind === "executed") {
+        const id = decision.command.id;
+        L.inFlight.add(id);
+        setStage("dispatched");
+        setFeedback(`Accepted: ${decision.command.phrases[0]}. Working on it…`);
+        applied
+          .then((outcome) => {
+            setStage(outcome.ok ? "completed" : "failed");
+            setFeedback(outcome.message);
+            if (!outcome.ok) setLastDisposition("rejected");
+          })
+          .catch(() => {
+            setStage("failed");
+            setLastDisposition("rejected");
+            setFeedback(
+              "The command could not be completed. Use the on-screen control and check the current state.",
+            );
+          })
+          .finally(() => L.inFlight.delete(id));
+        return;
+      }
+      if (decision.kind === "executed" && applied !== false)
+        setStage("completed");
       if (applied === false && decision.kind === "executed") {
+        setStage("failed");
         L.lastFinal = "";
         L.lastFinalAt = 0;
         setLastDisposition("rejected");
@@ -144,6 +220,7 @@ export function useVoiceControl({
     } catch {
       L.lastFinal = "";
       L.lastFinalAt = 0;
+      setStage("failed");
       setLastDisposition("rejected");
       setFeedback(
         "The command could not be applied. Use the on-screen control and check the current state.",
@@ -196,11 +273,25 @@ export function useVoiceControl({
       if (gen === live.current.generation && !session.stopped)
         setStatus("listening");
     };
+    // Chrome finalizes at a pause, so "Guide, … pause" can arrive as two
+    // final results; a wake-word-only result is joined with the next one.
+    let heldWake: { text: string; at: number } | null = null;
     rec.onresult = (event) => {
       if (gen !== live.current.generation || session.stopped) return;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        if (result.isFinal) dispatch(result[0].transcript);
+        if (!result.isFinal) continue;
+        const text = result[0].transcript;
+        if (isWakeOnly(text)) {
+          heldWake = { text, at: Date.now() };
+          continue;
+        }
+        const joined =
+          heldWake && Date.now() - heldWake.at < 3000 && !commandBody(text)
+            ? `${heldWake.text} ${text}`
+            : text;
+        heldWake = null;
+        dispatch(joined);
       }
     };
     rec.onerror = (event) => {
@@ -289,6 +380,7 @@ export function useVoiceControl({
     restart,
     availableCommands: commands.map((c) => `Guide, ${c.phrases[0]}`),
     lastDisposition,
+    commandStage: stage,
     pending,
     confirmWindowSec: speakTimeLeft,
   };

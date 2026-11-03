@@ -1,0 +1,84 @@
+# STEPLINT — PHASE 0: FINAL REPOSITORY AUDIT
+
+We are preparing StepLint for the Meta AI Developer Hackathon submission.
+
+Our priority is a working physical-world demonstration, not architectural perfection.
+
+Before writing or modifying any code, inspect the current repository and report the existing implementation.
+
+## 1. Inspect these areas
+
+- Practice interface and camera lifecycle.
+- Practice tracker and object identity recovery.
+- Deterministic verifier and step-completion logic.
+- Gideon avatar, voice, and feedback system.
+- Existing Felicity or recovery logic, if any.
+- Existing API routes for recovery and AI reasoning.
+- Existing Baseten adapter and Muse Spark Open configuration.
+- Teach interface and demonstration upload.
+- Teach compilation pipeline.
+- Muse Voice Transcribe integration.
+- SAM 3.1 integration.
+- V3 procedure contract, evidence, approval, and persistence.
+- Teach-to-Practice handoff.
+- Existing tests and deployment configuration.
+
+Pay particular attention to:
+
+- `src/app/teach/local-teach.tsx`
+- `src/app/api/teach/compile`
+- `src/server/teach/`
+- `src/app/practice/local-practice.tsx`
+- `src/practice/`
+- `src/procedure/verifier.ts`
+- `src/components/GuideAvatar.tsx`
+
+These are starting points, not permission to assume the implementation is unchanged. Discover the actual current paths.
+
+## 2. Identify existing functionality
+
+Create a report with four categories:
+
+A. Already implemented and working.
+
+B. Implemented but not sufficiently tested.
+
+C. Missing or broken.
+
+D. Features that should not be touched because they already work.
+
+## 3. Identify the smallest implementation plan
+
+Recommend the minimum code changes required to deliver:
+
+1. Immediate local Gideon warnings.
+2. Background Felicity recovery advice.
+3. Stale-response protection.
+4. Object occlusion and reacquisition handling.
+5. Teach procedure quality audit.
+6. Complete Teach-to-Practice demonstration.
+
+## 4. Important restrictions
+
+- Do not write or modify code.
+- Do not install packages.
+- Do not change model providers.
+- Do not change model identifiers.
+- Do not make live paid model calls.
+- Do not commit, push, or deploy.
+
+Preserve the existing Muse Spark Open integration through Baseten. Read its actual model identifier from the code or environment configuration. Do not invent one.
+
+## 5. Final report
+
+Give me:
+
+- Existing architecture.
+- Features already working.
+- Critical remaining bugs.
+- Files that need modification.
+- Recommended implementation order.
+- Existing test commands.
+- Risks that could prevent the demo from working.
+
+Be concise and specific. Do not propose a major rewrite.

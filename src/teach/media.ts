@@ -37,6 +37,27 @@ export async function inspectLessonVideo(video: Blob): Promise<LessonMedia> {
     input.dispose();
   }
 }
+/** Reuse the exact reviewed, bounded clip; audio is already transcribed separately. */
+export function teachVideoDataUrl(video: Blob): Promise<string> {
+  if (video.size > MAX_TEACH_VIDEO)
+    return Promise.reject(
+      Error(
+        "Visual drafting requires the reviewed compatible MP4 within the Teach video budget.",
+      ),
+    );
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () =>
+      typeof reader.result === "string"
+        ? resolve(reader.result)
+        : reject(Error("Could not read reviewed video evidence."));
+    reader.onerror = () =>
+      reject(Error("Could not read reviewed video evidence."));
+    // Prepared media has already passed byte/codec inspection. File MIME metadata
+    // can be empty or generic; label the same bytes without re-encoding them.
+    reader.readAsDataURL(new Blob([video], { type: "video/mp4" }));
+  });
+}
 export function validateLessonAudio(wav: Uint8Array, media: LessonMedia) {
   const info = inspectWav(wav);
   if (Math.abs(info.durationSeconds - media.info.durationSeconds) > 0.5)

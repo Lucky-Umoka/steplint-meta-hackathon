@@ -30,7 +30,7 @@ export default function GestureControls({
   const [rect, setRect] = useState<DOMRect | null>(null);
   useEffect(() => {
     const update = () =>
-      setRect(videoRef.current?.getBoundingClientRect() ?? null);
+      setRect(videoRef.current ? shownVideoRect(videoRef.current) : null);
     update();
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
@@ -116,5 +116,23 @@ export default function GestureControls({
         </details>
       )}
     </div>
+  );
+}
+
+/** The picture's own box inside an object-contain video (excludes black bars). */
+function shownVideoRect(video: HTMLVideoElement): DOMRect {
+  const box = video.getBoundingClientRect();
+  if (!video.videoWidth || !video.videoHeight) return box;
+  const scale = Math.min(
+    box.width / video.videoWidth,
+    box.height / video.videoHeight,
+  );
+  const width = video.videoWidth * scale,
+    height = video.videoHeight * scale;
+  return new DOMRect(
+    box.left + (box.width - width) / 2,
+    box.top + (box.height - height) / 2,
+    width,
+    height,
   );
 }

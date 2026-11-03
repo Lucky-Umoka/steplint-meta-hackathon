@@ -44,6 +44,7 @@ self.onmessage = (event: MessageEvent<unknown>) => {
         generation: input.generation,
         measurements: trackingMeasurements(state),
         translation: initialized.translation,
+        zoneTranslations: initialized.zoneTranslations,
       });
       return;
     }
@@ -58,10 +59,15 @@ self.onmessage = (event: MessageEvent<unknown>) => {
     }
     if (!state) throw Error("Calibrate before tracking.");
     const started = performance.now(),
-      result = trackLocal(input.image, state);
+      result = trackLocal(input.image, state, {
+        nowMs: input.timestampMs,
+        frameId: input.frameId,
+        watch: input.watch,
+      });
     send({
       type: "tracked",
       generation: input.generation,
+      watchRevision: input.watchRevision,
       timestampMs: input.timestampMs,
       frameId: input.frameId,
       processingMs: performance.now() - started,

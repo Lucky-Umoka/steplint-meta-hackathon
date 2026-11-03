@@ -25,6 +25,9 @@ export const LOCAL_PRACTICE_COMMANDS: VoiceCommand[] = [
     id: "pause-practice",
     phrases: ["pause", "pause practice", "stop", "stop practice"],
   },
-  { id: "repeat", phrases: ["repeat", "repeat step"] },
+  {
+    id: "repeat",
+    phrases: ["repeat", "repeat step", "what next", "whats next", "what should i do next", "what now"],
+  },
   { id: "stop-speaking", phrases: ["stop speaking"] },
 ];

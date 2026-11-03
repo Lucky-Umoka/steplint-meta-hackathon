@@ -62,6 +62,8 @@ export class GestureEngine {
   private palmFired = false;
   private lastClickAt = -Infinity;
   private pinched = false;
+  /** Where the pointer was aimed before the fingers closed (pinch moves the tip). */
+  private aim: { x: number; y: number } | null = null;
   lastIgnored: string | null = null;
   constructor(
     private zone: GestureZone = DEFAULT_ZONE,
@@ -73,6 +75,7 @@ export class GestureEngine {
     this.palmFired = false;
     this.lastClickAt = -Infinity;
     this.pinched = false;
+    this.aim = null;
     this.lastIgnored = null;
   }
   observe(reading: GestureReading): GestureAction {
@@ -137,7 +140,8 @@ export class GestureEngine {
           this.pinched = true;
           if (reading.at - this.lastClickAt >= this.opts.clickCooldownMs) {
             this.lastClickAt = reading.at;
-            return { kind: "click", x, y };
+            const target = this.aim ?? { x, y };
+            return { kind: "click", x: target.x, y: target.y };
           }
           return { kind: "none" };
         }
@@ -152,6 +156,7 @@ export class GestureEngine {
     // point: track the pointer; a held pinch already fired above.
     this.pinchSince = null;
     this.pinched = false;
+    this.aim = { x, y };
     return { kind: "move", x, y };
   }
   private resetHold() {
@@ -159,5 +164,6 @@ export class GestureEngine {
     this.pinched = false;
     this.palmSince = null;
     this.palmFired = false;
+    this.aim = null;
   }
 }

@@ -11,6 +11,30 @@ const image = z
     (p) => p.data.length === p.width * p.height * 4,
     "Invalid frame byte count.",
   );
+const objectId = z.string().min(1).max(100);
+const WatchSchema = z
+  .strictObject({
+    required: z.array(objectId).max(4),
+    optional: z.array(objectId).max(4),
+  })
+  .refine(
+    (w) =>
+      new Set([...w.required, ...w.optional]).size ===
+      w.required.length + w.optional.length,
+    "Watch-set identities must be distinct.",
+  );
+export const IdentityEventSchema = z.strictObject({
+  objectId: z.string(),
+  status: z.enum([
+    "tracked",
+    "occluded",
+    "reacquiring",
+    "needs_user_view",
+    "dormant",
+    "acquiring",
+  ]),
+  reason: z.string().max(300),
+});
 export const LocalWorkerInputSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("bootstrap"),
@@ -27,6 +51,10 @@ export const LocalWorkerInputSchema = z.discriminatedUnion("type", [
             fixed: z.boolean(),
             expectedBox: BoxSchema.optional(),
             image,
+            /** Must be found now (an active required identity). Default true. */
+            required: z.boolean().optional(),
+            /** In the current watch set; false = dormant later object. Default true. */
+            active: z.boolean().optional(),
           }),
         )
         .min(1)
@@ -57,6 +85,9 @@ export const LocalWorkerInputSchema = z.discriminatedUnion("type", [
     generation,
     timestampMs: z.number().finite().nonnegative(),
     frameId: z.string().min(1).max(100),
+    /** Watch-set revision; replies carrying an older revision are stale. */
+    watchRevision: z.number().int().nonnegative().optional(),
+    watch: WatchSchema.optional(),
   }),
 ]);
 export const TrackingMeasurementSchema = z.strictObject({
@@ -74,6 +105,11 @@ export const LocalWorkerReplySchema = z.discriminatedUnion("type", [
     translation: z
       .strictObject({ x: z.number().finite(), y: z.number().finite() })
       .optional(),
+    /** Per approved zone (bindings order): each follows its own reference. */
+    zoneTranslations: z
+      .array(z.strictObject({ x: z.number().finite(), y: z.number().finite() }))
+      .max(100)
+      .optional(),
   }),
   z.object({ type: z.literal("error"), generation, message: z.string() }),
   z.object({
@@ -83,6 +119,10 @@ export const LocalWorkerReplySchema = z.discriminatedUnion("type", [
     frameId: z.string(),
     processingMs: z.number().finite().nonnegative(),
     detections: z.array(DetectionSchema).max(4),
+    /** Supporting identities, reported separately from required evidence. */
+    optionalDetections: z.array(DetectionSchema).max(4).default([]),
+    watchRevision: z.number().int().nonnegative().optional(),
+    identityEvents: z.array(IdentityEventSchema).max(16).default([]),
     calibrationValid: z.boolean(),
     partialIdentities: z
       .array(

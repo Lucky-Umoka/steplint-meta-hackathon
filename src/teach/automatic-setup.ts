@@ -48,7 +48,14 @@ export function automaticSetupPlan(
   const sceneFrame = review.steps[0].fromFrame;
   const video = context.lesson.media.info.video;
   if (!video) throw Error("The source video dimensions are missing.");
-  const objects = procedure.components.map((component) => {
+  // Role-aware (Phase 3): V3 irrelevant objects are never runtime setup;
+  // supporting objects are included only when reliable source appearance
+  // exists; required objects (and every V2 object) stay mandatory.
+  const role = (component: ProcedureSpec["components"][number]) =>
+    procedure.execution?.schemaVersion === 3
+      ? (component.execution?.role ?? "required")
+      : "required";
+  const setupObject = (component: ProcedureSpec["components"][number]) => {
     const first = procedure.steps.find(
       (step) => step.condition.componentId === component.id,
     );
@@ -56,7 +63,22 @@ export function automaticSetupPlan(
     const selection = context.selections.find(
       (item) => item.id === component.id,
     );
-    if (fixed && selection?.mark.kind === "point") {
+    // Stationary references are grounded from their SAM-tracked extent when a
+    // trusted sample exists: a small patch around a discovery point on a plain
+    // plate or lid has too little detail to match live, so automatic startup
+    // could never align (live E2E run 1). The point patch is only a fallback.
+    const trustedFixed = fixed
+      ? (context.tracking
+          .find((track) => track.componentId === component.id)
+          ?.samples.filter(
+            (sample) =>
+              sample.confidence !== null &&
+              sample.confidence >= 0.9 &&
+              sample.box.right - sample.box.left >= 0.02 &&
+              sample.box.bottom - sample.box.top >= 0.02,
+          ) ?? [])
+      : [];
+    if (fixed && selection?.mark.kind === "point" && !trustedFixed.length) {
       const x = selection.mark.x / video.width,
         y = selection.mark.y / video.height;
       return {
@@ -80,17 +102,60 @@ export function automaticSetupPlan(
         ?.samples.filter(
           (sample) => sample.confidence !== null && sample.confidence >= 0.9,
         ) ?? [];
-    const sample = fixed
-      ? [...samples].sort(
+    const start = fixed ? undefined : samples.find((s) => s.frame === frame);
+    // A mover's identity view: an approved reference frame before its action
+    // where it already sits at the same starting position, so the template is
+    // not captured with the demonstrator's hand on it (live E2E run 1). The
+    // action-start frame is the fallback.
+    const centre = (b: {
+      left: number;
+      right: number;
+      top: number;
+      bottom: number;
+    }) => [(b.left + b.right) / 2, (b.top + b.bottom) / 2];
+    const identityView =
+      start && component.execution?.referenceFrames.length
+        ? samples
+            .filter(
+              (s) =>
+                s.frame < frame &&
+                component.execution!.referenceFrames.includes(s.frame) &&
+                Math.hypot(
+                  centre(s.box)[0] - centre(start.box)[0],
+                  centre(s.box)[1] - centre(start.box)[1],
+                ) <= 0.02,
+            )
+            .sort((a, b) => a.frame - b.frame)[0]
+        : undefined;
+    // Stationary references: their earliest approved reference view (before
+    // the demonstrator touches anything), else the sample nearest the scene.
+    const fixedView = fixed
+      ? (samples
+          .filter((s) => component.execution?.referenceFrames.includes(s.frame))
+          .sort((a, b) => a.frame - b.frame)[0] ??
+        [...samples].sort(
           (a, b) => Math.abs(a.frame - frame) - Math.abs(b.frame - frame),
-        )[0]
-      : samples.find((sample) => sample.frame === frame);
+        )[0])
+      : undefined;
+    const sample = fixed ? fixedView : (identityView ?? start);
     if (!sample)
       throw Error(
         `No reliable source appearance for ${component.description}. Review its starting view.`,
       );
     return { id: component.id, fixed, frame: sample.frame, box: sample.box };
-  });
+  };
+  const objects = procedure.components
+    .filter((component) => role(component) !== "irrelevant")
+    .flatMap((component) => {
+      try {
+        return [setupObject(component)];
+      } catch (error) {
+        if (role(component) === "supporting") return [];
+        throw error;
+      }
+    });
+  if (!objects.length)
+    throw Error("No required object has a reliable source appearance.");
   return {
     sceneFrame,
     goalFrame: Math.max(...review.steps.map((step) => step.toFrame)),
@@ -122,4 +187,34 @@ export function bindAutomaticSetup(
     objects: plan.objects,
     frames,
   });
+}
+/**
+ * V3 lessons start Practice automatically from reviewed Teach references, so
+ * setup is mandatory and must describe exactly this procedure: one entry per
+ * component and an image for the scene and every object reference frame.
+ */
+export function automaticSetupIssue(
+  procedure: ProcedureSpec,
+  setup: AutomaticSetup | undefined,
+): string | null {
+  if (procedure.execution?.schemaVersion !== 3) return null;
+  if (!setup)
+    return "Automatic setup is missing: the reviewed source frames were not extracted. Return to Teach review and approve or rehearse again.";
+  const ids = new Set(setup.objects.map((object) => object.id));
+  const role = (c: ProcedureSpec["components"][number]) =>
+    c.execution?.role ?? "required";
+  const frames = new Set(setup.frames.map((frame) => frame.frame));
+  if (
+    ids.size !== setup.objects.length ||
+    procedure.components.some(
+      (c) =>
+        (role(c) === "required" && !ids.has(c.id)) ||
+        (role(c) === "irrelevant" && ids.has(c.id)),
+    ) ||
+    [...ids].some((id) => !procedure.components.some((c) => c.id === id)) ||
+    !frames.has(setup.sceneFrame) ||
+    setup.objects.some((object) => !frames.has(object.frame))
+  )
+    return "Automatic setup does not match this procedure's objects and reviewed frames. Return to Teach review.";
+  return null;
 }

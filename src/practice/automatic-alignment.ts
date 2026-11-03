@@ -117,28 +117,39 @@ export function chooseLiveWorkspace(image: Pixels, excluded: Box[]) {
     "Show a clear stationary feature outside the movement area so camera motion can be monitored.",
   );
 }
+/** How far one stationary reference may be placed from the shared shift. */
+export const MAX_INDEPENDENT_PLACEMENT = 0.1;
+/**
+ * Camera shift from approved stationary references matched in the live view.
+ * Each anchor already passed the approved template match (competing-candidate
+ * separation, 0.9 score, no rescaling). Owner decision 2026-11-03: references
+ * are placed by hand, so each approved zone follows its own reference; the
+ * shared camera shift is their median. A reference further than
+ * MAX_INDEPENDENT_PLACEMENT from that shift blocks with an instruction
+ * (likely rotation, zoom or a badly placed object). Null when none matched.
+ */
 export function alignFixedObjects(anchors: { source: Box; observed: Box }[]) {
-  if (anchors.length < 2) return null;
-  const candidates = anchors.map((anchor) => ({
-    ...anchor,
+  if (!anchors.length) return null;
+  const shifts = anchors.map((anchor) => ({
     dx: center(anchor.observed).x - center(anchor.source).x,
     dy: center(anchor.observed).y - center(anchor.source).y,
   }));
-  const a = candidates[0];
+  const median = (values: number[]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2
+      ? sorted[mid]
+      : (sorted[mid - 1] + sorted[mid]) / 2;
+  };
+  const x = median(shifts.map((s) => s.dx)),
+    y = median(shifts.map((s) => s.dy));
   if (
-    !candidates.some(
-      (b) =>
-        Math.hypot(
-          center(a.source).x - center(b.source).x,
-          center(a.source).y - center(b.source).y,
-        ) > 0.2,
+    shifts.some(
+      (s) => Math.hypot(s.dx - x, s.dy - y) > MAX_INDEPENDENT_PLACEMENT,
     )
   )
-    return null;
-  if (candidates.some((b) => Math.hypot(b.dx - a.dx, b.dy - a.dy) > 0.01))
-    return null;
-  return {
-    x: candidates.reduce((sum, a) => sum + a.dx, 0) / candidates.length,
-    y: candidates.reduce((sum, a) => sum + a.dy, 0) / candidates.length,
-  };
+    throw Error(
+      "A stationary reference is far from its demonstrated position, or the camera is rotated, tilted or zoomed. Place the objects roughly as demonstrated and restore the camera view.",
+    );
+  return { x, y, shifts };
 }
