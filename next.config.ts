@@ -1,10 +1,19 @@
 import type { NextConfig } from "next";
+import { readFileSync } from "node:fs";
 import { devOrigins } from "./src/config/dev-origins";
+
+// The displayed version always comes from package.json (only the number is exposed).
+const appVersion = (
+  JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as {
+    version: string;
+  }
+).version;
 
 const config: NextConfig = {
   poweredByHeader: false,
   // Public transport policy only; never expose provider keys.
   env: {
+    NEXT_PUBLIC_APP_VERSION: appVersion,
     NEXT_PUBLIC_TEACH_UPLOAD_PROFILE:
       process.env.VERCEL === "1"
         ? "vercel"
