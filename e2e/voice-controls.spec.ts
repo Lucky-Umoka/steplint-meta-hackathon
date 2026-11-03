@@ -288,3 +288,55 @@ test("Teach recorder buttons drive recording, pause, resume and stop", async ({
     .click();
   await expect.poll(() => mediaChecked).toBe(true);
 });
+
+test("a recorded lesson preview plays back WITH sound while the upload video stays the silent budgeted MP4", async ({ page }) => {
+  await page.addInitScript(() => {
+    navigator.mediaDevices.getUserMedia = async () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 640;
+      canvas.height = 480;
+      const ctx = canvas.getContext("2d")!;
+      const draw = () => {
+        ctx.fillStyle = "#987";
+        ctx.fillRect(0, 0, 640, 480);
+        ctx.fillStyle = "#111";
+        ctx.fillRect(Date.now() % 400, 40, 80, 100);
+        requestAnimationFrame(draw);
+      };
+      draw();
+      const stream = canvas.captureStream(15);
+      const audio = new AudioContext();
+      const oscillator = audio.createOscillator();
+      const destination = audio.createMediaStreamDestination();
+      oscillator.connect(destination);
+      oscillator.start();
+      destination.stream.getAudioTracks().forEach((t) => stream.addTrack(t));
+      return stream;
+    };
+  });
+  let uploads = 0;
+  await page.route("**/api/teach/**", (r) => {
+    if (r.request().url().endsWith("/access")) return r.fulfill({ json: { unlocked: true } });
+    uploads++;
+    return r.abort();
+  });
+  await page.goto("/teach");
+  await page.getByRole("button", { name: "Create new teach" }).click();
+  await page.getByLabel(/Everyone visible or audible/).check();
+  await expect(page.getByRole("button", { name: "Start recording", exact: true })).toBeEnabled({ timeout: 20000 });
+  await page.getByRole("button", { name: "Start recording", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Done", exact: true })).toBeEnabled({ timeout: 30000 });
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  const preview = page.getByLabel("Prepared lesson preview");
+  await expect(preview).toBeVisible({ timeout: 30000 });
+  const decodedAudio = await preview.evaluate(async (el) => {
+    const video = el as HTMLVideoElement & { webkitAudioDecodedByteCount?: number };
+    video.muted = true;
+    await video.play();
+    await new Promise((done) => setTimeout(done, 2000));
+    video.pause();
+    return video.webkitAudioDecodedByteCount ?? -1;
+  });
+  expect(decodedAudio).toBeGreaterThan(0);
+  expect(uploads).toBe(0);
+});
