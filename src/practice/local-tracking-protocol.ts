@@ -105,6 +105,11 @@ export const LocalWorkerReplySchema = z.discriminatedUnion("type", [
     translation: z
       .strictObject({ x: z.number().finite(), y: z.number().finite() })
       .optional(),
+    /** Per approved zone (bindings order): each follows its own reference. */
+    zoneTranslations: z
+      .array(z.strictObject({ x: z.number().finite(), y: z.number().finite() }))
+      .max(100)
+      .optional(),
   }),
   z.object({ type: z.literal("error"), generation, message: z.string() }),
   z.object({

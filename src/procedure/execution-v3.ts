@@ -48,6 +48,7 @@ export const ScenePredicateSchema = z.discriminatedUnion("kind", [
     minimumGap: z.number().positive().max(1),
   }),
 ]);
+export type ScenePredicate = z.infer<typeof ScenePredicateSchema>;
 export const ExecutionV3Schema = z.strictObject({
   schemaVersion: z.literal(3),
   goal: text,

@@ -13,6 +13,13 @@ export type OverlayTrack = {
   origin: { x: number; y: number };
   last: { x: number; y: number };
   palette: number[][];
+  /**
+   * Template grounded from Teach source pixels and matched against a live
+   * camera with its own exposure: compensate global per-channel brightness
+   * and contrast before scoring (live E2E root cause: phone auto-exposure).
+   * The error, retention and competing-candidate gates are unchanged.
+   */
+  illumination?: boolean;
 };
 const rgb = (p: Pixels, x: number, y: number) => {
   const j = (Math.round(y) * p.width + Math.round(x)) * 4;
@@ -118,8 +125,53 @@ export function trackOverlay(
     fraction = options?.retainFraction ?? 0.8;
   if (fraction <= 0 || fraction > 1)
     throw Error("Invalid appearance retention policy.");
+  // Template statistics for illumination compensation (inside samples only).
+  const inside = t.samples.filter((sample) => sample.inside);
+  const stats = [0, 1, 2].map((c) => {
+    const values = inside.map((sample) => sample.color[c]);
+    const mean = values.reduce((a, v) => a + v, 0) / Math.max(1, values.length);
+    const sd = Math.sqrt(
+      values.reduce((a, v) => a + (v - mean) ** 2, 0) /
+        Math.max(1, values.length),
+    );
+    return { mean, sd };
+  });
   const evaluate = (dx: number, dy: number, scale = currentScale) => {
     histogram.fill(0);
+    let gain = [1, 1, 1],
+      offset = [0, 0, 0];
+    if (t.illumination) {
+      let n = 0;
+      const sum = [0, 0, 0],
+        sq = [0, 0, 0];
+      for (const sample of t.samples) {
+        if (!sample.inside) continue;
+        const x = Math.round(t.origin.x + (sample.x - t.origin.x) * scale + dx),
+          y = Math.round(t.origin.y + (sample.y - t.origin.y) * scale + dy);
+        if (x < 0 || y < 0 || x >= p.width || y >= p.height) return Infinity;
+        const index = (y * p.width + x) * 4;
+        for (let c = 0; c < 3; c++) {
+          const v = p.data[index + c];
+          sum[c] += v;
+          sq[c] += v * v;
+        }
+        n++;
+      }
+      if (!n) return Infinity;
+      gain = [0, 1, 2].map((c) => {
+        const mean = sum[c] / n,
+          sd = Math.sqrt(Math.max(0, sq[c] / n - mean * mean));
+        // Flat regions: brightness offset only (no noise amplification).
+        return stats[c].sd < 6 || sd < 6 ? 1 : stats[c].sd / sd;
+      });
+      // A plausible global lighting change, not an arbitrary remapping.
+      if (gain.some((g) => g < 0.5 || g > 2)) return Infinity;
+      offset = [0, 1, 2].map((c) => stats[c].mean - gain[c] * (sum[c] / n));
+    }
+    const map = (v: number, c: number) =>
+      t.illumination
+        ? Math.min(255, Math.max(0, Math.round(v * gain[c] + offset[c])))
+        : v;
     let count = 0,
       total = 0,
       negative = 0,
@@ -129,9 +181,9 @@ export function trackOverlay(
         y = Math.round(t.origin.y + (sample.y - t.origin.y) * scale + dy);
       if (x < 0 || y < 0 || x >= p.width || y >= p.height) return Infinity;
       const index = (y * p.width + x) * 4,
-        r = p.data[index],
-        g = p.data[index + 1],
-        b = p.data[index + 2];
+        r = map(p.data[index], 0),
+        g = map(p.data[index + 1], 1),
+        b = map(p.data[index + 2], 2);
       if (sample.inside) {
         const error = Math.max(
           Math.abs(r - sample.color[0]),

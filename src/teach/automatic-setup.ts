@@ -63,7 +63,22 @@ export function automaticSetupPlan(
     const selection = context.selections.find(
       (item) => item.id === component.id,
     );
-    if (fixed && selection?.mark.kind === "point") {
+    // Stationary references are grounded from their SAM-tracked extent when a
+    // trusted sample exists: a small patch around a discovery point on a plain
+    // plate or lid has too little detail to match live, so automatic startup
+    // could never align (live E2E run 1). The point patch is only a fallback.
+    const trustedFixed = fixed
+      ? (context.tracking
+          .find((track) => track.componentId === component.id)
+          ?.samples.filter(
+            (sample) =>
+              sample.confidence !== null &&
+              sample.confidence >= 0.9 &&
+              sample.box.right - sample.box.left >= 0.02 &&
+              sample.box.bottom - sample.box.top >= 0.02,
+          ) ?? [])
+      : [];
+    if (fixed && selection?.mark.kind === "point" && !trustedFixed.length) {
       const x = selection.mark.x / video.width,
         y = selection.mark.y / video.height;
       return {
@@ -87,11 +102,42 @@ export function automaticSetupPlan(
         ?.samples.filter(
           (sample) => sample.confidence !== null && sample.confidence >= 0.9,
         ) ?? [];
-    const sample = fixed
-      ? [...samples].sort(
+    const start = fixed ? undefined : samples.find((s) => s.frame === frame);
+    // A mover's identity view: an approved reference frame before its action
+    // where it already sits at the same starting position, so the template is
+    // not captured with the demonstrator's hand on it (live E2E run 1). The
+    // action-start frame is the fallback.
+    const centre = (b: {
+      left: number;
+      right: number;
+      top: number;
+      bottom: number;
+    }) => [(b.left + b.right) / 2, (b.top + b.bottom) / 2];
+    const identityView =
+      start && component.execution?.referenceFrames.length
+        ? samples
+            .filter(
+              (s) =>
+                s.frame < frame &&
+                component.execution!.referenceFrames.includes(s.frame) &&
+                Math.hypot(
+                  centre(s.box)[0] - centre(start.box)[0],
+                  centre(s.box)[1] - centre(start.box)[1],
+                ) <= 0.02,
+            )
+            .sort((a, b) => a.frame - b.frame)[0]
+        : undefined;
+    // Stationary references: their earliest approved reference view (before
+    // the demonstrator touches anything), else the sample nearest the scene.
+    const fixedView = fixed
+      ? (samples
+          .filter((s) => component.execution?.referenceFrames.includes(s.frame))
+          .sort((a, b) => a.frame - b.frame)[0] ??
+        [...samples].sort(
           (a, b) => Math.abs(a.frame - frame) - Math.abs(b.frame - frame),
-        )[0]
-      : samples.find((sample) => sample.frame === frame);
+        )[0])
+      : undefined;
+    const sample = fixed ? fixedView : (identityView ?? start);
     if (!sample)
       throw Error(
         `No reliable source appearance for ${component.description}. Review its starting view.`,

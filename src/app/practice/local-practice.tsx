@@ -52,6 +52,7 @@ import {
   type LifecycleIntent,
 } from "@/practice/lifecycle";
 import type { ActionOutcome } from "@/voice/use-voice-control";
+import { isProcedureComplete, type GoalState } from "@/procedure/goal";
 import {
   RehearsalSchema,
   RevisionSchema,
@@ -95,6 +96,9 @@ export default function LocalPractice() {
     null,
   );
   const [resumeRequested, setResumeRequested] = useState(false);
+  // Phase 5: final-goal completion gate from the pipeline session.
+  const [goal, setGoal] = useState<GoalState | null>(null);
+  const goalRef = useRef<GoalState | null>(null);
   // Phase 4: the single authoritative lifecycle, shared by UI and voice.
   const [lifecycle, setLifecycle] = useState<Lifecycle>(initialLifecycle);
   const lifecycleRef = useRef<Lifecycle>(initialLifecycle());
@@ -161,6 +165,23 @@ export default function LocalPractice() {
       stepId: string | null;
       key: string;
     } | null>(null);
+  const goalGatedV3 = lesson?.procedure.execution?.schemaVersion === 3;
+  /** "Complete" only when every gate passes (V3) or all steps pass (V2). */
+  const complete =
+    lifecycle.state === "running" &&
+    (goalGatedV3
+      ? !!goal && isProcedureComplete(lesson!.procedure, goal, true)
+      : result?.status === "passed");
+  const goalMessage = (state: GoalState | null) =>
+    !goalGatedV3
+      ? "Goal verified. Monitoring continues until you stop; reversing a required state triggers correction."
+      : state?.status === "complete"
+        ? state.uncertain
+          ? `Final goal verified earlier; the current view is unclear (${state.reason}). Not counted as a reversal.`
+          : "Final goal verified. Monitoring continues; reversing it invalidates completion."
+        : state?.status === "invalidated"
+          ? `Completion invalidated: ${state.reason} Restore the final state.`
+          : `All steps passed. Verifying the final goal: ${state?.reason ?? "waiting for fresh evidence"}`;
   const [speaking, setSpeaking] = useState(false);
   const speechGeneration = useRef(0);
   const speechWatchdog = useRef(0);
@@ -519,7 +540,8 @@ export default function LocalPractice() {
       const previous = raw ? RehearsalSchema.safeParse(JSON.parse(raw)) : null;
       const next = nextRehearsal(
         previous?.success ? previous.data : null,
-        result?.status,
+        // A rehearsal passes only when the full completion gate passes.
+        result?.status === "passed" && !complete ? "verifying" : result?.status,
         revision,
         Date.now(),
       );
@@ -528,7 +550,7 @@ export default function LocalPractice() {
       // Storage blocked: nothing is recorded, so Teach truthfully shows this
       // revision's rehearsal as not run. A result is never assumed.
     }
-  }, [rehearsal, lesson, result?.status]);
+  }, [rehearsal, lesson, result?.status, complete]);
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -1069,12 +1091,13 @@ export default function LocalPractice() {
                 archiveSession();
                 session.current = next;
               }
-              const aligned = lesson.zoneBindings.map((binding) => ({
+              // Each zone follows its own stationary reference when given.
+              const aligned = lesson.zoneBindings.map((binding, index) => ({
                 ...binding,
                 region: translateBox(
                   binding.region,
-                  reply.translation!.x,
-                  reply.translation!.y,
+                  reply.zoneTranslations?.[index]?.x ?? reply.translation!.x,
+                  reply.zoneTranslations?.[index]?.y ?? reply.translation!.y,
                 ),
               }));
               if (resuming && previousSession)
@@ -1137,6 +1160,21 @@ export default function LocalPractice() {
             watchKey: watchKey.current,
           });
           if (frame.stale) return;
+          if (
+            goalGatedV3 &&
+            (frame.goal.status !== goalRef.current?.status ||
+              frame.goal.uncertain !== goalRef.current?.uncertain)
+          ) {
+            const before = goalRef.current?.status;
+            goalRef.current = frame.goal;
+            setGoal(frame.goal);
+            if (frame.goal.status !== "incomplete")
+              setNotice(goalMessage(frame.goal));
+            if (frame.goal.status === "complete" && before !== "complete")
+              speak("Final goal verified.");
+            if (frame.goal.status === "invalidated" && before === "complete")
+              speak("Completion invalidated. Restore the final state.");
+          }
           const unseen = reply.identityEvents.find(
             (event) => event.status === "needs_user_view",
           );
@@ -1216,7 +1254,7 @@ export default function LocalPractice() {
             setNotice(
               next
                 ? "Automatic tracking active. Starting positions verified. Follow the current instruction."
-                : "Goal verified. Monitoring continues until you stop; reversing a required state triggers correction.",
+                : goalMessage(frame.goal),
             );
           }
           if (updated) {
@@ -1261,10 +1299,7 @@ export default function LocalPractice() {
               setNotice(
                 "Monitoring active. Some required evidence is unclear; restore a clear view before continuing.",
               );
-            if (updated.status === "passed")
-              setNotice(
-                "Goal verified. Monitoring continues until you stop; reversing a required state triggers correction.",
-              );
+            if (updated.status === "passed") setNotice(goalMessage(frame.goal));
           }
           if (
             warning &&
@@ -1436,7 +1471,7 @@ export default function LocalPractice() {
           session.current?.result.steps.find((state) => state.stepId === s.id)
             ?.status !== "passed",
       );
-      speak(next?.description ?? "Goal verified; monitoring required states.");
+      speak(next?.description ?? goalMessage(goalRef.current));
     },
     onEvent: log,
   });
@@ -1643,7 +1678,11 @@ export default function LocalPractice() {
                               (state) => state.stepId === step.id,
                             )?.status !== "passed",
                         )?.description ??
-                        "Goal verified; keep required states in place.")}
+                        (complete
+                          ? "Final goal verified; keep it in place."
+                          : goalGatedV3
+                            ? "All steps passed; verifying the final goal."
+                            : "Goal verified; keep required states in place."))}
                 </p>
               </section>
             )}
@@ -1690,18 +1729,17 @@ export default function LocalPractice() {
             data-testid="practice-live-row"
             className="relative grid items-stretch gap-2 md:h-[calc(100dvh-300px)] md:min-h-[360px] md:grid-cols-[3fr_2fr]"
           >
-            {running &&
-              (result?.status === "passed" || result?.status === "failed") && (
-                <div
-                  key={alert?.key ?? result?.status}
-                  data-testid="practice-glow"
-                  aria-hidden="true"
-                  className={`pointer-events-none absolute inset-0 z-10 rounded-2xl ${result?.status === "failed" ? "practice-glow-fail" : "practice-glow-pass"}`}
-                />
-              )}
+            {running && (complete || result?.status === "failed") && (
+              <div
+                key={alert?.key ?? result?.status}
+                data-testid="practice-glow"
+                aria-hidden="true"
+                className={`pointer-events-none absolute inset-0 z-10 rounded-2xl ${result?.status === "failed" ? "practice-glow-fail" : "practice-glow-pass"}`}
+              />
+            )}
             <section
               data-testid="practice-camera"
-              className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border-2 bg-white ${running && result?.status === "failed" ? "border-red-600 practice-frame-warning" : running && result?.status === "passed" ? "border-green-600" : "border-slate-200"}`}
+              className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border-2 bg-white ${running && result?.status === "failed" ? "border-red-600 practice-frame-warning" : running && complete ? "border-green-600" : "border-slate-200"}`}
             >
               <div className="flex items-center justify-between border-b px-3 py-2 text-sm font-semibold">
                 <span>Live work camera</span>
@@ -1730,9 +1768,11 @@ export default function LocalPractice() {
                     ? running
                       ? result?.status === "failed"
                         ? "Wrong move — stop"
-                        : result?.status === "passed"
+                        : complete
                           ? "Goal verified"
-                          : "Practice active"
+                          : result?.status === "passed"
+                            ? "Verifying final goal"
+                            : "Practice active"
                       : "Camera on"
                     : "Camera off"}
                 </span>
@@ -1895,10 +1935,7 @@ export default function LocalPractice() {
                   artClassName="mx-auto h-72 w-64 sm:h-80 sm:w-72"
                   mode={resolveAvatarMode({
                     violation: running && result?.status === "failed",
-                    complete:
-                      running &&
-                      result?.status === "passed" &&
-                      alert?.kind !== "warning",
+                    complete: running && complete && alert?.kind !== "warning",
                     uncertain:
                       (!running && cameraActive) ||
                       result?.status === "needs_verification" ||

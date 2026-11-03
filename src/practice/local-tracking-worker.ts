@@ -44,6 +44,7 @@ self.onmessage = (event: MessageEvent<unknown>) => {
         generation: input.generation,
         measurements: trackingMeasurements(state),
         translation: initialized.translation,
+        zoneTranslations: initialized.zoneTranslations,
       });
       return;
     }

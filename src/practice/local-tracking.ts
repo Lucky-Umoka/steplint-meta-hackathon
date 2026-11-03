@@ -60,7 +60,7 @@ function groundNative(
   if (
     trackOverlay(image, dense, {
       multiscale: false,
-      retainFraction: fixed ? 1 : 0.8,
+      retainFraction: 0.8,
     }).quality === "observed"
   )
     return {
@@ -100,7 +100,9 @@ function measureNative(
     profile.method === "dense_rgb"
       ? trackOverlay(image, profile.track, {
           multiscale: !profile.fixed,
-          retainFraction: profile.fixed ? 1 : 0.8,
+          // Stationary references tolerate the same partial occlusion as
+          // movers (an object resting on the plate); position gates unchanged.
+          retainFraction: 0.8,
         })
       : trackPreparedAppearance(frame, profile.track);
   if (detection.quality !== "observed") {
@@ -146,6 +148,8 @@ export type LocalTrackingState = {
   slots: Record<string, Slot>;
   /** Approved nested pairs ("a|b", sorted) whose boxes may overlap. */
   nested: Set<string>;
+  /** When every camera reference became hidden (null while one is seen). */
+  referenceHiddenSince?: number | null;
 };
 const overlaps = (a: Box, b: Box) =>
   Math.max(a.left, b.left) < Math.min(a.right, b.right) &&
@@ -174,10 +178,16 @@ function validBox(box: Box) {
     box.bottom - box.top >= 0.02
   );
 }
+/** Source (Teach) pixels are matched against a live camera's own exposure. */
+function fromSource(profile: NativeTrack): NativeTrack {
+  if (profile.method === "dense_rgb") profile.track.illumination = true;
+  return profile;
+}
 /** Approved appearance template, or null when the source view has too little detail. */
 function identityTemplate(image: Pixels, id: string, box: Box) {
   try {
     const template = groundOverlay(image, id, box);
+    template.illumination = true;
     return trackOverlay(image, structuredClone(template), {
       multiscale: false,
       retainFraction: 0.8,
@@ -348,22 +358,28 @@ export function trackLocal(
   const frame = prepareTrackingFrame(image);
   if (!frameQuality(image, frame).usable)
     return fail("Camera evidence is unclear; verification suspended.");
+  // Camera-motion reference (live E2E run 2 root cause): a reference seen
+  // reliably displaced means the camera or a reference moved. A reference that
+  // is merely hidden (a hand passing) is uncertainty, not motion.
+  let referenceSeen = false;
   if (state.workspace && state.reference) {
+    state.workspace.lost = false; // stationary: re-measure every frame
     const anchor = measureNative(image, frame, state.workspace),
       ref = state.reference;
-    if (
-      !anchor.box ||
-      anchor.quality !== "observed" ||
-      Math.max(
-        Math.abs(anchor.box.left - ref.left),
-        Math.abs(anchor.box.top - ref.top),
-        Math.abs(anchor.box.right - ref.right),
-        Math.abs(anchor.box.bottom - ref.bottom),
-      ) > 0.015
-    )
-      return fail(
-        "The camera or workspace reference moved. Recalibrate before continuing.",
-      );
+    if (anchor.box && anchor.quality === "observed") {
+      if (
+        Math.max(
+          Math.abs(anchor.box.left - ref.left),
+          Math.abs(anchor.box.top - ref.top),
+          Math.abs(anchor.box.right - ref.right),
+          Math.abs(anchor.box.bottom - ref.bottom),
+        ) > 0.015
+      )
+        return fail(
+          "The camera or workspace reference moved. Recalibrate before continuing.",
+        );
+      referenceSeen = true;
+    }
   }
   const nowMs = context?.nowMs ?? 0;
   const events: IdentityEvent[] = [];
@@ -372,6 +388,12 @@ export function trackLocal(
     const slot = state.slots[id];
     if (slot.identity.status === "dormant")
       slot.identity = activateIdentity(slot.identity);
+    // Stationary references are re-measured every frame at their reference
+    // position; one occluded frame must not disable them permanently.
+    if (state.fixed[id] && slot.profile) {
+      slot.profile.lost = false;
+      slot.identity = trackedIdentity();
+    }
     if (slot.identity.status === "tracked" && slot.profile) {
       const detection = measureNative(image, frame, slot.profile);
       if (detection.quality === "observed" && detection.box) {
@@ -379,13 +401,15 @@ export function trackLocal(
         measured.set(id, detection);
         continue;
       }
-      slot.identity = loseIdentity(slot.identity, nowMs);
-      events.push({
-        objectId: id,
-        status: slot.identity.status,
-        reason:
-          "Lost a reliable observation; the object is uncertain, not moved.",
-      });
+      if (!state.fixed[id]) {
+        slot.identity = loseIdentity(slot.identity, nowMs);
+        events.push({
+          objectId: id,
+          status: slot.identity.status,
+          reason:
+            "Lost a reliable observation; the object is uncertain, not moved.",
+        });
+      }
       measured.set(id, detection);
       continue;
     }
@@ -393,33 +417,37 @@ export function trackLocal(
   }
   for (const [id, reference] of Object.entries(state.fixed)) {
     const observed = measured.get(id);
-    const mustHold = required.includes(id);
-    if (!observed && !mustHold) continue;
+    if (!observed?.box || observed.quality !== "observed") continue; // hidden
     if (
-      !observed?.box ||
-      observed.quality !== "observed" ||
       Math.max(
         Math.abs(observed.box.left - reference.left),
         Math.abs(observed.box.top - reference.top),
         Math.abs(observed.box.right - reference.right),
         Math.abs(observed.box.bottom - reference.bottom),
       ) > 0.025
-    ) {
-      if (!mustHold && observed?.quality !== "observed") continue;
-      return fail(
-        "A fixed destination or reference moved or became uncertain. Recalibrate the setup.",
-      );
-    }
-  }
-  if (
-    !state.workspace &&
-    !Object.keys(state.fixed).some(
-      (id) => measured.get(id)?.quality === "observed",
     )
-  )
-    return fail(
-      "No stationary reference is visible, so camera movement cannot be told apart from object movement. Show the stationary reference.",
-    );
+      return fail(
+        "A fixed destination or reference moved. Recalibrate the setup.",
+      );
+    referenceSeen = true;
+  }
+  if (!referenceSeen) {
+    state.referenceHiddenSince ??= nowMs;
+    if (nowMs - state.referenceHiddenSince > 2000)
+      return fail(
+        "No stationary reference has been visible for 2 seconds, so camera movement cannot be told apart from object movement. Show the stationary reference.",
+      );
+    // Until a reference is seen again, nothing from this frame is evidence.
+    return {
+      detections: required.map(unknown),
+      optionalDetections: optional.map(unknown),
+      calibrationValid: true,
+      reason: "A stationary reference is hidden; this frame is not evidence.",
+      partialIdentities: [],
+      identityEvents: events,
+    };
+  }
+  state.referenceHiddenSince = null;
   // Colliding identities cannot both be authoritative observations, unless
   // they are an approved nested pair whose boxes remain distinguishable.
   const live = [...measured.values()];
@@ -597,16 +625,37 @@ export function bootstrapLocal(
   const frame = prepareTrackingFrame(image);
   const sameSize = (object: { image: Pixels }) =>
     object.image.width === image.width && object.image.height === image.height;
+  // A stationary reference whose approved box mostly overlaps a mover (e.g.
+  // a lid track dominated by the bottle resting on it) moves with that mover,
+  // so it cannot be a camera reference (live E2E run 2 root cause).
+  const movers = source.objects.filter((object) => !object.fixed);
+  const contaminated = new Set(
+    source.objects
+      .filter(
+        (object) =>
+          object.fixed &&
+          (object.required ?? true) === false &&
+          movers.some(
+            (mover) => intersection(object.box, mover.box) / area(object.box) > 0.2,
+          ),
+      )
+      .map((object) => object.id),
+  );
   const anchors = source.objects
-    .filter((object) => object.fixed && sameSize(object))
+    .filter(
+      (object) =>
+        object.fixed && sameSize(object) && !contaminated.has(object.id),
+    )
     .flatMap((object) => {
-      const profile = groundNative(object.image, object.id, object.box, true);
+      const profile = fromSource(
+        groundNative(object.image, object.id, object.box, true),
+      );
       const detection = measureNative(image, frame, profile);
       return detection.quality === "observed" &&
         detection.box &&
         detection.score !== null &&
         detection.score >= 0.9
-        ? [{ source: object.box, observed: detection.box }]
+        ? [{ id: object.id, source: object.box, observed: detection.box }]
         : [];
     });
   const anchored = alignFixedObjects(anchors);
@@ -628,6 +677,14 @@ export function bootstrapLocal(
         `Finding the work area: show ${stationary.map((object) => object.id).join(", ")} clearly in the demonstrated position. A textured table is not required when the stationary reference is visible.`,
       );
     }
+  const shiftFor = (box: Box, ownId?: string) => {
+    const index = anchors.findIndex((anchor) =>
+      ownId ? anchor.id === ownId : overlaps(anchor.source, box),
+    );
+    return anchored && index >= 0
+      ? { x: anchored.shifts[index].dx, y: anchored.shifts[index].dy }
+      : { x: alignment.x, y: alignment.y };
+  };
   const found: { id: string; profile: NativeTrack; box: Box }[] = [];
   const pending: {
     id: string;
@@ -637,25 +694,29 @@ export function bootstrapLocal(
     template: OverlayTrack | null;
   }[] = [];
   for (const object of source.objects) {
+    if (contaminated.has(object.id)) continue; // optional and unreliable
     const required = object.required ?? true,
       active = object.active ?? true;
-    const profile = groundNative(
-      object.image,
-      object.id,
-      object.box,
-      object.fixed,
+    const profile = fromSource(
+      groundNative(object.image, object.id, object.box, object.fixed),
     );
     const expected = object.expectedBox ?? object.box;
-    // The measured references establish the shared camera translation.
+    // Stationary objects follow their own match; a mover follows the reference
+    // it sits on (object-relative placement), else the shared camera shift.
+    const shift = object.fixed
+      ? shiftFor(object.box, object.id)
+      : object.expectedBox
+        ? { x: alignment.x, y: alignment.y }
+        : shiftFor(object.box);
     const dx =
       ((expected.left + expected.right - object.box.left - object.box.right) /
         2 +
-        alignment.x) *
+        shift.x) *
       image.width;
     const dy =
       ((expected.top + expected.bottom - object.box.top - object.box.bottom) /
         2 +
-        alignment.y) *
+        shift.y) *
       image.height;
     if (profile.method !== "features") {
       profile.track.last.x += dx;
@@ -683,7 +744,7 @@ export function bootstrapLocal(
       detection.score !== null &&
       detection.score >= 0.9;
     if (observed && object.fixed) {
-      const shifted = translateBox(object.box, alignment.x, alignment.y);
+      const shifted = translateBox(object.box, shift.x, shift.y);
       if (
         Math.max(
           ...(["left", "top", "right", "bottom"] as const).map((key) =>
@@ -706,7 +767,7 @@ export function bootstrapLocal(
     pending.push({
       id: object.id,
       fixed: object.fixed,
-      expected: translateBox(expected, alignment.x, alignment.y),
+      expected: translateBox(expected, shift.x, shift.y),
       dormant: !active,
       template: sameSize(object)
         ? identityTemplate(object.image, object.id, object.box)
@@ -725,7 +786,10 @@ export function bootstrapLocal(
       if (overlaps(source.objects[i].box, other.box))
         nested.add(pairKey(source.objects[i].id, other.id));
   let workspace: Box | null = alignment.workspace;
-  if (!workspace)
+  // With matched stationary references, they are the camera reference; a
+  // table patch is chosen only when none matched (a scanned patch can land on
+  // the demonstrator's body and read every movement as camera motion).
+  if (!workspace && !anchored)
     try {
       workspace = chooseLiveWorkspace(image, [
         ...found.map((item) => item.box),
@@ -750,11 +814,12 @@ export function bootstrapLocal(
     workspace,
     nested,
   );
-  // Retain the source-grounded object identities; the current view only grounds
-  // the already-matched workspace for subsequent camera movement checks.
-  state.objects = found.map((item) => item.profile);
+  // Identity was established above by matching approved Teach pixels
+  // (exposure-compensated). Frame-to-frame tracking then uses profiles that
+  // buildState grounded from the live view at exactly those matched boxes:
+  // already in the live camera's lighting and as fast as before. The
+  // approved source templates are kept for bounded identity recovery.
   for (const item of found) {
-    state.slots[item.id].profile = item.profile;
     const object = source.objects.find((o) => o.id === item.id)!;
     if (sameSize(object))
       state.slots[item.id].template = identityTemplate(
@@ -763,6 +828,15 @@ export function bootstrapLocal(
         object.box,
       );
   }
+  // Unreliable (contaminated) references are reported as unknown, never used.
+  for (const id of contaminated)
+    state.slots[id] = {
+      identity: dormantIdentity(),
+      profile: null,
+      template: null,
+      lastBox: null,
+      fixed: true,
+    };
   for (const item of pending)
     state.slots[item.id] = {
       identity: item.dormant
@@ -773,5 +847,33 @@ export function bootstrapLocal(
       lastBox: item.expected,
       fixed: item.fixed,
     };
-  return { state, translation: { x: alignment.x, y: alignment.y } };
+  // Each approved zone follows the stationary reference it belongs to: the
+  // reference containing its centre, else the one it overlaps most.
+  const zoneTranslations = (source.zones ?? []).map((zone) => {
+    if (!anchored) return { x: alignment.x, y: alignment.y };
+    const c = {
+      x: (zone.left + zone.right) / 2,
+      y: (zone.top + zone.bottom) / 2,
+    };
+    let best = -1,
+      bestScore = 0;
+    anchors.forEach((anchor, index) => {
+      const a = anchor.source;
+      const containsCentre =
+        c.x >= a.left && c.x <= a.right && c.y >= a.top && c.y <= a.bottom;
+      const score = (containsCentre ? 1 : 0) + intersection(a, zone);
+      if (score > bestScore) {
+        bestScore = score;
+        best = index;
+      }
+    });
+    return best >= 0
+      ? { x: anchored.shifts[best].dx, y: anchored.shifts[best].dy }
+      : { x: alignment.x, y: alignment.y };
+  });
+  return {
+    state,
+    translation: { x: alignment.x, y: alignment.y },
+    zoneTranslations,
+  };
 }
