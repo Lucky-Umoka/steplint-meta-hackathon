@@ -502,3 +502,14 @@ it("leaves a contradicting predicate unchanged when the boundary has no trusted 
   track.samples = track.samples.filter((s) => s.frame !== result);
   expect(alignScenePredicateEvidence(draft, fixture.context)).toBe(draft);
 });
+
+it("a final goal naming an intermediate place is rejected with an actionable reason (never silently repaired)", () => {
+  const { context, draft } = teachV3Fixture(true);
+  const [first, second] = draft.procedure.steps;
+  const execution = draft.procedure.execution as unknown as ExecutionV3;
+  for (const p of execution.finalConditions)
+    if (p.kind === "object_in_zone") p.zoneId = first.condition.toZone;
+  expect(() =>
+    parseSparkDraft({ status: "completed", output_text: JSON.stringify(draft) }, context, { goal: "Transfer" }),
+  ).toThrow(new RegExp(`last measured action "${second.id}" ends in "${second.condition.toZone}"`));
+});

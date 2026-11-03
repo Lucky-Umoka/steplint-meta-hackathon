@@ -1,84 +1,51 @@
-# STEPLINT — PHASE 0: FINAL REPOSITORY AUDIT
+# STEPLINT — PHASE 4: END-TO-END INTEGRATION TEST
 
-We are preparing StepLint for the Meta AI Developer Hackathon submission.
+Verify the complete Teach-to-Practice experience.
 
-Our priority is a working physical-world demonstration, not architectural perfection.
+Do not rebuild existing features.
 
-Before writing or modifying any code, inspect the current repository and report the existing implementation.
+## Workflow
 
-## 1. Inspect these areas
+1. Open Teach.
+2. Upload a real demonstration video.
+3. Allow the existing Meta AI pipeline to process it.
+4. Review the generated V3 procedure.
+5. Review Felicity's audit findings.
+6. Correct any relevant issues.
+7. Approve the procedure.
+8. Open the approved procedure in Practice.
+9. Confirm that the correct objects and steps are available.
+10. Start the camera.
+11. Perform a correct action.
+12. Deliberately perform an incorrect action.
+13. Confirm immediate Gideon feedback.
+14. Confirm Felicity's additional advice when relevant.
+15. Cover an object and confirm the visibility request.
+16. Restore visibility and continue.
+17. Complete the procedure.
+18. Confirm final deterministic verification.
 
-- Practice interface and camera lifecycle.
-- Practice tracker and object identity recovery.
-- Deterministic verifier and step-completion logic.
-- Gideon avatar, voice, and feedback system.
-- Existing Felicity or recovery logic, if any.
-- Existing API routes for recovery and AI reasoning.
-- Existing Baseten adapter and Muse Spark Open configuration.
-- Teach interface and demonstration upload.
-- Teach compilation pipeline.
-- Muse Voice Transcribe integration.
-- SAM 3.1 integration.
-- V3 procedure contract, evidence, approval, and persistence.
-- Teach-to-Practice handoff.
-- Existing tests and deployment configuration.
+## Technical checks
 
-Pay particular attention to:
+Verify:
 
-- `src/app/teach/local-teach.tsx`
-- `src/app/api/teach/compile`
-- `src/server/teach/`
-- `src/app/practice/local-practice.tsx`
-- `src/practice/`
-- `src/procedure/verifier.ts`
-- `src/components/GuideAvatar.tsx`
+- The approved procedure is the one loaded in Practice.
+- Procedure revisions are handled correctly.
+- No old incident or AI response leaks into a new session.
+- Teach approval is not treated as proof of physical success.
+- Final completion requires fresh evidence.
+- Errors in Felicity do not break the main workflow.
 
-These are starting points, not permission to assume the implementation is unchanged. Discover the actual current paths.
+## REPORT
 
-## 2. Identify existing functionality
+Produce a checklist showing:
 
-Create a report with four categories:
+- End-to-end tests passed.
+- End-to-end tests failed.
+- Real camera tests completed.
+- Mocked tests only.
+- Remaining submission blockers.
 
-A. Already implemented and working.
+Do not add new features during this phase unless necessary to fix a blocker.
 
-B. Implemented but not sufficiently tested.
-
-C. Missing or broken.
-
-D. Features that should not be touched because they already work.
-
-## 3. Identify the smallest implementation plan
-
-Recommend the minimum code changes required to deliver:
-
-1. Immediate local Gideon warnings.
-2. Background Felicity recovery advice.
-3. Stale-response protection.
-4. Object occlusion and reacquisition handling.
-5. Teach procedure quality audit.
-6. Complete Teach-to-Practice demonstration.
-
-## 4. Important restrictions
-
-- Do not write or modify code.
-- Do not install packages.
-- Do not change model providers.
-- Do not change model identifiers.
-- Do not make live paid model calls.
-- Do not commit, push, or deploy.
-
-Preserve the existing Muse Spark Open integration through Baseten. Read its actual model identifier from the code or environment configuration. Do not invent one.
-
-## 5. Final report
-
-Give me:
-
-- Existing architecture.
-- Features already working.
-- Critical remaining bugs.
-- Files that need modification.
-- Recommended implementation order.
-- Existing test commands.
-- Risks that could prevent the demo from working.
-
-Be concise and specific. Do not propose a major rewrite.
+Do not commit, push, or deploy without approval.

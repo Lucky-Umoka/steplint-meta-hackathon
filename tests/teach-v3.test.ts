@@ -375,7 +375,9 @@ describe("V3 executable Teach contract", () => {
     };
     expect(() =>
       validateReviewEvidence(normalize(draft), review, context),
-    ).toThrow("initial/final source condition");
+      // The final-goal consistency check now rejects this earlier, with the
+      // more specific reason; either way it can never pass.
+    ).toThrow(/initial\/final source condition|Final goal names component-1 in "origin"/);
   });
   it("rejects unobserved projected separation at a common source frame", () => {
     const { draft, context, execution } = teachV3Fixture();

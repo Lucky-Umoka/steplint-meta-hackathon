@@ -7,6 +7,7 @@ import Workspace from "@/components/workspace";
 import { loadApprovedLesson } from "@/practice/load-approved-lesson";
 import {
   listApprovedProcedures,
+  lessonThumbnail,
   saveApprovedProcedure,
   type SavedProcedure,
 } from "@/teach/approved-storage";
@@ -95,6 +96,14 @@ export default function PracticeEntry({
               key={row.id}
               className="space-y-2 rounded-2xl border bg-white p-5"
             >
+              {lessonThumbnail(row) && (
+                // eslint-disable-next-line @next/next/no-img-element -- local data URL
+                <img
+                  src={lessonThumbnail(row)!}
+                  alt={`Preview of ${row.title}`}
+                  className="aspect-[4/3] w-full rounded-xl bg-slate-950 object-cover"
+                />
+              )}
               <h2 className="text-lg font-bold">{row.title}</h2>
               <Link
                 className="primary inline-block"

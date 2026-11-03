@@ -120,3 +120,27 @@ export async function listApprovedProcedures(): Promise<SavedProcedure[]> {
     db.close();
   }
 }
+
+/**
+ * Picture for a saved lesson in Teach/Practice lists: the stored goal
+ * reference, else the reviewed result (or scene) frame already inside the
+ * approved export. Display only; null when the lesson has no frames.
+ */
+export function lessonThumbnail(row: SavedProcedure): string | null {
+  if (row.references?.goal) return row.references.goal;
+  try {
+    const setup = (
+      JSON.parse(row.raw) as {
+        automaticSetup?: {
+          sceneFrame?: number;
+          frames?: { frame: number; image: string }[];
+        };
+      }
+    ).automaticSetup;
+    const frames = setup?.frames ?? [];
+    const image = (frames.at(-1) ?? frames.find((f) => f.frame === setup?.sceneFrame))?.image;
+    return typeof image === "string" && image.startsWith("data:image/") ? image : null;
+  } catch {
+    return null;
+  }
+}

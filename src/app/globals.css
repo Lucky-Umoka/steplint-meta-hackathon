@@ -86,3 +86,14 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .practice-glow-pass, .practice-glow-fail { animation: none; }
 }
+
+/* Goal-complete celebration (display only). */
+@keyframes practice-celebrate-pop {
+  0% { transform: scale(0.6); opacity: 0; }
+  60% { transform: scale(1.06); opacity: 1; }
+  100% { transform: scale(1); }
+}
+.practice-celebrate { animation: practice-celebrate-pop 0.45s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .practice-celebrate { animation: none; }
+}

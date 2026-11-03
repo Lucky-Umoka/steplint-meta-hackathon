@@ -17,6 +17,11 @@ export const test = base.extend<{ noPaidRequests: void }>({
           return route.continue();
         return route.abort("blockedbyclient");
       });
+      // Felicity advice is a paid Baseten request: always blocked unless a
+      // test registers its own mock afterwards.
+      await page.route("**/api/practice/**", (route) =>
+        route.abort("blockedbyclient"),
+      );
       await use();
     },
     { auto: true },

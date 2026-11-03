@@ -2,6 +2,50 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.7.0 — 2026-11-03
+
+### Added
+- **Felicity Teach quality audit (Phase 3).** After a draft is built, the review page asks Felicity (one bounded Muse Spark Open request on Baseten, `POST /api/teach/audit`, creator session and sealed review context required, 60 s timeout, no tool loop) to compare the draft with the existing Muse Voice transcript, SAM 3.1 measured movement windows and source timing. Findings: missing actions, measured movements absent from the procedure, claims beyond the evidence, missing or unclear objects, unclear instructions, unclear final goal, each marked "Needs your attention" or "Suggestion", with step, narration time or frame references kept only when they exist. Advisory only: nothing is added to or approved in the procedure. If the audit fails or times out, the panel says "Audit unavailable" and Teach continues unchanged.
+
+### Fixed
+- Teach "Spark draft validation after one correction: Unseen or ambiguous actions cannot be represented as measured steps": the correction instructions told the model to keep `videoReview` unchanged, so it could not fix a contradiction inside the video review. It may now correct only the conflicting video-review fields (a step-linked action must be visible with its window; an unclear or unseen action is unsupported with no step).
+
+### Verified
+- 726 unit tests (audit: grounded request, findings kept, invented references removed, draft unchanged, failure reported, creator session required; correction path fixes a contradictory video review); type-check; lint 0 errors; build; full browser suite 50 passed, 1 skip (review shows audit findings and still approves; a blocked audit shows "Audit unavailable" and still approves).
+- Not yet: a real paid audit or Teach run on video 5.
+
+## 0.6.0 — 2026-11-03
+
+### Added
+- Practice progress bar, elapsed timer and time-to-goal estimate (demonstrated step times, rescaled by the learner's own pace once a step is done), in the live goal panel.
+- Centred finish celebration on the first verified completion: finish time, speed against the demonstration, personal best (stored in this browser). It does not block the controls and closes itself after 9 s.
+- Felicity setup help: when automatic Practice has not started, Gideon gives a local hint at 12 s naming the first object and its starting place; at 20 s Felicity diagnoses once from the real setup state (lifecycle, last problem, objects found or missing), and Gideon speaks the advice. The advice is discarded once Practice runs or the camera stops.
+
+### Fixed
+- Teach: a final goal naming an intermediate place (for example the paper instead of the mat) is now rejected with a precise reason, so the single correction request can fix it before review. It is never silently rewritten (existing rule: the goal is not inferred from the last steps).
+
+### Verified
+- 720 unit tests; type-check; lint 0 errors; build. Practice browser specs 17/17 sequentially. One existing automatic-Practice browser test is intermittent under load (passed 2/2 on rerun).
+- Recorded bottle clip (fake camera, model calls blocked): start, identification, verified step, Gideon's grounded "Stop.", named visibility requests, same-object reacquisition, verified final goal, pause/resume/stop/start. Median feedback 34 ms (p95 53 ms). This is not physical acceptance.
+
+## 0.5.0 — 2026-11-03
+
+### Added
+- **Felicity** (Phase 1, `docs/Final-Implementation`): asynchronous recovery advice for difficult Practice incidents — a confirmed mistake still unresolved after 4 s, or an object unseen for 8 s. One request per incident to Muse Spark Open on Baseten (`meta-models/muse-spark-open-1026`, same adapter), with the approved step, recovery, verifier reason, approved object/zone names and one small evidence frame. One sentence; never claims a verdict (rejected server-side); never changes the verifier. Endpoint `POST /api/practice/recovery`: same-site only, 1 request per incident, at most 6 per learner session per 10 min, `FELICITY_MAX_PER_HOUR` (default 60), `FELICITY_ENABLED=0` switches it off; 25 s timeout.
+- **Stale-response protection:** advice is delivered only if, when it arrives, Practice is still running in the same worker generation and revision, the incident is still the latest one, the learner has not corrected it, and it is under 30 s old. A new incident aborts the previous request locally (an abort is never treated as the provider stopping).
+- **Gideon** (the Practice avatar, formerly labelled "StepLint Guide"): immediate local visibility requests naming the object — "I can't see the red squeeze bottle clearly. Please show it to the camera.", "Please move your hand so I can see …", "I lost track of … Hold it still for a moment." — instead of the generic "Missing, unknown, obstructed…" sentence. Never a violation.
+- Live goal panel in the bottom-left corner of the Practice camera: before/goal pictures, the goal and the full step checklist (✓ done, ✗ correct this, ● current, ○ to do), visible throughout Practice.
+- Lesson pictures in the Teach and Practice lesson lists (stored goal reference, else the reviewed Teach frame).
+
+### Fixed
+- Teach camera and preview no longer show black bars at the sides: the video keeps its own aspect ratio.
+
+### Verified
+- 712 unit tests; type-check; lint 0 errors (5 existing warnings); production build.
+- Browser: full suite 46 passed, 1 skip; two renderer crashes under parallel load on this 8 GB codespace, both specs passed when rerun alone (12/12). Felicity browser tests (mocked endpoint, no paid call): immediate "Stop." with no remote wait; stale advice discarded after a correction; a new mistake's advice delivered and spoken; a failed request leaves Practice running and the step failed.
+- Real bottle clip (free continuation, model calls blocked): visibility requests during hand occlusion, step and final goal verified, reversal corrected, recovery verified.
+- Not yet: a paid Felicity request, physical-camera acceptance, video 4 (dark bottle in front of a dark sweater).
+
 ## 0.4.2 — 2026-11-03
 
 ### Fixed

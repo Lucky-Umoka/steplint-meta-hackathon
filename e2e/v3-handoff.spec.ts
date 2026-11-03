@@ -78,6 +78,8 @@ test("Phase 2: a corrected V3 lesson survives approve → save → reload → Pr
   await page.getByLabel(/I reviewed this recording/).check();
   await page.getByRole("button", { name: "Build my lesson", exact: true }).click();
   await expect(page.getByRole("heading", { name: "4. Review the draft" })).toBeVisible();
+  // No audit mock here: the request is blocked, and Teach continues normally.
+  await expect(page.getByTestId("felicity-audit")).toContainText("Audit unavailable");
 
   // 2. Review and correct roles, a step and the final goal (existing editor).
   await page.getByText("Advanced rule editor", { exact: true }).click();
@@ -144,5 +146,7 @@ test("Phase 2: a corrected V3 lesson survives approve → save → reload → Pr
   await page.goto(`/practice?lesson=${id}`);
   await expect(alert).toContainText("This approval is stale");
   await expect(page.getByTestId("practice-camera")).toHaveCount(0);
-  expect(paid).toEqual([]);
+  // Only the Felicity audit was attempted, and it was blocked (no paid call);
+  // Teach still reached approval with the audit shown as unavailable.
+  expect(paid).toEqual(["/api/teach/audit"]);
 });

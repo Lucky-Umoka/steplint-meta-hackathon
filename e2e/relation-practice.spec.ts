@@ -300,7 +300,7 @@ test("keeps automatic evidence capture alive during a delayed AI response", asyn
   await move(page, 100);
   await expect.poll(() => requests.length, { timeout: 20000 }).toBe(1);
   await expect(
-    page.getByText("StepLint Guide · checking evidence", { exact: true }),
+    page.getByText("Gideon · checking evidence", { exact: true }),
   ).toBeVisible();
   await move(page, 180);
   await expect(page.getByText(/1 captured action waiting/)).toBeVisible({

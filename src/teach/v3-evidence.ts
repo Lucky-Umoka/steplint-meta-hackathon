@@ -9,6 +9,26 @@ import {
 } from "./source-evidence";
 
 /** Pure source checks: valid JSON and frame indices do not prove a measured action. */
+/**
+ * Final-goal consistency with the measured actions (owner report: the goal
+ * named an intermediate move or place). Never repaired silently: the issue
+ * goes to the single correction request, then to human review.
+ */
+export function finalGoalIssue(procedure: ProcedureSpec): string | null {
+  const execution = procedure.execution;
+  if (execution?.schemaVersion !== 3) return null;
+  const last = new Map<string, ProcedureSpec["steps"][number]>();
+  for (const step of procedure.steps) last.set(step.condition.componentId, step);
+  for (const p of execution.finalConditions) {
+    if (p.kind !== "object_in_zone") continue;
+    const step = last.get(p.objectId);
+    if (step && step.condition.toZone !== p.zoneId)
+      return `Final goal names ${p.objectId} in "${p.zoneId}", but its last measured action "${step.id}" ends in "${step.condition.toZone}". The final condition must be where the object finally rests; correct finalConditions (and its requirement links).`;
+  }
+  // Intermediate goal steps are rejected by the procedure schema with its own
+  // actionable "remove … from goalStepIds" message.
+  return null;
+}
 export function validateV3Evidence(
   draft: TeachDraft,
   context: TeachContext,
@@ -16,6 +36,8 @@ export function validateV3Evidence(
   const procedure: ProcedureSpec = draft.procedure;
   const execution = procedure.execution;
   if (execution?.schemaVersion !== 3) return;
+  const goalIssue = finalGoalIssue(procedure);
+  if (goalIssue) throw Error(goalIssue);
   const times = context.lesson.media.frameTimesMs;
   const measuredWindowHint = (objectId: string) => {
     const entry = sourceEvidenceCatalog(context).find(

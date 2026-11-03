@@ -6,6 +6,24 @@ import {
 } from "@/teach/automatic-setup";
 import { saveApprovedProcedure } from "@/teach/approved-storage";
 import { alignScenePredicateEvidence } from "@/teach/predicate-evidence";
+
+type AuditFindingView = {
+  category: string;
+  attention: "requires_expert" | "suggestion";
+  message: string;
+  suggestion: string;
+  stepId: string | null;
+  transcriptMs: number | null;
+  frame: number | null;
+};
+const AUDIT_LABEL: Record<string, string> = {
+  missing_action: "Missing action",
+  visible_action_absent: "Movement not in the procedure",
+  unsupported_claim: "Claim beyond the evidence",
+  missing_object: "Object unclear or missing",
+  unclear_instruction: "Unclear instruction",
+  unclear_goal: "Final goal",
+};
 import { ApprovedArtifactSchema } from "@/teach/approved-artifact";
 import {
   RehearsalSchema,
@@ -125,6 +143,44 @@ export default function Review({
 }) {
   const router = useRouter();
   const feedback = useFeedback();
+  // Felicity quality audit of the generated draft (advisory; never edits or
+  // approves). One request per draft; failure leaves Teach unchanged.
+  const [audit, setAudit] = useState<
+    | { status: "loading" }
+    | { status: "unavailable"; reason: string }
+    | { status: "ready"; summary: string; findings: AuditFindingView[] }
+  >({ status: "loading" });
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/teach/audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({ token, draft: initial }),
+    })
+      .then(async (response) => {
+        const data = (await response.json().catch(() => null)) as
+          | { summary?: unknown; findings?: unknown; error?: unknown }
+          | null;
+        if (!response.ok || !data || !Array.isArray(data.findings))
+          throw Error(
+            typeof data?.error === "string" ? data.error : `HTTP ${response.status}`,
+          );
+        setAudit({
+          status: "ready",
+          summary: typeof data.summary === "string" ? data.summary : "",
+          findings: data.findings as AuditFindingView[],
+        });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setAudit({
+          status: "unavailable",
+          reason: error instanceof Error ? error.message : "Audit failed.",
+        });
+      });
+    return () => controller.abort();
+  }, [initial, token]);
   // Preserve the creator's entire intended scope, including unsupported work.
   // Scene predicates cite the measured boundary frames the reviewed zones
   // come from; the server re-validates this at approval.
@@ -788,6 +844,77 @@ export default function Review({
           Apply edited draft
         </button>
       </details>
+      <section
+        aria-label="Felicity audit"
+        data-testid="felicity-audit"
+        className="space-y-2 rounded-xl border border-violet-300 bg-violet-50 p-3"
+      >
+        <h3 className="font-bold text-violet-900">
+          Felicity audit — check before approving
+        </h3>
+        {audit.status === "loading" && (
+          <p className="text-sm">
+            Felicity is comparing this draft with the transcript and the
+            measured object movements…
+          </p>
+        )}
+        {audit.status === "unavailable" && (
+          <p className="text-sm" data-audit-status="unavailable">
+            Audit unavailable ({audit.reason}). The draft is unchanged; review it
+            yourself as usual.
+          </p>
+        )}
+        {audit.status === "ready" && (
+          <>
+            {audit.summary && <p className="text-sm">{audit.summary}</p>}
+            {audit.findings.length === 0 ? (
+              <p className="text-sm" data-audit-status="clear">
+                No issues found. You are still responsible for the review.
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {audit.findings.map((finding, index) => (
+                  <li
+                    key={index}
+                    data-attention={finding.attention}
+                    className={`rounded-lg border bg-white p-2 text-sm ${finding.attention === "requires_expert" ? "border-amber-500" : "border-slate-200"}`}
+                  >
+                    <span
+                      className={`mr-2 rounded px-1.5 py-0.5 text-xs font-bold ${finding.attention === "requires_expert" ? "bg-amber-100 text-amber-900" : "bg-slate-100 text-slate-700"}`}
+                    >
+                      {finding.attention === "requires_expert"
+                        ? "Needs your attention"
+                        : "Suggestion"}
+                    </span>
+                    <strong>{AUDIT_LABEL[finding.category] ?? finding.category}:</strong>{" "}
+                    {finding.message}
+                    <br />
+                    <span className="text-slate-700">
+                      Suggested: {finding.suggestion}
+                    </span>
+                    {(finding.stepId || finding.transcriptMs !== null || finding.frame !== null) && (
+                      <span className="block text-xs text-slate-500">
+                        {[
+                          finding.stepId && `step ${finding.stepId}`,
+                          finding.transcriptMs !== null &&
+                            `narration at ${(finding.transcriptMs / 1000).toFixed(1)} s`,
+                          finding.frame !== null && `video frame ${finding.frame}`,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="text-xs text-slate-600">
+              Advice only: Felicity never changes or approves the procedure.
+              Edit the steps above if you agree.
+            </p>
+          </>
+        )}
+      </section>
       <label>
         Your reviewer name{" "}
         <input

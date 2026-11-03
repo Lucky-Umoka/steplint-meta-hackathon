@@ -386,7 +386,7 @@ export default function LessonCapture({
         autoPlay
         muted
         playsInline
-        className="max-h-[30vh] w-full rounded-xl bg-slate-950"
+        className="mx-auto block max-h-[45vh] w-auto max-w-full rounded-xl bg-slate-950"
         aria-label="Live lesson preview"
       />
       <div className="flex flex-wrap gap-3">

@@ -1,6 +1,6 @@
 "use client";
 /**
- * StepLint Guide: a lightweight holographic companion face.
+ * Gideon (StepLint Guide): a lightweight holographic companion face.
  *
  * Pure SVG + CSS. No image asset, no 3D engine, no network, no model.
  * It only *reflects* the deterministic evaluator result and the real
@@ -95,21 +95,21 @@ export default function GuideAvatar({
   const { main, soft } = PALETTE[mode];
   const label =
     mode === "warning"
-      ? "StepLint Guide, warning"
+      ? "Gideon, warning"
       : mode === "success"
-        ? "StepLint Guide, step verified"
+        ? "Gideon, step verified"
         : mode === "uncertain"
-          ? "StepLint Guide, cannot verify yet"
+          ? "Gideon, cannot verify yet"
           : mode === "thinking"
-            ? "StepLint Guide, checking evidence"
+            ? "Gideon, checking evidence"
             : speech === "speaking"
-              ? "StepLint Guide, speaking"
+              ? "Gideon, speaking"
               : speech === "listening"
-                ? "StepLint Guide, listening"
-                : "StepLint Guide, idle";
+                ? "Gideon, listening"
+                : "Gideon, idle";
   return (
     <section
-      aria-label="StepLint Guide"
+      aria-label="Gideon"
       className={`flex h-full flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 text-center ${compact ? "min-h-0 p-2" : "min-h-80 p-4"}`}
     >
       <style>{`
@@ -230,7 +230,7 @@ export default function GuideAvatar({
         </svg>
       </div>
       <p className="mt-1 text-sm font-semibold text-cyan-100">
-        StepLint Guide · {label.replace("StepLint Guide, ", "")}
+        Gideon · {label.replace("Gideon, ", "")}
       </p>
       {caption && !compact && (
         <p className="mt-1 min-h-10 line-clamp-2 text-sm text-slate-200">
