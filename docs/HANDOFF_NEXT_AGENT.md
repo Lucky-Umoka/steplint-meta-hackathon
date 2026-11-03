@@ -397,3 +397,9 @@ Browser/build execution may require escalation outside the sandbox; use the tool
 6. Owner physical-camera acceptance remains open. Earlier recorded/mock/browser passes do not close it.
 
 Additional progress records written this session: `docs/DECISIONS.md`, `docs/ARCHITECTURE.md`, `docs/LOCAL_PRACTICE_IMPLEMENTATION_LOG.md`, and `docs/PRACTICE_REVIEW_CORRECTION.md`. Preserve owner work and the append-only audit. No real credentials are included here, and nothing was committed or deployed.
+
+## 7. Status after v0.4.1 work (2026-11-03, later)
+- Uncommitted on `main`; the owner commits and pushes themself. Do not push.
+- Two keys, two clients: `MODEL_API_KEY`/api.meta.ai only SAM 3.1 + Muse Voice Transcribe; `BASETEN_API_KEY`/inference.baseten.co only Muse Spark Open (discovery + drafting). The Meta client refuses `muse-spark*` at its fetch boundary.
+- Paid runs 5–7 (the owner's second batch of 3) are all used; see `.media-lab/live-e2e/ledger.json`. Run 5 reached a real end-to-end final goal; 6 and 7 failed in Teach on issues now fixed offline. A further paid run needs new explicit owner authorization.
+- See CHANGELOG 0.4.1 and the last DECISIONS entries.

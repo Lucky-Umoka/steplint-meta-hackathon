@@ -1,8 +1,8 @@
 import { alignScenePredicateEvidence } from "../../teach/predicate-evidence";
 import { maskForeground, coversFrame } from "./mask-geometry";
 import { SAM_REQUEST_TIMEOUT_MS } from "../../media/limits";
-import { SparkError, sparkStructured } from "../meta/spark";
-import { sparkCompletionLimit } from "../meta/spark-limits";
+import { providerJsonSchema, SparkError, sparkStructured } from "../meta/spark";
+import { sparkCompletionLimit, sparkProvider } from "../meta/spark-limits";
 import {
   ExecutionV3Schema,
   ComponentExecutionSchema,
@@ -434,7 +434,7 @@ export function sparkRequest(
     model: "muse-spark-1.3",
     store: false,
     max_output_tokens: options
-      ? sparkCompletionLimit(process.env.SPARK_PROVIDER || "meta")
+      ? sparkCompletionLimit(sparkProvider())
       : 6144,
     reasoning: { effort: "low" as const },
     instructions:
@@ -450,7 +450,7 @@ export function sparkRequest(
         type: "json_schema" as const,
         name: "StepLintTeachDraft",
         strict: true,
-        schema: z.toJSONSchema(wireSchema),
+        schema: providerJsonSchema(wireSchema),
       },
     },
   };
@@ -687,11 +687,10 @@ export async function compileLesson(
     if (selectionInput === undefined) {
       progress("Finding task components automatically from your video…");
       selections = await discoverComponents(
-        client,
-        upload.fileId,
         upload.lesson,
         signal,
         options?.goal,
+        options?.videoBase64,
       );
       progress(
         `Found ${selections.length} candidate components. Tracking their proposed marks…`,
@@ -736,8 +735,6 @@ export async function compileLesson(
           ...call,
           name: "StepLintTeachDraft",
           signal,
-          metaClient: client,
-          metaVideoFileId: call.videoBase64 ? upload.fileId : undefined,
         }),
       (next) => {
         stage = next;

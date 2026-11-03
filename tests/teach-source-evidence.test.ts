@@ -21,17 +21,13 @@ import type { ExecutionV3 } from "../src/procedure/execution-v3";
 import { alignScenePredicateEvidence } from "../src/teach/predicate-evidence";
 
 vi.mock("server-only", () => ({}));
-it("budgets Baseten reasoning and JSON without changing Meta's existing ceiling", () => {
+it("budgets Baseten reasoning and JSON for every provider setting (Spark is Baseten-only)", () => {
   const { context } = teachV3Fixture();
   try {
-    vi.stubEnv("SPARK_PROVIDER", "baseten");
-    expect(sparkRequest(context, { goal: "Transfer" }).max_output_tokens).toBe(
-      24_576,
-    );
-    vi.stubEnv("SPARK_PROVIDER", "meta");
-    expect(sparkRequest(context, { goal: "Transfer" }).max_output_tokens).toBe(
-      12_000,
-    );
+    for (const value of ["", "baseten", "meta"]) {
+      vi.stubEnv("SPARK_PROVIDER", value);
+      expect(sparkRequest(context, { goal: "Transfer" }).max_output_tokens).toBe(24_576);
+    }
     expect(sparkRequest(context).max_output_tokens).toBe(6144);
   } finally {
     vi.unstubAllEnvs();

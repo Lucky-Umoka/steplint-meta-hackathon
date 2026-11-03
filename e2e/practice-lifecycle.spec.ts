@@ -206,6 +206,11 @@ test("real-browser voice shapes drive the canonical page: narration prefix, spli
   const manual = page.getByRole("dialog", { name: "Voice and gesture commands" });
   await expect(manual).toContainText("“Guide, resume practice”");
   await expect(manual).toContainText("Pinch");
+  // Centred in the viewport, not pinned to a corner.
+  const box = (await manual.boundingBox())!;
+  const view = page.viewportSize()!;
+  expect(Math.abs(box.x + box.width / 2 - view.width / 2)).toBeLessThan(4);
+  expect(Math.abs(box.y + box.height / 2 - view.height / 2)).toBeLessThan(4);
   await manual.getByRole("button", { name: "Close" }).click();
   await expect(manual).toBeHidden();
 });

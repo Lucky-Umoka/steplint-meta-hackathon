@@ -11,3 +11,7 @@ export function sparkCompletionLimit(provider: string): number {
     ? BASETEN_SPARK_COMPLETION_LIMIT
     : META_SPARK_COMPLETION_LIMIT;
 }
+/** Muse Spark provider: always Baseten (owner rule 2026-11-03; never Meta). */
+export function sparkProvider(): "baseten" {
+  return "baseten";
+}

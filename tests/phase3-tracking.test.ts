@@ -321,3 +321,22 @@ it("a lost mover landing on a fixed reference inside an approved zone is occlusi
       expect(landed.detections.find((d) => d.objectId === "plate")?.quality).not.toBe("observed");
   }
 });
+it("resume finds a mover resting on the stationary reference at its verified zone; without that expectation it is not found", () => {
+  const onPlate = { left: 0.7, top: 0.45, right: 0.9, bottom: 0.75 }; // ~30% of the plate
+  const resting = smoothTable([
+    { box: P, seed: 2 },
+    { box: onPlate, seed: 1 },
+  ]);
+  const zone = { left: 0.76, top: 0.56, right: 0.84, bottom: 0.64 };
+  const resumed = bootstrapLocal(resting, {
+    scene: source,
+    objects: objects().map((o) => (o.id === "mover" ? { ...o, expectedBox: zone } : o)),
+  });
+  const reply = trackLocal(resting, resumed.state, { ...tick(), watch });
+  expect(reply.calibrationValid).toBe(true);
+  expect(reply.detections.find((d) => d.objectId === "mover")?.quality).toBe("observed");
+  // Expected at its demonstrated start instead: it is not there.
+  expect(() =>
+    bootstrapLocal(resting, { scene: source, objects: objects() }),
+  ).toThrow(/Finding mover|stationary reference/);
+});

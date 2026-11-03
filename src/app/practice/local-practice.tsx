@@ -126,6 +126,7 @@ export default function LocalPractice() {
   const [liveTracking, setLiveTracking] = useState<LiveTracking | null>(null);
   const replyTimes = useRef<number[]>([]);
   const staleSince = useRef<number | null>(null);
+  const [switchingCamera, setSwitchingCamera] = useState(false);
   const goalRef = useRef<GoalState | null>(null);
   // Phase 4: the single authoritative lifecycle, shared by UI and voice.
   const [lifecycle, setLifecycle] = useState<Lifecycle>(initialLifecycle);
@@ -463,6 +464,9 @@ export default function LocalPractice() {
     start: startCamera,
     stop: stopCamera,
     getStats: cameraStats,
+    facing: cameraFacing,
+    chooseFacing: chooseCameraFacing,
+    cameraCount,
   } = useGuideCamera(
     (image, now) => {
       if (!latest.current) setFrameReady(true);
@@ -1463,6 +1467,18 @@ export default function LocalPractice() {
       halt();
     }
   }
+  // Restart on the newly chosen camera once the old stream has stopped.
+  useEffect(() => {
+    if (!switchingCamera || cameraActive || cameraRequesting) return;
+    const id = window.setTimeout(() => {
+      setSwitchingCamera(false);
+      if (lesson?.automaticSetup) void ensurePracticeRunning("resume");
+      else void openCamera();
+    }, 0);
+    return () => window.clearTimeout(id);
+    // ensurePracticeRunning/openCamera read current refs and state at call time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [switchingCamera, cameraActive, cameraRequesting]);
   const voice = useVoiceControl({
     commands: LOCAL_PRACTICE_COMMANDS,
     enabled: voiceOn,
@@ -1697,6 +1713,24 @@ export default function LocalPractice() {
           ) : (
             <>
               <button onClick={() => closeCamera()}>Stop camera</button>
+              {cameraCount > 1 && (
+                <button
+                  onClick={() => {
+                    // A different camera is a different view: stop through
+                    // the canonical path, then start Practice again, which
+                    // re-finds the work area from the reviewed references.
+                    chooseCameraFacing(
+                      cameraFacing === "environment" ? "user" : "environment",
+                    );
+                    closeCamera("Switching camera.");
+                    setSwitchingCamera(true);
+                  }}
+                >
+                  {cameraFacing === "environment"
+                    ? "Use front camera"
+                    : "Use back camera"}
+                </button>
+              )}
               {!running &&
                 !starting &&
                 (!lesson?.automaticSetup || manualSetupOpen) && (

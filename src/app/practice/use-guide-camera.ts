@@ -12,6 +12,35 @@ export function useGuideCamera(
     generation = useRef(0),
     callbacks = useRef({ onFrame, onPause }),
     limits = useRef(options);
+  // Back camera by default (pointing at the work); the learner may choose the
+  // front camera on a phone. Remembered per browser as a convenience only.
+  const [facing, setFacing] = useState<"environment" | "user">("environment");
+  const facingRef = useRef<"environment" | "user">("environment");
+  const [cameraCount, setCameraCount] = useState(0);
+  useEffect(() => {
+    // Deferred so the effect body never sets state synchronously.
+    const id = window.setTimeout(() => {
+      try {
+        const saved = window.localStorage.getItem("steplint-camera-facing");
+        if (saved === "user" || saved === "environment") {
+          facingRef.current = saved;
+          setFacing(saved);
+        }
+      } catch {
+        // Storage unavailable: keep the back camera.
+      }
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, []);
+  const chooseFacing = useCallback((next: "environment" | "user") => {
+    facingRef.current = next;
+    setFacing(next);
+    try {
+      window.localStorage.setItem("steplint-camera-facing", next);
+    } catch {
+      // Storage unavailable: the choice still applies to this page.
+    }
+  }, []);
   const [active, setActive] = useState(false),
     [requesting, setRequesting] = useState(false),
     [size, setSize] = useState({ width: 640, height: 480 });
@@ -52,7 +81,7 @@ export function useGuideCamera(
           aspectRatio <= 5
             ? { aspectRatio: { ideal: aspectRatio } }
             : {}),
-          facingMode: "environment",
+          facingMode: { ideal: facingRef.current },
         },
         audio: false,
       });
@@ -80,6 +109,15 @@ export function useGuideCamera(
       if (gen !== generation.current) return;
       setSize({ width: v.videoWidth || 640, height: v.videoHeight || 480 });
       setActive(true);
+      // Device labels and counts are only reliable after permission.
+      navigator.mediaDevices
+        .enumerateDevices?.()
+        .then((devices) =>
+          setCameraCount(
+            devices.filter((device) => device.kind === "videoinput").length,
+          ),
+        )
+        .catch(() => setCameraCount(0));
     } catch (e) {
       if (gen === generation.current) {
         callbacks.current.onPause(
@@ -231,5 +269,17 @@ export function useGuideCamera(
     },
     [],
   );
-  return { video, active, requesting, size, start, stop, capture, getStats };
+  return {
+    video,
+    active,
+    requesting,
+    size,
+    start,
+    stop,
+    capture,
+    getStats,
+    facing,
+    chooseFacing,
+    cameraCount,
+  };
 }

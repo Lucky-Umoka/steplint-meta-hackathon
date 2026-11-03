@@ -27,7 +27,7 @@ export default function CommandHelp({
       <dialog
         ref={dialog}
         aria-label="Voice and gesture commands"
-        className="max-h-[85dvh] w-[min(92vw,34rem)] overflow-y-auto rounded-xl p-4 backdrop:bg-black/40"
+        className="fixed inset-0 m-auto h-fit max-h-[85dvh] w-[min(92vw,34rem)] overflow-y-auto rounded-xl p-4 backdrop:bg-black/40"
         onClick={(event) => {
           if (event.target === dialog.current) dialog.current?.close();
         }}
