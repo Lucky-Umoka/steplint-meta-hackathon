@@ -265,7 +265,7 @@ export default function Teach() {
   }
   function accept(value: PreparedLesson) {
     if (clip.current) URL.revokeObjectURL(clip.current);
-    clip.current = URL.createObjectURL(value.video);
+    clip.current = URL.createObjectURL(value.playback);
     setPreview(clip.current);
     setPrepared(value);
     setConsent(false);

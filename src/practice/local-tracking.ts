@@ -549,14 +549,23 @@ export function trackLocal(
         // once a clear frame confirms it; bounded to every 10th observation.
         if (
           !slot.fixed &&
-          slot.sourcePalette &&
           slot.profile.method !== "native_palette" &&
           (slot.upgradeTick = (slot.upgradeTick ?? 0) + 1) % 10 === 0
         ) {
+          // The identity is confirmed this frame, so the live view's own
+          // colour (current exposure) is tried first; the approved Teach
+          // colour (one compressed source frame) second. Either must measure
+          // the object observed at the unchanged 0.9 gate.
           const chosen = preferApprovedPalette(
             image,
             frame,
-            slot.profile,
+            preferApprovedPalette(
+              image,
+              frame,
+              slot.profile,
+              groundNativePalette(image, id, detection.box),
+              detection.box,
+            ),
             slot.sourcePalette,
             detection.box,
           );
@@ -829,7 +838,10 @@ export function bootstrapLocal(
           (object.required ?? true) === false &&
           movers.some(
             (mover) =>
-              intersection(object.box, mover.box) / area(object.box) > 0.2,
+              intersection(object.box, mover.box) / area(object.box) > 0.2 ||
+              // A surface the mover rests on or crosses (a whole tabletop
+              // proposed as "support", live run 8) moves under the mover.
+              intersection(object.box, mover.box) / area(mover.box) > 0.2,
           ),
       )
       .map((object) => object.id),

@@ -19,7 +19,18 @@ import { inspectMedia } from "@/media/inspect";
 import { inspectLessonVideo } from "@/teach/media";
 import { MAX_TEACH_BODY, type LessonMedia } from "@/teach/schema";
 
-export type PreparedLesson = { video: Blob; audio: Blob; media: LessonMedia };
+export type PreparedLesson = {
+  /** Upload/SAM video: normalized MP4 without audio (Vercel body budget). */
+  video: Blob;
+  /** Narration for transcription: mono PCM WAV. */
+  audio: Blob;
+  media: LessonMedia;
+  /**
+   * What the creator plays back and may save: the original recording or
+   * uploaded file, WITH its sound. Never uploaded; local preview only.
+   */
+  playback: Blob;
+};
 export type ControlMark = {
   at: number;
   recordingMs: number | null;
@@ -148,16 +159,18 @@ export default function LessonCapture({
         );
       controller.signal.throwIfAborted();
       setState("idle");
-      onPrepared({ video, audio: audio.blob, media });
+      onPrepared({ video, audio: audio.blob, media, playback: source });
     } catch (e) {
       if (!controller.signal.aborted) {
         setState("idle");
         const message =
           e instanceof Error ? e.message : "Unable to prepare lesson.";
         fail(
-          !existing && message.startsWith("No audio track")
-            ? `This browser saved the recording without sound (format ${source.type || "unknown"}), although the microphone was on. Try recording in Chrome or Safari, or upload an MP4 recorded with the phone's camera app.`
-            : message,
+          !message.startsWith("No audio track")
+            ? message
+            : existing
+              ? "This video file has no sound track, so the narration cannot be transcribed. Upload the original recording with sound (a file saved from an earlier StepLint preview before version 0.4.2 may be silent), or record the lesson here."
+              : `This browser saved the recording without sound (format ${source.type || "unknown"}), although the microphone was on. Try recording in Chrome or Safari, or upload an MP4 recorded with the phone's camera app.`,
         );
       }
     }

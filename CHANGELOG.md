@@ -2,6 +2,13 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.4.2 — 2026-11-03
+
+### Fixed
+- Teach recordings sounded silent on phone and desktop. Root cause: commit 7dbcb85 (60-second limit, 2 Nov) changed the prepared MP4 from keeping AAC audio to always discarding it, to fit Vercel's 4 MB upload (silent MP4 plus a separate narration WAV). The preview, and anything saved from it, played that silent MP4. The preview now plays the original recording with its sound; the upload is unchanged (silent budgeted MP4 + WAV), so limits are untouched. Uploading a file without a sound track now says so plainly.
+- Practice tracking on new lessons (paid run 8): while an object's identity is confirmed, the tracker now tries a colour profile grounded from the live view (current exposure) before the one learned from a single compressed Teach frame, under the same 0.9 gate. An optional "support" surface that contains a mover (a whole tabletop) is no longer used as a camera reference. Page-like offline replay of the real clip: both the run-5 and run-8 lessons confirm the goal from all 7 tested start points (3–27 s); reversal still caught at frame 280; calibration valid on all 540 frames.
+- The version shown in the header is read from package.json (it was hard-coded as v0.3).
+
 ## 0.4.1 — 2026-11-03
 
 ### Fixed

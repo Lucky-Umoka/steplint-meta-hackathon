@@ -340,3 +340,16 @@ it("resume finds a mover resting on the stationary reference at its verified zon
     bootstrapLocal(resting, { scene: source, objects: objects() }),
   ).toThrow(/Finding mover|stationary reference/);
 });
+it("an optional support surface the mover rests on (a whole tabletop) is never a camera reference (live run 8)", () => {
+  const table = { left: 0, top: 0.3, right: 1, bottom: 0.98 };
+  const { state } = bootstrapLocal(startView(), {
+    scene: source,
+    objects: [
+      ...objects(),
+      { id: "table", box: table, fixed: true, image: source, required: false, active: true },
+    ],
+  });
+  expect(Object.keys(state.fixed)).not.toContain("table");
+  expect(Object.keys(state.fixed)).toContain("plate");
+  expect(trackLocal(startView(), state, { ...tick(), watch }).calibrationValid).toBe(true);
+});
