@@ -68,6 +68,32 @@ it("requires the Baseten key without a network call", async () => {
   });
   expect(fetch).not.toHaveBeenCalled();
 });
+it("reports only safe token counts for truncation without parsing incomplete output", async () => {
+  mock("{", "length");
+  await expect(sparkStructured(args)).rejects.toMatchObject({
+    code: "truncated_output",
+    tokenUsage: {
+      outputTokens: null,
+      reasoningTokens: null,
+      answerCharacters: 1,
+    },
+  });
+});
+it("accepts the bounded Baseten reasoning-plus-answer budget and rejects exceeding it before dispatch", async () => {
+  const transport = mock();
+  await expect(
+    sparkStructured({ ...args, maxTokens: 24_576 }),
+  ).resolves.toMatchObject({ data: { ok: true } });
+  const [input, init] = transport.mock.calls.find(
+    ([url]) => String(url) !== "data:,",
+  )!;
+  expect((await new Request(input, init).json()).max_tokens).toBe(24_576);
+  const before = transport.mock.calls.length;
+  await expect(
+    sparkStructured({ ...args, maxTokens: 24_577 }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  expect(transport.mock.calls).toHaveLength(before);
+});
 it.each([401, 403, 500])(
   "maps HTTP %i without retries or exposing responses",
   async (status) => {
@@ -107,6 +133,55 @@ it("defaults to Meta and uses its existing Responses transport", async () => {
     (await sparkStructured({ ...args, metaClient: createMetaClient() }))
       .diagnostic.provider,
   ).toBe("meta");
+});
+
+it.each([400, 422, 429, 503])(
+  "preserves safe HTTP %i diagnostics without exposing upstream data",
+  async (status) => {
+    const transport = mock("", "stop", status);
+    const error = await sparkStructured(args).catch(
+      (failure: unknown) => failure,
+    );
+    expect(error).toMatchObject({
+      code:
+        status === 429
+          ? "rate_limited"
+          : status < 500
+            ? "request_rejected"
+            : "provider_error",
+    });
+    expect(error).toBeInstanceOf(Error);
+    if (error instanceof Error) {
+      expect(error.message).toContain(`HTTP ${status}`);
+      expect(error.message).not.toContain("sensitive upstream body");
+      expect(error.message).not.toContain("mock-private-key");
+    }
+    expect(
+      transport.mock.calls.filter(([url]) => String(url) !== "data:,"),
+    ).toHaveLength(1);
+  },
+);
+
+it("classifies Meta timeout and connection failures without returning exception details", async () => {
+  const OpenAI = (await import("openai")).default;
+  vi.stubEnv("SPARK_PROVIDER", "meta");
+  const { createMetaClient } = await import("../src/server/meta/client");
+  vi.stubEnv("MODEL_API_KEY", "meta-mock");
+  const client = createMetaClient();
+  const create = vi.spyOn(client.responses, "create");
+  for (const [failure, code] of [
+    [new OpenAI.APIConnectionTimeoutError(), "timeout"],
+    [
+      new OpenAI.APIConnectionError({ message: "private details" }),
+      "connection_error",
+    ],
+  ] as const) {
+    create.mockRejectedValueOnce(failure);
+    await expect(
+      sparkStructured({ ...args, metaClient: client }),
+    ).rejects.toMatchObject({ code });
+  }
+  expect(create).toHaveBeenCalledTimes(2);
 });
 
 it("keeps the SAM client and Voice endpoint on Meta when Baseten is selected", async () => {

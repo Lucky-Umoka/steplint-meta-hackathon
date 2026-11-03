@@ -48,7 +48,14 @@ export function automaticSetupPlan(
   const sceneFrame = review.steps[0].fromFrame;
   const video = context.lesson.media.info.video;
   if (!video) throw Error("The source video dimensions are missing.");
-  const objects = procedure.components.map((component) => {
+  // Role-aware (Phase 3): V3 irrelevant objects are never runtime setup;
+  // supporting objects are included only when reliable source appearance
+  // exists; required objects (and every V2 object) stay mandatory.
+  const role = (component: ProcedureSpec["components"][number]) =>
+    procedure.execution?.schemaVersion === 3
+      ? (component.execution?.role ?? "required")
+      : "required";
+  const setupObject = (component: ProcedureSpec["components"][number]) => {
     const first = procedure.steps.find(
       (step) => step.condition.componentId === component.id,
     );
@@ -90,7 +97,19 @@ export function automaticSetupPlan(
         `No reliable source appearance for ${component.description}. Review its starting view.`,
       );
     return { id: component.id, fixed, frame: sample.frame, box: sample.box };
-  });
+  };
+  const objects = procedure.components
+    .filter((component) => role(component) !== "irrelevant")
+    .flatMap((component) => {
+      try {
+        return [setupObject(component)];
+      } catch (error) {
+        if (role(component) === "supporting") return [];
+        throw error;
+      }
+    });
+  if (!objects.length)
+    throw Error("No required object has a reliable source appearance.");
   return {
     sceneFrame,
     goalFrame: Math.max(...review.steps.map((step) => step.toFrame)),
@@ -122,4 +141,34 @@ export function bindAutomaticSetup(
     objects: plan.objects,
     frames,
   });
+}
+/**
+ * V3 lessons start Practice automatically from reviewed Teach references, so
+ * setup is mandatory and must describe exactly this procedure: one entry per
+ * component and an image for the scene and every object reference frame.
+ */
+export function automaticSetupIssue(
+  procedure: ProcedureSpec,
+  setup: AutomaticSetup | undefined,
+): string | null {
+  if (procedure.execution?.schemaVersion !== 3) return null;
+  if (!setup)
+    return "Automatic setup is missing: the reviewed source frames were not extracted. Return to Teach review and approve or rehearse again.";
+  const ids = new Set(setup.objects.map((object) => object.id));
+  const role = (c: ProcedureSpec["components"][number]) =>
+    c.execution?.role ?? "required";
+  const frames = new Set(setup.frames.map((frame) => frame.frame));
+  if (
+    ids.size !== setup.objects.length ||
+    procedure.components.some(
+      (c) =>
+        (role(c) === "required" && !ids.has(c.id)) ||
+        (role(c) === "irrelevant" && ids.has(c.id)),
+    ) ||
+    [...ids].some((id) => !procedure.components.some((c) => c.id === id)) ||
+    !frames.has(setup.sceneFrame) ||
+    setup.objects.some((object) => !frames.has(object.frame))
+  )
+    return "Automatic setup does not match this procedure's objects and reviewed frames. Return to Teach review.";
+  return null;
 }

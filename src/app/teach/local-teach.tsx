@@ -21,6 +21,8 @@ import {
 } from "@/teach/schema";
 import { readAppJson } from "@/teach/api-response";
 import { localExecutionDraft } from "@/teach/local-execution";
+import { teachVideoDataUrl } from "@/teach/media";
+import { MAX_TEACH_BODY } from "@/media/limits";
 const UploadSchema = z.object({
   lesson: LessonSchema,
   token: z.string().min(1),
@@ -191,15 +193,15 @@ function LocalTeachFlow() {
     setError("");
     setMessage("Finding task components automatically from your video…");
     try {
+      if (!prepared) throw Error("Keep the reviewed video available for visual action drafting.");
+      const videoBase64 = await teachVideoDataUrl(prepared.video);
+      const compileBody = JSON.stringify({ token: data.token, confirmed: true, goal: narration, automatic: true, videoBase64 });
+      if (new TextEncoder().encode(compileBody).byteLength > MAX_TEACH_BODY)
+        throw Error("The reviewed video and analysis request exceed this host's upload budget. Use a shorter or smaller clip.");
       const response = await fetch("/api/teach/compile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token: data.token,
-          confirmed: true,
-          goal: narration,
-          automatic: true,
-        }),
+        body: compileBody,
       });
       if (!response.ok) {
         await readAppJson(response, "Lesson analysis");

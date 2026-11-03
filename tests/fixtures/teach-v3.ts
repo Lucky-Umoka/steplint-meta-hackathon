@@ -2,13 +2,36 @@ import type { TeachDraft } from "../../src/teach/schema";
 import type { ExecutionV3 } from "../../src/procedure/execution-v3";
 import { localFixture } from "./local-procedure";
 
+/**
+ * Realistic V3 source timeline (100 ms per frame): the object is still for
+ * 400 ms before each move and after it lands, as Teach requires for an
+ * at-rest start and result. FRAMES names every landmark tests use.
+ */
+export function v3Frames(twoActions = false) {
+  return twoActions
+    ? {
+        first: { startFrame: 4, changeFrame: 5, resultFrame: 6 },
+        second: { startFrame: 10, changeFrame: 11, resultFrame: 12 },
+        last: 16,
+      }
+    : {
+        first: { startFrame: 4, changeFrame: 5, resultFrame: 6 },
+        second: null,
+        last: 10,
+      };
+}
 export function teachV3Fixture(twoActions = false) {
   const { context, draft } = localFixture();
-  const last = twoActions ? 4 : 2;
+  const frames = v3Frames(twoActions);
+  const last = frames.last;
+  // Pose per frame: still at origin, one moving frame, still where it lands.
+  const left = (frame: number) =>
+    frame <= 4 ? 0.1 : frame === 5 ? 0.25 : frame <= 10 ? 0.4 : frame === 11 ? 0.55 : 0.7;
   context.lesson.media.frameTimesMs = Array.from(
     { length: last + 1 },
     (_, frame) => frame * 100,
   );
+  context.lesson.media.info.video!.frames = last + 1;
   context.tracking[0].samples = Array.from(
     { length: last + 1 },
     (_, frame) => ({
@@ -17,13 +40,18 @@ export function teachV3Fixture(twoActions = false) {
       confidence: 0.99,
       maskPixels: 100,
       box: {
-        left: 0.1 + frame * 0.15,
+        left: left(frame),
         top: 0.3,
-        right: 0.25 + frame * 0.15,
+        right: left(frame) + 0.15,
         bottom: 0.65,
       },
     }),
   );
+  draft.notes[0].supportingFrames = [
+    frames.first.startFrame,
+    frames.first.changeFrame,
+    frames.first.resultFrame,
+  ];
   draft.procedure.components[0].execution = {
     role: "required",
     roleReason: "Object whose transfer proves the task",
@@ -35,7 +63,7 @@ export function teachV3Fixture(twoActions = false) {
     requiredObjectIds: ["component-1"],
     capability: "zone_transition",
     supportedClaim: "The visible object moves between the reviewed zones",
-    evidenceWindow: { startFrame: 0, changeFrame: 1, resultFrame: 2 },
+    evidenceWindow: { ...frames.first },
   };
   if (twoActions) {
     draft.procedure.zones.push({
@@ -51,16 +79,16 @@ export function teachV3Fixture(twoActions = false) {
       fromZone: "middle",
       toZone: "destination",
     };
-    second.execution!.evidenceWindow = {
-      startFrame: 2,
-      changeFrame: 3,
-      resultFrame: 4,
-    };
+    second.execution!.evidenceWindow = { ...frames.second! };
     draft.procedure.steps.push(second);
     draft.notes.push({
       ...structuredClone(draft.notes[0]),
       stepId: second.id,
-      supportingFrames: [2, 3, 4],
+      supportingFrames: [
+        frames.second!.startFrame,
+        frames.second!.changeFrame,
+        frames.second!.resultFrame,
+      ],
     });
   }
   const execution: ExecutionV3 = {

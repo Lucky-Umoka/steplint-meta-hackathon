@@ -13,6 +13,7 @@ import {
   suggestReviews,
 } from "../src/teach/review-suggestions";
 import { parseSparkDraft, sparkRequest } from "../src/server/teach/pipeline";
+import { reviewStepInput } from "../src/teach/review-suggestions";
 import { teachV3Fixture } from "./fixtures/teach-v3";
 
 vi.mock("server-only", () => ({}));
@@ -37,9 +38,9 @@ describe("V3 executable Teach contract", () => {
     const normalized = validateDraft(normalize(draft), context);
     expect(normalized.procedure.execution).toEqual(draft.procedure.execution);
     expect(normalized.procedure.steps[0].measurement?.sourceFrames).toEqual({
-      start: 0,
-      change: 1,
-      result: 2,
+      start: 4,
+      change: 5,
+      result: 6,
     });
     expect(normalized.procedure.steps[0].measurement?.releaseStepId).toBe(
       "transfer-again",
@@ -166,55 +167,124 @@ describe("V3 executable Teach contract", () => {
     expect(source).not.toContain("narrowToVerifiableScope");
     expect(source).not.toContain("autoNarrowed");
   });
-  it("does not enable V3 approval or let the old verifier silently ignore V3 goals", () => {
+  it("approves V3 only after full validation and never accepts an approval without its exact revision (Phase 2)", () => {
     const { draft, context } = teachV3Fixture();
     const normalized = normalize(draft),
       checks = suggestReviews(normalized, context);
+    const approved = approveDraft(
+      normalized,
+      {
+        reviewer: "Human",
+        confirmed: true,
+        goalConfirmed: true,
+        steps: [
+          reviewStepInput("transfer", {
+            ...checks.transfer,
+            reviewed: true,
+            conditionConfirmed: true,
+          }),
+        ],
+      },
+      context,
+      1000,
+    );
+    expect(approved.procedure.approval?.revision).toMatch(/^[0-9a-f]{64}$/);
+    // The schema itself refuses a V3 approval that names no revision.
     expect(() =>
-      approveDraft(
-        normalized,
-        {
-          reviewer: "Human",
-          confirmed: true,
-          goalConfirmed: true,
-          steps: [
-            {
-              ...checks.transfer,
-              stepId: "transfer",
-              reviewed: true,
-              conditionConfirmed: true,
-            },
-          ],
-        },
-        context,
-        1000,
-      ),
-    ).toThrow("V3 approval");
+      ProcedureSpecSchema.parse({
+        ...approved.procedure,
+        approval: { reviewer: "Human", timestampMs: 1000 },
+      }),
+    ).toThrow("V3 approval must identify its exact executable revision.");
   });
   it("rejects invented, low-confidence, inconsistent, and motionless evidence", () => {
     for (const kind of ["invented", "low", "timestamp", "static"]) {
       const { draft, context } = teachV3Fixture();
       if (kind === "invented")
         draft.procedure.components[0].execution!.referenceFrames = [99];
-      if (kind === "low") context.tracking[0].samples[1].confidence = 0.2;
+      // Frame 5 is the change landmark, frame 6 the result (v3Frames).
+      if (kind === "low") context.tracking[0].samples[5].confidence = 0.2;
       if (kind === "timestamp")
-        context.tracking[0].samples[1].timestampMs = 199;
+        context.tracking[0].samples[5].timestampMs = 499;
       if (kind === "static")
-        context.tracking[0].samples[2].box = context.tracking[0].samples[0].box;
+        context.tracking[0].samples[6].box = context.tracking[0].samples[4].box;
       expect(() => validateDraft(normalize(draft), context)).toThrow();
       expect(() => localExecutionDraft(draft, "Narration", context)).toThrow();
     }
   });
   it("requires source landmarks in the owning note and the same final scene", () => {
     const { draft, context, execution } = teachV3Fixture();
-    draft.notes[0].supportingFrames = [0, 2];
+    draft.notes[0].supportingFrames = [4, 6];
     expect(() => validateDraft(normalize(draft), context)).toThrow(
       "own supporting frames",
     );
-    draft.notes[0].supportingFrames = [0, 1, 2];
-    execution.finalConditions[0].evidenceFrames = [1];
+    draft.notes[0].supportingFrames = [4, 5, 6];
+    // Frame 5 is mid-action, before the result frame 6.
+    execution.finalConditions[0].evidenceFrames = [5];
     expect(() => validateDraft(normalize(draft), context)).toThrow(
       "shared initial/final",
+    );
+  });
+  it("accepts a clearer initial scene before movement and final scene after the action result through the canonical parser", () => {
+    const { draft, context, execution } = teachV3Fixture();
+    // A clearer initial view before movement (frame 1 < start 4) and a
+    // clearer final view after the result (frame 9 > result 6).
+    execution.initialConditions[0].evidenceFrames = [1];
+    execution.finalConditions[0].evidenceFrames = [9];
+    const parsed = parseSparkDraft(
+      { status: "completed", output_text: JSON.stringify(draft) },
+      context,
+      { goal: execution.goal },
+    );
+    expect(parsed.procedure.execution).toEqual(execution);
+    expect(parsed.procedure.steps[0].measurement?.sourceFrames).toEqual({
+      start: 4,
+      change: 5,
+      result: 6,
+    });
+    const checks = suggestReviews(parsed, context);
+    expect(() =>
+      validateReviewEvidence(
+        parsed,
+        [{ stepId: "transfer", ...checks.transfer }],
+        context,
+      ),
+    ).not.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("rejects final predicates from different moments even when each individually occurs after the action", () => {
+    const { draft, execution } = teachV3Fixture();
+    const { context } = teachV3Fixture();
+    // Both after the result (6), but frame 9 vs frame 10: different moments.
+    execution.finalConditions.push({
+      ...structuredClone(execution.finalConditions[0]),
+      id: "other-goal",
+      evidenceFrames: [9],
+    });
+    execution.requirements[0].goalPredicateIds.push("other-goal");
+    expect(() => validateDraft(normalize(draft), context)).toThrow(
+      "share an observed frame",
+    );
+  });
+  it("accepts multiple final predicates only when they share actual post-action evidence", () => {
+    const { draft, context, execution } = teachV3Fixture();
+    execution.finalConditions[0].evidenceFrames = [9];
+    execution.finalConditions.push({
+      ...structuredClone(execution.finalConditions[0]),
+      id: "other-goal",
+    });
+    execution.requirements[0].goalPredicateIds.push("other-goal");
+    expect(() => validateDraft(normalize(draft), context)).not.toThrow();
+    context.tracking[0].samples[9].confidence = null;
+    expect(() => validateDraft(normalize(draft), context)).toThrow(
+      "Unsupported source evidence",
+    );
+  });
+  it("rejects nonexistent common scene frames instead of inventing observations", () => {
+    const { draft, context, execution } = teachV3Fixture();
+    execution.finalConditions[0].evidenceFrames = [99];
+    expect(() => validateDraft(normalize(draft), context)).toThrow(
+      "Unsupported source evidence",
     );
   });
   it("keeps optional objects nonsemantic and supports an object first revealed at a later step", () => {
@@ -328,7 +398,7 @@ describe("V3 executable Teach contract", () => {
       kind: "projected_separation",
       otherObjectId: "component-2",
       minimumGap: 0.05,
-      evidenceFrames: [2],
+      evidenceFrames: [10],
     };
     expect(() => validateDraft(normalize(draft), context)).toThrow(
       "projected-separation",
@@ -344,12 +414,12 @@ describe("step-owned review evidence", () => {
       checks.transfer.fromFrame,
       checks.transfer.changeFrame,
       checks.transfer.toFrame,
-    ]).toEqual([0, 1, 2]);
+    ]).toEqual([4, 5, 6]);
     expect([
       checks["transfer-again"].fromFrame,
       checks["transfer-again"].changeFrame,
       checks["transfer-again"].toFrame,
-    ]).toEqual([2, 3, 4]);
+    ]).toEqual([10, 11, 12]);
     expect(checks["transfer-again"].fromRegion).toEqual(
       checks.transfer.toRegion,
     );
@@ -367,12 +437,13 @@ describe("step-owned review evidence", () => {
     "returns explicit unsupported evidence for %s",
     (kind) => {
       const { draft, context } = teachV3Fixture();
-      if (kind === "missing") context.tracking[0].samples.splice(1, 1);
+      // Frame 5 is the change landmark of the 4-5-6 window.
+      if (kind === "missing") context.tracking[0].samples.splice(5, 1);
       if (kind === "unordered")
         draft.procedure.steps[0].execution!.evidenceWindow.changeFrame = 0;
-      if (kind === "outside-note") draft.notes[0].supportingFrames = [0, 2];
+      if (kind === "outside-note") draft.notes[0].supportingFrames = [4, 6];
       if (kind === "uncertain")
-        context.tracking[0].samples[1].confidence = null;
+        context.tracking[0].samples[5].confidence = null;
       const check = suggestReviews(draft, context).transfer;
       expect(check.evidenceStatus).toBe("unsupported");
       expect(check.fromRegion).toBeNull();
@@ -407,9 +478,9 @@ describe("canonical compiler V3 wire boundary", () => {
     );
     expect(parsed.procedure.execution).toEqual(draft.procedure.execution);
     expect(parsed.procedure.steps[1].measurement?.sourceFrames).toEqual({
-      start: 2,
-      change: 3,
-      result: 4,
+      start: 10,
+      change: 11,
+      result: 12,
     });
     expect(fetch).not.toHaveBeenCalled();
   });

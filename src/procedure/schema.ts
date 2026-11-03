@@ -102,7 +102,15 @@ export const ProcedureSpecSchema = z
     steps: z.array(StepSchema).min(1).max(100),
     execution: z.union([ExecutionSchema, ExecutionV3Schema]).optional(),
     approval: z
-      .strictObject({ reviewer: id, timestampMs: TimestampSchema })
+      .strictObject({
+        reviewer: id,
+        timestampMs: TimestampSchema,
+        /** Executable revision identity (teach/revision.ts); required for V3. */
+        revision: z
+          .string()
+          .regex(/^[0-9a-f]{64}$/)
+          .optional(),
+      })
       .nullable(),
   })
   .superRefine((spec, ctx) => {
@@ -133,10 +141,8 @@ export const ProcedureSpecSchema = z
     const zones = new Set(spec.zones.map((x) => x.id));
     if (spec.execution?.schemaVersion === 3) {
       const execution = spec.execution;
-      if (spec.approval)
-        issue(
-          "V3 approval and Practice execution are not enabled in Phase 1. Keep this procedure as a reviewed draft.",
-        );
+      if (spec.approval && !spec.approval.revision)
+        issue("V3 approval must identify its exact executable revision.");
       unique(
         execution.requirements.map((r) => r.id),
         "requirement IDs",
@@ -366,7 +372,11 @@ export const ProcedureSpecSchema = z
           spec.execution.goalStepIds.includes(step.id) &&
           m.persistence !== "maintain"
         )
-          issue("Final goal conditions must remain maintained.");
+          issue(
+            next
+              ? `Final goal conditions must remain maintained: goal step "${step.id}" moves ${step.condition.componentId}, but later step "${next.id}" moves it again, so its result cannot hold at the end. Only an object's last action can be a goal step; remove "${step.id}" from goalStepIds and keep it in its requirement.`
+              : "Final goal conditions must remain maintained.",
+          );
       }
 
       if (m) {

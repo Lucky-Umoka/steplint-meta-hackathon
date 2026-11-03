@@ -290,3 +290,25 @@ The initial 250 kbps target exceeded the cap in Chromium on complex footage (2,2
 ### 2026-11-02 — Owner-authorized Teach V3 contract, Phase 1 only
 
 Canonical local drafting requires explicit V3 roles, activation, source identity frames, action-owned evidence windows, requirement coverage and initial/final visual predicates. Existing V2 contracts remain readable. Review never automatically narrows required scope. V3 stays unapproved/reviewable until separately authorized approval/storage and Practice migration; the existing V2 verifier must not accept V3 approvals and silently ignore final predicates. No Practice/voice/provider integration changes or live model calls. See [TEACH_V3_PHASE1.md](TEACH_V3_PHASE1.md) for tests, implementation boundaries and remaining dependencies.
+
+### 2026-11-02 — Owner-authorized video-informed Teach drafting
+
+The owner requested Baseten to see the demonstration while drafting meaningful actions and goals. The existing final Spark call now accepts the exact reviewed MP4, cryptographically bound to its inspected upload, through documented Chat Completions `video_url` content. The configured Meta alternative retains its own file reference; SAM/discovery/Voice remain unchanged. One existing drafting request includes a source action/goal audit; no second independent model check, retry, fallback or Practice model loop is added. Unknown/unshown work stays unsupported, with null action timing when no observation exists. Provider video sampling is bounded and cannot guarantee every brief action. Existing V3 approval/Practice guards remain. See [TEACH_VIDEO_REVIEW.md](TEACH_VIDEO_REVIEW.md); no live paid call was made during implementation.
+
+### 2026-11-02 — Eligible source-frame generation and measured completion budget
+
+Frame references and action landmarks are now constrained by complete per-object trusted-source catalogs, rather than letting video visibility imply valid SAM evidence. The policy remains 0.90 with actual timestamped observations; no snapping or threshold bypass. Two newly approved Baseten video requests both truncated at 12,000 completion tokens; the second used 10,673 reasoning tokens. Baseten's bounded total cap is now 24,576 to leave room for reasoning and JSON; Meta's cap and all host deadlines remain unchanged. No third call was made; adjusted-budget live acceptance remains outstanding. See [TEACH_SOURCE_EVIDENCE_FIX.md](TEACH_SOURCE_EVIDENCE_FIX.md).
+
+## Teach V3: derived relevance and one validator-feedback correction (2026-11-02)
+
+The V3 validator makes `role: required` equivalent to being measured by a step or scene predicate, and makes activation follow from those references. The compiler now derives these two fields from the model's explicit steps and predicates, recording every override in `roleReason`, instead of asking the model to restate them. Intent (steps, windows, requirement links, goals, supporting versus irrelevant) remains model-authored and human-reviewed, and no validation rule changed. A completed draft rejected by deterministic validation gets at most one correction request carrying the exact issues, without video. Transport and truncation failures are never corrected. This extends decision 72 (explain rules, do not silently modify intent). Live evidence: trial 5 passed on its first request; see TEACH_SOURCE_EVIDENCE_FIX.md.
+
+## Teach/approval evidence agreement and Phase 2 handoff (2026-11-02)
+
+- Compile now applies approval's continuity rule to V3 action windows instead of approval relaxing it. No threshold changed.
+- Review-evidence problems (suggested zones) drive the single correction request but do not reject a valid draft; reviewers fix zones in review, and approval still validates.
+- Phase 2 (owner-authorized): V3 approval stamps a SHA-256 executable revision (procedure without approval, zones, setup geometry). Stale approvals and rehearsals are rejected at load. Rehearsal is `not_run|failed|passed`, bound to the revision, set only by the canonical verifier's terminal status and labelled browser-reported. V3 requires consistent automatic setup. V2 is unchanged. See TEACH_V3_PHASE2.md.
+
+## Teach action windows end where the object comes to rest (owner decision 2026-11-02)
+
+V3 Teach actions run from a settled start (still for 400 ms before) to the first settled landing (still for 400 ms after), and may contain tracking gaps of at most 600 ms. These values equal the existing Practice measurement defaults and are shared from one module. The rule is the same at compile, review suggestion and approval; V2 is unchanged. This replaces "first frame with 0.05 displacement" and "no gap at all", which produced mid-air after-moments and mid-air target zones. Live bottle trials 8–9 passed; see TEACH_SOURCE_EVIDENCE_FIX.md.

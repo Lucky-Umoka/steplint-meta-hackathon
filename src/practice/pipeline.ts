@@ -8,6 +8,7 @@ import {
 import { createVerifier } from "../procedure/verifier";
 import { RegionSchema, type Region } from "../teach/schema";
 import type { Detection } from "./tracker";
+import { watchSet } from "./watch-set";
 export const ZoneBindingsSchema = z
   .array(z.strictObject({ zoneId: z.string().min(1), region: RegionSchema }))
   .min(2)
@@ -84,6 +85,14 @@ export type PracticeSession = {
     humanConfirmed: boolean;
     method?: "manual" | "source_alignment";
   }[];
+  /** Append-only per-object identity lifecycle audit (loss, reacquisition, …). */
+  identityAudit: {
+    timestampMs: number;
+    frameId: string;
+    objectId: string;
+    status: string;
+    reason: string;
+  }[];
 };
 export function createSession(
   input: unknown,
@@ -119,6 +128,7 @@ export function createSession(
         )
         .map((s) => [s.condition.componentId, s.condition.fromZone]),
     ),
+    identityAudit: [],
     calibrations: [
       {
         epoch: 1,
@@ -359,8 +369,15 @@ export function feedDetection(
   }
   if (emit) session.result = session.verifier.push(session.events.at(-1)!);
   if (!session.armed) {
+    // Only active required movers must show their starting state; a dormant
+    // later object (for example a phone still inside its box) cannot block
+    // the initial steps. Its own step still needs an observed start later.
+    const active = new Set(
+      watchSet(session.procedure, session.result).required,
+    );
     const firstSteps = session.procedure.steps.filter(
       (s, i, all) =>
+        active.has(s.condition.componentId) &&
         all.findIndex(
           (candidate) =>
             candidate.condition.componentId === s.condition.componentId,
@@ -540,15 +557,32 @@ export type TrackingFrameEvidence = {
     score: number;
     visibleFraction: number;
   }[];
+  /** Watch-set key the frame was measured for; another key means a stale reply. */
+  watchKey?: string;
+  identityEvents?: { objectId: string; status: string; reason: string }[];
 };
 /** Shared browser/replay adapter. No provider, rendering or alternate decision engine. */
 export function feedTrackingFrame(
   session: PracticeSession,
   frame: TrackingFrameEvidence,
 ) {
-  const required = session.procedure.components.map(
-      (component) => component.id,
-    ),
+  const watch = watchSet(session.procedure, session.result);
+  if (frame.watchKey !== undefined && frame.watchKey !== watch.key)
+    // Measured for an earlier watch-set revision: never applied.
+    return {
+      result: session.result,
+      changed: false,
+      observations: [],
+      warning: null,
+      stale: true,
+    };
+  for (const event of frame.identityEvents ?? [])
+    session.identityAudit.push({
+      timestampMs: frame.timestampMs,
+      frameId: frame.frameId,
+      ...event,
+    });
+  const required = watch.required,
     ids = frame.detections.map((d) => d.objectId);
   if (
     new Set(ids).size !== ids.length ||
@@ -556,7 +590,7 @@ export function feedTrackingFrame(
     ids.some((id) => !required.includes(id))
   )
     throw Error(
-      "Tracking frame must include every approved identity exactly once.",
+      "Tracking frame must include every approved identity in the active watch set exactly once, and no other identity.",
     );
   if (
     new Set(frame.partialIdentities.map((p) => p.objectId)).size !==
@@ -641,5 +675,6 @@ export function feedTrackingFrame(
     changed: session.events.length !== before,
     observations,
     warning,
+    stale: false,
   };
 }

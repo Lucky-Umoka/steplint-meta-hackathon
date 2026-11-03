@@ -3,6 +3,9 @@ import { z } from "zod";
 import { ProcedureSpecSchema } from "../procedure/schema";
 import { MediaInfoSchema } from "../media/inspect";
 import { validateV3Evidence } from "./v3-evidence";
+import { executableRevision } from "./revision";
+import { actionWindowIssue, trustedSourceSample } from "./source-evidence";
+import { VideoReviewSchema, validateVideoReview } from "./video-review";
 
 export { MAX_TEACH_BODY } from "../media/limits";
 export { MAX_TEACH_VIDEO_BYTES as MAX_TEACH_VIDEO } from "../media/limits";
@@ -100,6 +103,7 @@ export const ContextSchema = z.strictObject({
 });
 export type TeachContext = z.infer<typeof ContextSchema>;
 export const DraftSchema = z.strictObject({
+  videoReview: VideoReviewSchema.optional(),
   procedure: ProcedureSpecSchema,
   notes: z
     .array(
@@ -230,6 +234,7 @@ export function validateDraft(
       throw new Error("Step has no matching tracked supporting frames.");
   }
   validateV3Evidence(draft, context);
+  validateVideoReview(draft, context);
   return draft;
 }
 
@@ -309,7 +314,24 @@ export function validateReviewEvidence(
         result: to.frame,
       };
     }
-    if (
+    if (p.execution?.schemaVersion === 3) {
+      // Owner decision 2026-11-02: a V3 action may span a short tracking gap
+      // (<= Practice's 600 ms observation gap) between an at-rest start and an
+      // at-rest result. Same rule as compile (validateV3Evidence).
+      const issue = actionWindowIssue(
+        track.samples
+          .filter((s) =>
+            trustedSourceSample(s, context.lesson.media.frameTimesMs),
+          )
+          .sort((a, b) => a.frame - b.frame),
+        from.frame,
+        to.frame,
+      );
+      if (issue)
+        throw new Error(
+          `The reviewed interval does not have usable visual evidence: ${issue}.`,
+        );
+    } else if (
       track.samples.some(
         (s) =>
           s.frame > from.frame &&
@@ -411,12 +433,9 @@ export function approveDraft(
   context: TeachContext,
   nowMs: number,
 ) {
-  // Phase 1 creates reviewable V3 drafts only; approval migration is separate.
-  const candidate = validateDraft(input, context);
-  if (candidate.procedure.execution?.schemaVersion === 3)
-    throw Error(
-      "V3 approval and Practice execution are not enabled in Phase 1. Keep this procedure as a reviewed draft.",
-    );
+  // validateDraft repeats every schema, V3 source/movement and video-review
+  // check against the sealed context; approval adds human review evidence.
+  validateDraft(input, context);
   const review = ReviewSchema.parse(reviewInput);
   const { draft, zoneBindings } = validateReviewEvidence(
     input,
@@ -426,10 +445,20 @@ export function approveDraft(
   const p = draft.procedure;
   if (p.execution && !review.goalConfirmed)
     throw Error("Explicit human goal coverage confirmation is required.");
+  // V3 approvals name the executable revision they cover. The approve handler
+  // re-stamps it after binding automatic setup, which is part of the revision.
+  const revision =
+    p.execution?.schemaVersion === 3
+      ? executableRevision({ procedure: p, zoneBindings })
+      : undefined;
   return {
     procedure: ProcedureSpecSchema.parse({
       ...p,
-      approval: { reviewer: review.reviewer, timestampMs: nowMs },
+      approval: {
+        reviewer: review.reviewer,
+        timestampMs: nowMs,
+        ...(revision ? { revision } : {}),
+      },
     }),
     zoneBindings,
     review,

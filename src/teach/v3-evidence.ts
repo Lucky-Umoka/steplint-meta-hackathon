@@ -1,5 +1,12 @@
 import type { ProcedureSpec } from "../procedure/schema";
 import type { TeachContext, TeachDraft } from "./schema";
+import {
+  actionWindowIssue,
+  MINIMUM_TEACH_TRANSFER_DISPLACEMENT,
+  sampleDisplacement,
+  sourceEvidenceCatalog,
+  trustedSourceSample,
+} from "./source-evidence";
 
 /** Pure source checks: valid JSON and frame indices do not prove a measured action. */
 export function validateV3Evidence(
@@ -10,19 +17,25 @@ export function validateV3Evidence(
   const execution = procedure.execution;
   if (execution?.schemaVersion !== 3) return;
   const times = context.lesson.media.frameTimesMs;
+  const measuredWindowHint = (objectId: string) => {
+    const entry = sourceEvidenceCatalog(context).find(
+      (item) => item.componentId === objectId,
+    );
+    const windows =
+      entry?.displacementWindows.map(
+        (w) => `${w.startFrame}-${w.resultFrame}`,
+      ) ?? [];
+    return windows.length
+      ? `Measured movement windows for this object: ${windows.slice(0, 8).join(", ")}.`
+      : `This object has no measured movement window (${entry?.movementDiagnosis ?? "no reliable tracking"}); mark the action unsupported.`;
+  };
   const sample = (objectId: string, frame: number) => {
     const value = context.tracking
       .find((t) => t.componentId === objectId)
       ?.samples.find((s) => s.frame === frame);
-    if (
-      times[frame] === undefined ||
-      !value ||
-      value.timestampMs !== times[frame] ||
-      value.confidence === null ||
-      value.confidence < 0.9
-    )
+    if (!value || !trustedSourceSample(value, times))
       throw Error(
-        `Unsupported source evidence for ${objectId} at frame ${frame}.`,
+        `Unsupported source evidence for ${objectId} at frame ${frame}: ${!value ? "no tracked observation" : value.timestampMs !== times[frame] ? "source timestamp mismatch" : "tracking score below 0.90 or unavailable"}. Use only this object's eligible source frames; video visibility alone is not a tracking measurement.`,
       );
     return value;
   };
@@ -47,16 +60,30 @@ export function validateV3Evidence(
       )
     )
       throw Error("Action evidence timestamps must be ordered.");
-    const first = measured[0].box,
-      last = measured[2].box;
     if (
-      Math.hypot(
-        (first.left + first.right - last.left - last.right) / 2,
-        (first.top + first.bottom - last.top - last.bottom) / 2,
-      ) < 0.05
-    )
+      sampleDisplacement(measured[0], measured[2]) <
+      MINIMUM_TEACH_TRANSFER_DISPLACEMENT
+    ) {
       throw Error(
-        "Unsupported transfer: source evidence does not show measurable displacement.",
+        `Unsupported transfer for ${step.id} (${step.condition.componentId}, frames ${window.startFrame}-${window.resultFrame}): tracked box centre moved less than ${MINIMUM_TEACH_TRANSFER_DISPLACEMENT}. ${measuredWindowHint(step.condition.componentId)}`,
+      );
+    }
+    // Same window rule Teach approval enforces (validateReviewEvidence): an
+    // at-rest start and result, with tracking gaps no longer than the policy.
+    const trustedMover = (
+      context.tracking.find((t) => t.componentId === step.condition.componentId)
+        ?.samples ?? []
+    )
+      .filter((s) => trustedSourceSample(s, times))
+      .sort((a, b) => a.frame - b.frame);
+    const windowIssue = actionWindowIssue(
+      trustedMover,
+      window.startFrame,
+      window.resultFrame,
+    );
+    if (windowIssue)
+      throw Error(
+        `Action window for ${step.id} (${step.condition.componentId}, frames ${window.startFrame}-${window.resultFrame}): ${windowIssue}. ${measuredWindowHint(step.condition.componentId)}`,
       );
     for (const objectId of step.execution!.requiredObjectIds) {
       // Later visibility is allowed; only this action's required identities gate its evidence.
@@ -67,15 +94,31 @@ export function validateV3Evidence(
   const firstFrame = procedure.steps[0].execution!.evidenceWindow.startFrame;
   const lastFrame =
     procedure.steps.at(-1)!.execution!.evidenceWindow.resultFrame;
-  for (const [predicates, expectedFrame] of [
-    [execution.initialConditions, firstFrame],
-    [execution.finalConditions, lastFrame],
-  ] as const)
+  for (const [predicates, boundary, phase] of [
+    [execution.initialConditions, firstFrame, "initial"],
+    [execution.finalConditions, lastFrame, "final"],
+  ] as const) {
+    const eligible = (frame: number) =>
+      phase === "initial" ? frame <= boundary : frame >= boundary;
+    // A scene is shared in time, not necessarily identical to an action endpoint:
+    // the clearest view may precede movement or follow a hand clearing the result.
+    const commonFrames = predicates[0].evidenceFrames.filter(
+      (frame) =>
+        eligible(frame) &&
+        predicates.every((predicate) =>
+          predicate.evidenceFrames.includes(frame),
+        ),
+    );
+    if (
+      !commonFrames.length ||
+      predicates.some((predicate) =>
+        predicate.evidenceFrames.some((frame) => !eligible(frame)),
+      )
+    )
+      throw Error(
+        `Scene predicates require shared initial/final scene evidence: ${phase} conditions must share an observed frame ${phase === "initial" ? "at or before action start" : "at or after action result"} frame ${boundary}. Unrelated moments cannot establish a complete scene.`,
+      );
     for (const predicate of predicates) {
-      if (!predicate.evidenceFrames.includes(expectedFrame))
-        throw Error(
-          "Scene predicates require shared initial/final scene evidence, not unrelated moments.",
-        );
       for (const frame of predicate.evidenceFrames) {
         const observed = sample(predicate.objectId, frame);
         if (predicate.kind === "projected_separation") {
@@ -92,4 +135,5 @@ export function validateV3Evidence(
         }
       }
     }
+  }
 }

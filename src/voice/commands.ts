@@ -83,6 +83,17 @@ export type Disposition =
  * disposition out. Interim results never reach here; duplicates and
  * self-speech are filtered before matching.
  */
+/**
+ * True when the heard text is (part of) something the app itself just said:
+ * the microphone picked up our own speech output. Never a user command.
+ */
+export function isSelfSpeech(text: string, recentSpeech: string[]): boolean {
+  const heard = normalizeUtterance(text);
+  return (
+    heard.length > 0 &&
+    recentSpeech.some((spoken) => normalizeUtterance(spoken).includes(heard))
+  );
+}
 export function decideDisposition(input: {
   text: string;
   lastFinal: string;
@@ -90,13 +101,24 @@ export function decideDisposition(input: {
   commands: VoiceCommand[];
   speaking: boolean;
   now: number;
+  /**
+   * Half-duplex turn-taking (canonical Practice, Phase 4): a valid wake-word
+   * command is handled even while the app speaks — the caller stops the
+   * app's speech first. Without it, only interrupt commands pass.
+   */
+  halfDuplex?: boolean;
+  /** Text the app spoke recently; matching transcripts are self-speech. */
+  recentSpeech?: string[];
 }): Disposition {
   if (input.text === input.lastFinal) return { kind: "ignored" };
+  if (input.recentSpeech && isSelfSpeech(input.text, input.recentSpeech))
+    return { kind: "ignored" };
   const body = commandBody(input.text);
   if (!body) return { kind: "ignored" };
   // The user can silence narration hands-free. All other interface commands
-  // remain blocked during self-speech so narration cannot control the app.
-  if (input.speaking) {
+  // remain blocked during self-speech so narration cannot control the app,
+  // unless the caller uses explicit half-duplex turn-taking.
+  if (input.speaking && !input.halfDuplex) {
     const interrupt = matchCommand(body, input.commands);
     return interrupt &&
       [

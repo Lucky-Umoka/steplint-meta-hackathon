@@ -1,5 +1,10 @@
 import type { TeachDraft, TeachContext } from "./schema";
 import { validateV3Evidence } from "./v3-evidence";
+import {
+  TEACH_MAX_SOURCE_GAP_MS,
+  TEACH_REST_MAX_DRIFT,
+  TEACH_REST_MS,
+} from "./source-evidence";
 /** Explicit draft extension, never approval or a conversion of a signed artifact. */
 export function localExecutionDraft(
   draft: TeachDraft,
@@ -21,10 +26,10 @@ export function localExecutionDraft(
       step.measurement ??= {
         method: "zone_transition",
         point: "center",
-        maximumPositionDrift: 0.01,
+        maximumPositionDrift: TEACH_REST_MAX_DRIFT,
         minimumFreshFrames: 3,
-        stableForMs: 400,
-        maxObservationGapMs: 600,
+        stableForMs: TEACH_REST_MS,
+        maxObservationGapMs: TEACH_MAX_SOURCE_GAP_MS,
         persistence: later ? "release_on_later_step" : "maintain",
         releaseStepId: later?.id ?? null,
         reversalRecovery: "restore_target",

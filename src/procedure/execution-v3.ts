@@ -71,7 +71,19 @@ export const ExecutionV3Schema = z.strictObject({
     )
     .min(1)
     .max(40),
-  initialConditions: z.array(ScenePredicateSchema).min(1).max(20),
-  finalConditions: z.array(ScenePredicateSchema).min(1).max(20),
+  initialConditions: z
+    .array(ScenePredicateSchema)
+    .min(1)
+    .max(20)
+    .describe(
+      "All initial predicates must cite a common actual observed source frame at or before the first step startFrame. Each cited frame must be in that initial interval.",
+    ),
+  finalConditions: z
+    .array(ScenePredicateSchema)
+    .min(1)
+    .max(20)
+    .describe(
+      "All final predicates must cite a common actual observed source frame at or after the last step resultFrame, including a clearer later view if available. Each cited frame must be in that final interval. Never combine unrelated moments.",
+    ),
 });
 export type ExecutionV3 = z.infer<typeof ExecutionV3Schema>;

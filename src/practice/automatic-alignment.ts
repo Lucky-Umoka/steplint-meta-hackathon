@@ -117,28 +117,28 @@ export function chooseLiveWorkspace(image: Pixels, excluded: Box[]) {
     "Show a clear stationary feature outside the movement area so camera motion can be monitored.",
   );
 }
+/**
+ * Camera shift from approved stationary references matched in the live view
+ * (owner decision 2026-11-02). Each anchor already passed the approved
+ * template match with competing-candidate separation and the 0.9 score gate,
+ * without rescaling, so one strong reference identifies a translation. When
+ * several are present they must agree; disagreement means rotation, tilt, zoom
+ * or a moved reference, which blocks with an instruction instead of guessing.
+ * Returns null only when no reference was matched.
+ */
 export function alignFixedObjects(anchors: { source: Box; observed: Box }[]) {
-  if (anchors.length < 2) return null;
+  if (!anchors.length) return null;
   const candidates = anchors.map((anchor) => ({
-    ...anchor,
     dx: center(anchor.observed).x - center(anchor.source).x,
     dy: center(anchor.observed).y - center(anchor.source).y,
   }));
   const a = candidates[0];
-  if (
-    !candidates.some(
-      (b) =>
-        Math.hypot(
-          center(a.source).x - center(b.source).x,
-          center(a.source).y - center(b.source).y,
-        ) > 0.2,
-    )
-  )
-    return null;
   if (candidates.some((b) => Math.hypot(b.dx - a.dx, b.dy - a.dy) > 0.01))
-    return null;
+    throw Error(
+      "The stationary references do not agree on one camera position. The camera may be rotated, tilted or zoomed, or a reference was moved. Restore the demonstrated camera view and object positions.",
+    );
   return {
-    x: candidates.reduce((sum, a) => sum + a.dx, 0) / candidates.length,
-    y: candidates.reduce((sum, a) => sum + a.dy, 0) / candidates.length,
+    x: candidates.reduce((sum, c) => sum + c.dx, 0) / candidates.length,
+    y: candidates.reduce((sum, c) => sum + c.dy, 0) / candidates.length,
   };
 }

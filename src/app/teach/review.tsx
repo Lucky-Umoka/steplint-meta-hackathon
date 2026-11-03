@@ -6,6 +6,13 @@ import {
 } from "@/teach/automatic-setup";
 import { saveApprovedProcedure } from "@/teach/approved-storage";
 import { ApprovedArtifactSchema } from "@/teach/approved-artifact";
+import {
+  RehearsalSchema,
+  rehearsalKey,
+  type Rehearsal,
+} from "@/teach/rehearsal";
+import { executableRevision } from "@/teach/revision";
+import { sourceEvidenceCatalog } from "@/teach/source-evidence";
 import FeedbackPopup, { useFeedback } from "@/components/feedback";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -21,6 +28,7 @@ import {
   keyFrames,
   reviewBlockers,
   reviewErrorMessage,
+  reviewStepInput,
   type SuggestedCheck,
 } from "@/teach/review-suggestions";
 import { frameImage } from "@/teach/media";
@@ -126,6 +134,17 @@ export default function Review({
   const [goalConfirmed, setGoalConfirmed] = useState(false);
   const [reviewer, setReviewer] = useState(""),
     [confirm, setConfirm] = useState(false);
+  const [rehearsal, setRehearsal] = useState<Rehearsal | null>(() =>
+    typeof window === "undefined"
+      ? null
+      : readRehearsal(context.lesson.lessonId),
+  );
+  useEffect(() => {
+    // The rehearsal tab reports the canonical verifier outcome per revision.
+    const read = () => setRehearsal(readRehearsal(context.lesson.lessonId));
+    window.addEventListener("storage", read);
+    return () => window.removeEventListener("storage", read);
+  }, [context.lesson.lessonId]);
   const [approved, setApproved] = useState<unknown>(null),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
@@ -167,17 +186,17 @@ export default function Review({
           for (const related of draft.procedure.steps) {
             const check = next[related.id] ?? suggestions[related.id];
             if (related.condition.fromZone === zone)
-              next[related.id] = {
+              next[related.id] = clearZoneConflict({
                 ...check,
                 fromRegion: patch[field] ?? null,
                 conditionConfirmed: false,
-              };
+              });
             if (related.condition.toZone === zone)
-              next[related.id] = {
+              next[related.id] = clearZoneConflict({
                 ...(next[related.id] ?? check),
                 toRegion: patch[field] ?? null,
                 conditionConfirmed: false,
-              };
+              });
           }
         }
       return next;
@@ -226,10 +245,9 @@ export default function Review({
         reviewer,
         confirmed: confirm,
         ...(draft.procedure.execution ? { goalConfirmed } : {}),
-        steps: draft.procedure.steps.map((step) => ({
-          stepId: step.id,
-          ...withReviewedMarks()[step.id],
-        })),
+        steps: draft.procedure.steps.map((step) =>
+          reviewStepInput(step.id, withReviewedMarks()[step.id]),
+        ),
       };
       const checked = approveDraft(draft, review, context, Date.now()); // server repeats validation
       const plan = checked.procedure.execution
@@ -256,7 +274,13 @@ export default function Review({
       const response = await fetch("/api/teach/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, draft, review, setupFrames }),
+        body: JSON.stringify({
+          token,
+          draft,
+          review,
+          setupFrames,
+          rehearsal: readRehearsal(context.lesson.lessonId) ?? undefined,
+        }),
       });
       const result = await readAppJson(response, "Approval");
       if (!ApprovedArtifactSchema.safeParse(result).success)
@@ -287,10 +311,9 @@ export default function Review({
         reviewer: reviewer.trim() || "Rehearsal",
         confirmed: true,
         ...(draft.procedure.execution ? { goalConfirmed: true } : {}),
-        steps: draft.procedure.steps.map((step) => ({
-          stepId: step.id,
-          ...marked[step.id],
-        })),
+        steps: draft.procedure.steps.map((step) =>
+          reviewStepInput(step.id, marked[step.id]),
+        ),
       };
       const checked = approveDraft(draft, rehearsalReview, context, Date.now());
       const plan = checked.procedure.execution
@@ -316,10 +339,19 @@ export default function Review({
             })),
           );
           automaticSetup = bindAutomaticSetup(plan, frames);
-        } catch {
-          automaticSetup = undefined;
+        } catch (setupError) {
+          // Never rehearse a lesson without the setup Practice needs to start
+          // automatically; report the actual extraction failure instead.
+          throw new Error(
+            `Automatic setup could not be prepared from the reviewed source frames: ${setupError instanceof Error ? setupError.message : "frame extraction failed"}. Keep the review open and try again.`,
+          );
         }
       }
+      const rehearsalRevision = executableRevision({
+        procedure: checked.procedure,
+        zoneBindings: checked.zoneBindings,
+        automaticSetup,
+      });
       localStorage.setItem(
         "steplint-rehearsal-handoff",
         JSON.stringify({
@@ -328,6 +360,7 @@ export default function Review({
           automaticSetup,
           sourceLesson: checked.sourceLesson,
           origin: "teach",
+          rehearsalRevision,
         }),
       );
       window.open("/practice?rehearsal=1", "_blank", "noopener");
@@ -383,10 +416,26 @@ export default function Review({
             (r) => r.status === "unsupported",
           ) && (
             <p role="status" className="text-sm font-medium text-red-700">
-              Required work is unsupported and remains in this draft. Correct its
-              evidence or explicitly revise the scope before approval.
+              Required work is unsupported and remains in this draft. Correct
+              its evidence or explicitly revise the scope before approval.
             </p>
           )}
+          {sourceEvidenceCatalog(context)
+            .filter(
+              (entry) =>
+                entry.movementDiagnosis &&
+                draft.procedure.components.find(
+                  (c) => c.id === entry.componentId,
+                )?.execution?.role !== "irrelevant",
+            )
+            .map((entry) => (
+              <p key={entry.componentId} className="text-sm text-slate-700">
+                Movement evidence for{" "}
+                {context.selections.find((s) => s.id === entry.componentId)
+                  ?.description ?? entry.componentId}
+                : none measured, because {entry.movementDiagnosis}.
+              </p>
+            ))}
         </div>
       )}
       <ol className="list-decimal space-y-1 pl-6">
@@ -409,6 +458,7 @@ export default function Review({
         </button>
         <span className="text-sm text-slate-600">
           Live rehearsal in a new tab. Nothing is saved until you approve.
+          {rehearsal && ` Last rehearsal: ${rehearsalLabel(rehearsal)}`}
         </span>
       </div>
       {draft.procedure.steps.map((step, index) => {
@@ -467,226 +517,228 @@ export default function Review({
               })()}
             </summary>
             <div className="mt-3 space-y-3">
-            <details>
-              <summary>Edit wording</summary>
-              <div className="space-y-2 py-2">
-                <label className="block">
-                  Component name{" "}
-                  <input
-                    aria-label={`Component name ${step.id}`}
-                    value={
-                      draft.procedure.components.find(
-                        (c) => c.id === step.condition.componentId,
-                      )?.description ?? ""
-                    }
-                    maxLength={100}
-                    onChange={(e) =>
-                      editWording(step.id, "component", e.target.value)
-                    }
-                  />
-                </label>
-                <label className="block">
-                  Step instruction{" "}
-                  <input
-                    aria-label={`Step instruction ${step.id}`}
-                    value={step.description}
-                    maxLength={2000}
-                    onChange={(e) =>
-                      editWording(step.id, "instruction", e.target.value)
-                    }
-                  />
-                </label>
-                <label className="block">
-                  Recovery message{" "}
-                  <input
-                    aria-label={`Recovery message ${step.id}`}
-                    value={step.recovery.instruction}
-                    maxLength={2000}
-                    onChange={(e) =>
-                      editWording(step.id, "recovery", e.target.value)
-                    }
-                  />
-                </label>
-                <p className="text-sm">Changes reset review.</p>
-              </div>
-            </details>
-            <details>
-              <summary>Step details</summary>
-              <p>{note?.explanation}</p>
-              <p>
-                Prerequisites: {step.prerequisites.join(", ") || "None"}. Rule:{" "}
-                {step.condition.kind}, {step.condition.fromZone} →{" "}
-                {step.condition.toZone}; minimum confidence{" "}
-                {step.condition.minimumConfidence}.
-              </p>
-            </details>
-            {step.measurement && (
-              <label>
-                Point checked against the zones{" "}
-                <select
-                  aria-label={`Measurement point ${step.id}`}
-                  value={step.measurement.point}
-                  onChange={(e) => {
-                    const next = structuredClone(draft);
-                    for (const related of next.procedure.steps)
-                      if (
-                        related.condition.componentId ===
-                          step.condition.componentId &&
-                        related.measurement
-                      )
-                        related.measurement.point =
-                          e.target.value === "bottom_center"
-                            ? "bottom_center"
-                            : "center";
-                    setDraft(next);
-                    setEditor(JSON.stringify(next, null, 2));
-                    setChecks(suggestReviews(next, context));
-                    setConfirm(false);
-                    setGoalConfirmed(false);
-                    setApproved(null);
-                  }}
-                >
-                  <option value="center">Centre of the visible object</option>
-                  <option value="bottom_center">
-                    Base of the visible object (for placement zones)
-                  </option>
-                </select>
-              </label>
-            )}
-            {draft.procedure.execution && (
-              <label>
-                Change moment{" "}
-                <select
-                  aria-label={`Change frame ${step.id}`}
-                  value={check.changeFrame ?? check.fromFrame}
-                  onChange={(e) =>
-                    update(
-                      step.id,
-                      {
-                        changeFrame: Number(e.target.value),
-                        conditionConfirmed: false,
-                      },
-                      fallback,
-                    )
-                  }
-                >
-                  {context.tracking
-                    .find((t) => t.componentId === step.condition.componentId)
-                    ?.samples.filter(
-                      (s) =>
-                        s.frame > check.fromFrame && s.frame < check.toFrame,
-                    )
-                    .map((s) => (
-                      <option key={s.frame} value={s.frame}>
-                        {(s.timestampMs / 1000).toFixed(2)} s
-                      </option>
-                    ))}
-                </select>
-              </label>
-            )}
-            <p>Recovery: {step.recovery.instruction}</p>
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label>
-                  Before moment{" "}
-                  <select
-                    aria-label={`Before frame ${step.id}`}
-                    value={check.fromFrame}
-                    onChange={(e) =>
-                      update(
-                        step.id,
-                        {
-                          fromFrame: Number(e.target.value),
-                          fromRegion: null,
-                          conditionConfirmed: false,
-                        },
-                        fallback,
-                      )
-                    }
-                  >
-                    {frameOptions}
-                  </select>
-                </label>
-                <RegionEditor
-                  video={video}
-                  timestamp={context.lesson.media.frameTimesMs[check.fromFrame]}
-                  width={size.width}
-                  height={size.height}
-                  title="Starting zone"
-                  region={check.fromRegion}
-                  onRegion={(region) =>
-                    update(
-                      step.id,
-                      { fromRegion: region, conditionConfirmed: false },
-                      fallback,
-                    )
-                  }
-                />
-              </div>
-              <div>
-                <label>
-                  After moment{" "}
-                  <select
-                    aria-label={`After frame ${step.id}`}
-                    value={check.toFrame}
-                    onChange={(e) =>
-                      update(
-                        step.id,
-                        {
-                          toFrame: Number(e.target.value),
-                          toRegion: null,
-                          conditionConfirmed: false,
-                        },
-                        fallback,
-                      )
-                    }
-                  >
-                    {frameOptions}
-                  </select>
-                </label>
-                <RegionEditor
-                  video={video}
-                  timestamp={context.lesson.media.frameTimesMs[check.toFrame]}
-                  width={size.width}
-                  height={size.height}
-                  title="Target zone"
-                  region={check.toRegion}
-                  onRegion={(region) =>
-                    update(
-                      step.id,
-                      { toRegion: region, conditionConfirmed: false },
-                      fallback,
-                    )
-                  }
-                />
-              </div>
-            </div>
-            {(!check.fromRegion || !check.toRegion) && (
-              <div
-                role="status"
-                className="space-y-2 rounded border border-amber-400 bg-amber-50 p-3"
-              >
+              <details>
+                <summary>Edit wording</summary>
+                <div className="space-y-2 py-2">
+                  <label className="block">
+                    Component name{" "}
+                    <input
+                      aria-label={`Component name ${step.id}`}
+                      value={
+                        draft.procedure.components.find(
+                          (c) => c.id === step.condition.componentId,
+                        )?.description ?? ""
+                      }
+                      maxLength={100}
+                      onChange={(e) =>
+                        editWording(step.id, "component", e.target.value)
+                      }
+                    />
+                  </label>
+                  <label className="block">
+                    Step instruction{" "}
+                    <input
+                      aria-label={`Step instruction ${step.id}`}
+                      value={step.description}
+                      maxLength={2000}
+                      onChange={(e) =>
+                        editWording(step.id, "instruction", e.target.value)
+                      }
+                    />
+                  </label>
+                  <label className="block">
+                    Recovery message{" "}
+                    <input
+                      aria-label={`Recovery message ${step.id}`}
+                      value={step.recovery.instruction}
+                      maxLength={2000}
+                      onChange={(e) =>
+                        editWording(step.id, "recovery", e.target.value)
+                      }
+                    />
+                  </label>
+                  <p className="text-sm">Changes reset review.</p>
+                </div>
+              </details>
+              <details>
+                <summary>Step details</summary>
+                <p>{note?.explanation}</p>
                 <p>
-                  Needs clearer movement evidence. Select two tracked moments
-                  and draw separate zones, or revise the step. Uncertain
-                  tracking cannot be approved.
+                  Prerequisites: {step.prerequisites.join(", ") || "None"}.
+                  Rule: {step.condition.kind}, {step.condition.fromZone} →{" "}
+                  {step.condition.toZone}; minimum confidence{" "}
+                  {step.condition.minimumConfidence}.
                 </p>
-                <button
-                  onClick={() => {
-                    const next = suggestReviews(draft, context)[step.id];
-                    update(step.id, next, fallback);
-                    setError(
-                      next.fromRegion && next.toRegion
-                        ? ""
-                        : "No clear, continuously tracked movement meets this step's rule. Choose a supported interval, revise the step, or record a clearer demonstration; no extra paid analysis was run.",
-                    );
-                  }}
-                >
-                  Recheck suggested zones for step{" "}
-                  {draft.procedure.steps.indexOf(step) + 1}
-                </button>
+              </details>
+              {step.measurement && (
+                <label>
+                  Point checked against the zones{" "}
+                  <select
+                    aria-label={`Measurement point ${step.id}`}
+                    value={step.measurement.point}
+                    onChange={(e) => {
+                      const next = structuredClone(draft);
+                      for (const related of next.procedure.steps)
+                        if (
+                          related.condition.componentId ===
+                            step.condition.componentId &&
+                          related.measurement
+                        )
+                          related.measurement.point =
+                            e.target.value === "bottom_center"
+                              ? "bottom_center"
+                              : "center";
+                      setDraft(next);
+                      setEditor(JSON.stringify(next, null, 2));
+                      setChecks(suggestReviews(next, context));
+                      setConfirm(false);
+                      setGoalConfirmed(false);
+                      setApproved(null);
+                    }}
+                  >
+                    <option value="center">Centre of the visible object</option>
+                    <option value="bottom_center">
+                      Base of the visible object (for placement zones)
+                    </option>
+                  </select>
+                </label>
+              )}
+              {draft.procedure.execution && (
+                <label>
+                  Change moment{" "}
+                  <select
+                    aria-label={`Change frame ${step.id}`}
+                    value={check.changeFrame ?? check.fromFrame}
+                    onChange={(e) =>
+                      update(
+                        step.id,
+                        {
+                          changeFrame: Number(e.target.value),
+                          conditionConfirmed: false,
+                        },
+                        fallback,
+                      )
+                    }
+                  >
+                    {context.tracking
+                      .find((t) => t.componentId === step.condition.componentId)
+                      ?.samples.filter(
+                        (s) =>
+                          s.frame > check.fromFrame && s.frame < check.toFrame,
+                      )
+                      .map((s) => (
+                        <option key={s.frame} value={s.frame}>
+                          {(s.timestampMs / 1000).toFixed(2)} s
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              )}
+              <p>Recovery: {step.recovery.instruction}</p>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label>
+                    Before moment{" "}
+                    <select
+                      aria-label={`Before frame ${step.id}`}
+                      value={check.fromFrame}
+                      onChange={(e) =>
+                        update(
+                          step.id,
+                          {
+                            fromFrame: Number(e.target.value),
+                            fromRegion: null,
+                            conditionConfirmed: false,
+                          },
+                          fallback,
+                        )
+                      }
+                    >
+                      {frameOptions}
+                    </select>
+                  </label>
+                  <RegionEditor
+                    video={video}
+                    timestamp={
+                      context.lesson.media.frameTimesMs[check.fromFrame]
+                    }
+                    width={size.width}
+                    height={size.height}
+                    title="Starting zone"
+                    region={check.fromRegion}
+                    onRegion={(region) =>
+                      update(
+                        step.id,
+                        { fromRegion: region, conditionConfirmed: false },
+                        fallback,
+                      )
+                    }
+                  />
+                </div>
+                <div>
+                  <label>
+                    After moment{" "}
+                    <select
+                      aria-label={`After frame ${step.id}`}
+                      value={check.toFrame}
+                      onChange={(e) =>
+                        update(
+                          step.id,
+                          {
+                            toFrame: Number(e.target.value),
+                            toRegion: null,
+                            conditionConfirmed: false,
+                          },
+                          fallback,
+                        )
+                      }
+                    >
+                      {frameOptions}
+                    </select>
+                  </label>
+                  <RegionEditor
+                    video={video}
+                    timestamp={context.lesson.media.frameTimesMs[check.toFrame]}
+                    width={size.width}
+                    height={size.height}
+                    title="Target zone"
+                    region={check.toRegion}
+                    onRegion={(region) =>
+                      update(
+                        step.id,
+                        { toRegion: region, conditionConfirmed: false },
+                        fallback,
+                      )
+                    }
+                  />
+                </div>
               </div>
-            )}
+              {(!check.fromRegion || !check.toRegion) && (
+                <div
+                  role="status"
+                  className="space-y-2 rounded border border-amber-400 bg-amber-50 p-3"
+                >
+                  <p>
+                    Needs clearer movement evidence. Select two tracked moments
+                    and draw separate zones, or revise the step. Uncertain
+                    tracking cannot be approved.
+                  </p>
+                  <button
+                    onClick={() => {
+                      const next = suggestReviews(draft, context)[step.id];
+                      update(step.id, next, fallback);
+                      setError(
+                        next.fromRegion && next.toRegion
+                          ? ""
+                          : "No clear, continuously tracked movement meets this step's rule. Choose a supported interval, revise the step, or record a clearer demonstration; no extra paid analysis was run.",
+                      );
+                    }}
+                  >
+                    Recheck suggested zones for step{" "}
+                    {draft.procedure.steps.indexOf(step) + 1}
+                  </button>
+                </div>
+              )}
             </div>
           </details>
         );
@@ -789,6 +841,13 @@ export default function Review({
           <p className="font-bold">
             Procedure approved. Save and open Practice.
           </p>
+          {ApprovedArtifactSchema.safeParse(approved).data?.rehearsal && (
+            <p className="text-sm">
+              {rehearsalLabel(
+                ApprovedArtifactSchema.parse(approved).rehearsal!,
+              )}
+            </p>
+          )}
           <button
             disabled={busy}
             className="primary"
@@ -842,4 +901,34 @@ export default function Review({
       )}
     </section>
   );
+}
+
+function readRehearsal(lessonId: string): Rehearsal | null {
+  try {
+    const raw = localStorage.getItem(rehearsalKey(lessonId));
+    const parsed = raw ? RehearsalSchema.safeParse(JSON.parse(raw)) : null;
+    return parsed?.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+function rehearsalLabel(rehearsal: Rehearsal) {
+  if (rehearsal.status === "not_run")
+    return "Rehearsal: not run for this exact revision.";
+  return rehearsal.status === "passed"
+    ? `Rehearsal: passed${rehearsal.hadViolations ? " after a corrected violation" : ""} (browser rehearsal, not physical acceptance).`
+    : "Rehearsal: failed. Approval is allowed, but the lesson has not passed a rehearsal.";
+}
+
+/**
+ * A reviewer-edited zone replaces the suggestion, so a flag that was only
+ * about suggested zone regions no longer applies; approval's evidence check
+ * (validateReviewEvidence via reviewBlockers) then decides. Window flags stay.
+ */
+function clearZoneConflict(check: Check): Check {
+  if (!check.zoneConflict) return check;
+  const { zoneConflict: _cleared, evidenceReason: _reason, ...rest } = check;
+  void _cleared;
+  void _reason;
+  return { ...rest, evidenceStatus: "supported" };
 }

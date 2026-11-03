@@ -40,6 +40,24 @@ import CommandFeedback from "@/voice/CommandFeedback";
 import VoicePanel, { appendVoiceEvent } from "@/voice/VoicePanel";
 import GestureControls from "@/gesture/GestureControls";
 import { LOCAL_PRACTICE_COMMANDS } from "@/practice/local-commands";
+import { watchSet } from "@/practice/watch-set";
+import {
+  LIFECYCLE_TIMEOUTS,
+  initialLifecycle,
+  lifecycleDiagnostics,
+  requestOutcome,
+  transition,
+  type Lifecycle,
+  type LifecycleEvent,
+  type LifecycleIntent,
+} from "@/practice/lifecycle";
+import type { ActionOutcome } from "@/voice/use-voice-control";
+import {
+  RehearsalSchema,
+  RevisionSchema,
+  nextRehearsal,
+  rehearsalKey,
+} from "@/teach/rehearsal";
 function imageUrl(image: Pixels) {
   const canvas = document.createElement("canvas");
   canvas.width = image.width;
@@ -77,6 +95,59 @@ export default function LocalPractice() {
     null,
   );
   const [resumeRequested, setResumeRequested] = useState(false);
+  // Phase 4: the single authoritative lifecycle, shared by UI and voice.
+  const [lifecycle, setLifecycle] = useState<Lifecycle>(initialLifecycle);
+  const lifecycleRef = useRef<Lifecycle>(initialLifecycle());
+  const lifecycleHistory = useRef<NonNullable<Lifecycle["lastTransition"]>[]>(
+    [],
+  );
+  const waiters = useRef<((outcome: ActionOutcome) => void)[]>([]);
+  const busySince = useRef(0),
+    awaiting = useRef<"setup" | "frame" | null>(null),
+    cameraFailed = useRef(false);
+  const spoken = useRef<{ at: number; text: string }[]>([]);
+  function lc(event: LifecycleEvent) {
+    const previous = lifecycleRef.current;
+    const next = transition(previous, event, performance.now());
+    if (next === previous) return;
+    lifecycleRef.current = next;
+    // Reply timestamps update the record without re-rendering every frame.
+    if (event.type === "reply") return;
+    if (
+      next.lastTransition &&
+      next.lastTransition !== previous.lastTransition
+    ) {
+      lifecycleHistory.current.push(next.lastTransition);
+      if (lifecycleHistory.current.length > 50)
+        lifecycleHistory.current.shift();
+    }
+    setLifecycle(next);
+    const outcome = requestOutcome(next);
+    if (outcome.done) {
+      const pending = waiters.current;
+      waiters.current = [];
+      for (const resolve of pending)
+        resolve({ ok: outcome.ok, message: outcome.message });
+    }
+  }
+  /** Resolves only when the lifecycle reaches running, or fails/stops/times out. */
+  function waitForOutcome(): Promise<ActionOutcome> {
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(() => {
+        waiters.current = waiters.current.filter((w) => w !== settle);
+        resolve({
+          ok: false,
+          message:
+            "Practice did not become ready in time. Check the camera view and the lesson objects, then try again.",
+        });
+      }, LIFECYCLE_TIMEOUTS.startMs);
+      const settle = (outcome: ActionOutcome) => {
+        window.clearTimeout(timer);
+        resolve(outcome);
+      };
+      waiters.current.push(settle);
+    });
+  }
   const [startingVerified, setStartingVerified] = useState(false);
   const [frameReady, setFrameReady] = useState(false);
   const [running, setRunning] = useState(false),
@@ -100,6 +171,8 @@ export default function LocalPractice() {
     worker = useRef<Worker | null>(null),
     busy = useRef(false),
     generation = useRef(0),
+    watchRevision = useRef(0),
+    watchKey = useRef(""),
     sequence = useRef(0),
     session = useRef<PracticeSession | null>(null),
     lastAlert = useRef(""),
@@ -165,6 +238,12 @@ export default function LocalPractice() {
   }
   function speak(text: string, recordGuidance = true) {
     if (recordGuidance) log({ at: Date.now(), source: "guidance", text });
+    // Remember our own words so the microphone never treats them as commands.
+    const at = Date.now();
+    spoken.current = [
+      ...spoken.current.filter((item) => at - item.at < 15_000),
+      { at, text },
+    ];
     if (
       !guidanceOn ||
       !("speechSynthesis" in window) ||
@@ -267,9 +346,12 @@ export default function LocalPractice() {
     speak(text, false);
   }
   function halt(
-    reason = "Practice paused. Say ‘Muse, resume practice’ to continue.",
+    reason = "Practice paused. Say resume practice to continue.",
     invalidate = false,
+    kind: "pause" | "failure" | "camera" = "pause",
   ) {
+    const haltedGeneration = generation.current;
+    awaiting.current = null;
     automaticWanted.current = false;
     speechGeneration.current++;
     window.clearTimeout(speechWatchdog.current);
@@ -286,6 +368,17 @@ export default function LocalPractice() {
     setRunning(false);
     setStarting(false);
     setNotice(reason);
+    if (kind === "camera") {
+      cameraFailed.current = true;
+      lc({ type: "camera_denied", message: reason });
+    } else if (kind === "failure")
+      lc({
+        type: "worker_failed",
+        generation: haltedGeneration,
+        message: reason,
+        recoverable: false,
+      });
+    else lc({ type: "pause", reason });
     if (session.current && invalidate && !session.current.stopped) {
       const now = performance.now();
       for (const component of session.current.procedure.components.filter((c) =>
@@ -333,13 +426,27 @@ export default function LocalPractice() {
       if (!worker.current || !session.current) return;
       if (busy.current) {
         trackingCounters.current.droppedBusy++;
+        const limit =
+          awaiting.current === "setup"
+            ? LIFECYCLE_TIMEOUTS.setupMs
+            : LIFECYCLE_TIMEOUTS.frameMs;
+        if (awaiting.current && performance.now() - busySince.current > limit)
+          handlers.current.workerTimeout(awaiting.current);
         return;
       }
       trackingCounters.current.submitted++;
       busy.current = true;
+      busySince.current = performance.now();
+      awaiting.current = "frame";
       const copy = new Uint8ClampedArray(image.data);
       const frameId = `frame-${++sequence.current}`;
       evidence.current.add(frameId, now, image);
+      // Role-aware watch set; a new revision whenever membership changes.
+      const watch = watchSet(session.current.procedure, session.current.result);
+      if (watch.key !== watchKey.current) {
+        watchKey.current = watch.key;
+        watchRevision.current++;
+      }
       worker.current.postMessage(
         {
           type: "frame",
@@ -347,11 +454,13 @@ export default function LocalPractice() {
           image: { width: image.width, height: image.height, data: copy },
           timestampMs: now,
           frameId,
+          watchRevision: watchRevision.current,
+          watch: { required: watch.required, optional: watch.optional },
         },
         [copy.buffer],
       );
     },
-    (reason) => halt(reason, true),
+    (reason) => halt(reason, true, "camera"),
     { width: 320, height: 240, intervalMs: 33 },
   );
   const handlers = useRef({
@@ -359,6 +468,7 @@ export default function LocalPractice() {
     show,
     automaticStart: (image: Pixels) =>
       start({ image, source: automaticSource.current! }),
+    workerTimeout,
   });
   useEffect(() => {
     handlers.current = {
@@ -366,6 +476,7 @@ export default function LocalPractice() {
       show,
       automaticStart: (image: Pixels) =>
         start({ image, source: automaticSource.current! }),
+      workerTimeout,
     };
   });
   useEffect(
@@ -395,6 +506,29 @@ export default function LocalPractice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraActive, lesson?.automaticSetup]);
   const [rehearsal, setRehearsal] = useState(false);
+  const rehearsalRevision = useRef<string | null>(null);
+  useEffect(() => {
+    // Rehearsal status comes only from the canonical verifier's terminal
+    // status for the exact revision Teach handed over; loading or rendering
+    // never records a result.
+    const revision = rehearsalRevision.current;
+    if (!rehearsal || !lesson || !revision) return;
+    const key = rehearsalKey(lesson.procedure.id);
+    try {
+      const raw = localStorage.getItem(key);
+      const previous = raw ? RehearsalSchema.safeParse(JSON.parse(raw)) : null;
+      const next = nextRehearsal(
+        previous?.success ? previous.data : null,
+        result?.status,
+        revision,
+        Date.now(),
+      );
+      if (next) localStorage.setItem(key, JSON.stringify(next));
+    } catch {
+      // Storage blocked: nothing is recorded, so Teach truthfully shows this
+      // revision's rehearsal as not run. A result is never assumed.
+    }
+  }, [rehearsal, lesson, result?.status]);
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -406,13 +540,20 @@ export default function LocalPractice() {
         }
         // Rehearsal drafts arrive via localStorage (new tabs do not share
         // sessionStorage). They load in memory only and are never saved.
-        if (new URLSearchParams(window.location.search).get("rehearsal") === "1") {
+        if (
+          new URLSearchParams(window.location.search).get("rehearsal") === "1"
+        ) {
           const draft = localStorage.getItem("steplint-rehearsal-handoff");
           localStorage.removeItem("steplint-rehearsal-handoff");
           if (!draft)
             throw Error(
               "Rehearsal data is missing. Start the test from Teach review.",
             );
+          const revision = RevisionSchema.safeParse(
+            (JSON.parse(draft) as { rehearsalRevision?: unknown })
+              .rehearsalRevision,
+          );
+          rehearsalRevision.current = revision.success ? revision.data : null;
           if (active) setRehearsal(true);
           await load(draft, true);
           return;
@@ -421,12 +562,16 @@ export default function LocalPractice() {
         const ordered = [...rows].sort((a, b) => b.savedAt - a.savedAt);
         if (!active) return;
         setSaved(ordered);
-        const selectedId = new URLSearchParams(window.location.search).get("lesson");
+        const selectedId = new URLSearchParams(window.location.search).get(
+          "lesson",
+        );
         const selected = selectedId
           ? ordered.find((row) => row.id === selectedId)
           : undefined;
         if (selectedId && !selected)
-          throw Error("This lesson is not saved in this browser. Import the approved lesson or choose another lesson.");
+          throw Error(
+            "This lesson is not saved in this browser. Import the approved lesson or choose another lesson.",
+          );
         if (selected) await load(selected.raw);
         else if (handoff) await load(handoff);
       } catch (e) {
@@ -559,13 +704,179 @@ export default function LocalPractice() {
         automaticAttemptAt.current = -Infinity;
         latest.current = null;
         const video = validated.sourceLesson?.media.info.video;
-        void startCamera(video ? video.width / video.height : undefined);
+        lc({
+          type: "start",
+          intent: "start",
+          cameraOn: false,
+          automatic: true,
+        });
+        void openCamera(video ? video.width / video.height : undefined);
       }
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "Approved lesson could not load.",
       );
     }
+  }
+  /** A worker that stops replying must never leave Practice busy forever. */
+  function workerTimeout(stage: "setup" | "frame") {
+    const timedOut = generation.current;
+    generation.current++; // any late reply from the silent worker is stale
+    worker.current?.terminate();
+    worker.current = null;
+    busy.current = false;
+    awaiting.current = null;
+    setRunning(false);
+    setStarting(false);
+    if (session.current) {
+      session.current.stopped = true;
+      setResumeRequested(true);
+    }
+    const exhausted = ++autoFailures.current >= 5;
+    // automaticWanted is only the "attempt setup" flag and is cleared once
+    // setup succeeds; automatic lessons must re-enable it to retry (as the
+    // calibration-lost path does), or recovery would never start.
+    automaticWanted.current = !exhausted && !!lesson?.automaticSetup;
+    automaticAttemptAt.current = performance.now();
+    const message =
+      stage === "setup"
+        ? "The tracker did not finish setting up in time."
+        : "The tracker stopped responding.";
+    lc({ type: "worker_timeout", generation: timedOut, message });
+    if (exhausted)
+      lc({
+        type: "worker_failed",
+        generation: timedOut,
+        message: `${message} Automatic retries stopped; restart Practice.`,
+        recoverable: false,
+      });
+    setNotice(
+      automaticWanted.current
+        ? `${message} Retrying automatically; verified work is kept.`
+        : `${message} Restart Practice to try again.`,
+    );
+  }
+  const cameraAspect = () =>
+    lesson?.sourceLesson?.media.info.video
+      ? lesson.sourceLesson.media.info.video.width /
+        lesson.sourceLesson.media.info.video.height
+      : undefined;
+  /** Open the camera through the lifecycle (permission → stream). */
+  async function openCamera(aspect = cameraAspect()) {
+    cameraFailed.current = false;
+    lc({ type: "camera_requested" });
+    latest.current = null;
+    setFrameReady(false);
+    await startCamera(aspect);
+    if (!cameraFailed.current) lc({ type: "camera_ready" });
+  }
+  function closeCamera(reason = "Camera stopped.") {
+    halt(reason);
+    stopCamera();
+    lc({ type: "camera_stopped" });
+  }
+  /**
+   * The ONE start/resume/restart operation used by on-screen controls and
+   * voice commands alike. Resolves only when the lifecycle reports running
+   * (verifier armed) or a definite failure/timeout.
+   */
+  function ensurePracticeRunning(
+    intent: LifecycleIntent,
+  ): Promise<ActionOutcome> {
+    if (!lesson)
+      return Promise.resolve({
+        ok: false,
+        message: "Choose an approved lesson first.",
+      });
+    if (!lesson.automaticSetup) {
+      // Older exports without automatic references keep the existing manual
+      // calibration rules (optional recovery, not the default workflow).
+      if (!cameraActive) {
+        void openCamera();
+        return Promise.resolve({
+          ok: false,
+          message:
+            "This lesson needs manual calibration. Camera starting: capture the setup, mark the objects and confirm.",
+        });
+      }
+      if (worker.current)
+        return Promise.resolve(
+          lifecycleRef.current.state === "running"
+            ? { ok: true, message: "Practice is already running." }
+            : { ok: false, message: "Practice is already starting." },
+        );
+      if (!still) {
+        const opened = prepareSetup(intent === "resume");
+        return Promise.resolve({
+          ok: false,
+          message: opened
+            ? "Setup captured. Mark every object, zone and reference, then confirm calibration."
+            : "Wait for a camera frame, then try again.",
+        });
+      }
+      if (!calibrationConsent || fields.some((field) => !marks[field.id]))
+        return Promise.resolve({
+          ok: false,
+          message:
+            "Mark every required object, zone and reference, then confirm calibration first.",
+        });
+      lc({ type: "start", intent, cameraOn: true, automatic: false });
+      const outcome = waitForOutcome();
+      start();
+      return outcome;
+    }
+    const state = lifecycleRef.current.state;
+    if (
+      intent !== "restart" &&
+      worker.current &&
+      ["acquiring_initial_objects", "arming", "running", "recovering"].includes(
+        state,
+      )
+    )
+      // Repeated start requests never create a second worker or session.
+      return state === "running"
+        ? Promise.resolve({ ok: true, message: "Practice is already running." })
+        : waitForOutcome();
+    const sameLesson =
+      session.current?.procedure.id === lesson.procedure.id &&
+      session.current?.procedure.version === lesson.procedure.version;
+    if (intent === "restart") {
+      // A new attempt: the current one is archived by start() and stays in
+      // the downloaded audit. No stale worker or observations carry over.
+      if (worker.current)
+        halt("Restart requested. The previous attempt is kept in the audit.");
+      setResumeRequested(false);
+    } else
+      setResumeRequested(
+        !!session.current && sameLesson && !!session.current.stopped,
+      );
+    setManualSetupOpen(false);
+    setStill(null);
+    setError("");
+    autoFailures.current = 0;
+    automaticWanted.current = true;
+    automaticAttemptAt.current = -Infinity;
+    lc({ type: "start", intent, cameraOn: cameraActive, automatic: true });
+    setNotice(
+      intent === "restart"
+        ? "Starting a new attempt automatically."
+        : session.current?.stopped
+          ? "Resuming automatic tracking. Verified work is retained."
+          : "Finding the starting view automatically.",
+    );
+    const outcome = waitForOutcome();
+    if (!cameraActive) void openCamera();
+    return outcome;
+  }
+  function pausePractice(): ActionOutcome {
+    if (!worker.current && lifecycleRef.current.state !== "recovering")
+      return { ok: false, message: "Practice is not running." };
+    halt();
+    return {
+      ok: true,
+      message:
+        "Practice paused. Verified work is kept; say resume practice to continue.",
+    };
   }
   function prepareSetup(resume = false) {
     if (!latest.current || !cameraActive) {
@@ -664,6 +975,9 @@ export default function LocalPractice() {
       );
       worker.current = localWorker;
       busy.current = true;
+      busySince.current = performance.now();
+      awaiting.current = "setup";
+      lc({ type: "worker_started", generation: gen });
       setStarting(true);
       setAlert(null);
       setDetections([]);
@@ -698,12 +1012,15 @@ export default function LocalPractice() {
             handlers.current.halt(
               "Invalid tracking response; verification stopped.",
               true,
+              "failure",
             );
             return;
           }
           const reply = parsed.data;
+          // Stale generation: a reply from an earlier worker never revives it.
           if (reply.generation !== generation.current) return;
           busy.current = false;
+          awaiting.current = null;
           if (reply.type !== "error") {
             trackingMeasurements.current = reply.measurements;
             autoFailures.current = 0;
@@ -720,7 +1037,14 @@ export default function LocalPractice() {
             // Repeated setup failures must not retry forever: each attempt
             // re-announces and re-chokes speech while suppressing voice
             // commands, so stop asking after a short bounded run.
-            if (++autoFailures.current >= 5) {
+            const exhausted = ++autoFailures.current >= 5;
+            lc({
+              type: "worker_failed",
+              generation: reply.generation,
+              message: reply.message,
+              recoverable: !exhausted,
+            });
+            if (exhausted) {
               automaticWanted.current = false;
               setNotice(
                 "Automatic setup keeps failing. Adjust the view or set up manually.",
@@ -735,7 +1059,7 @@ export default function LocalPractice() {
           }
           if (reply.type === "error") {
             setError(reply.message);
-            handlers.current.halt(reply.message, true);
+            handlers.current.halt(reply.message, true, "failure");
             return;
           }
           if (reply.type === "calibrated") {
@@ -773,12 +1097,16 @@ export default function LocalPractice() {
             setStarting(false);
             setRunning(true);
             setStill(null);
+            lc({ type: "setup_complete", generation: reply.generation });
+            if (session.current?.armed)
+              lc({ type: "armed", generation: reply.generation });
             setNotice(
               "Automatic tracking active. Checking starting positions before the first instruction.",
             );
             return;
           }
           trackingCounters.current.processed++;
+          lc({ type: "reply", generation: reply.generation });
           const active = session.current;
           if (!active) return;
           if (
@@ -792,12 +1120,33 @@ export default function LocalPractice() {
             handlers.current.halt(
               "Tracking evidence arrived too late. Verification stopped; recalibrate before continuing.",
               true,
+              "failure",
             );
             return;
           }
+          // A reply measured for an earlier watch-set revision is never applied.
+          if (
+            reply.watchRevision !== undefined &&
+            reply.watchRevision !== watchRevision.current
+          )
+            return;
           setDetections(reply.detections);
           const wasArmed = active.armed;
-          const frame = feedTrackingFrame(active, reply);
+          const frame = feedTrackingFrame(active, {
+            ...reply,
+            watchKey: watchKey.current,
+          });
+          if (frame.stale) return;
+          const unseen = reply.identityEvents.find(
+            (event) => event.status === "needs_user_view",
+          );
+          if (unseen) {
+            const name =
+              active.procedure.components.find(
+                (component) => component.id === unseen.objectId,
+              )?.description ?? unseen.objectId;
+            setNotice(`${name}: ${unseen.reason}`);
+          }
           const updated = frame.changed ? frame.result : null;
           const warning = frame.warning;
           if (updated || warning) markProgress();
@@ -832,6 +1181,11 @@ export default function LocalPractice() {
             setResumeRequested(true);
             automaticWanted.current = true;
             automaticAttemptAt.current = performance.now();
+            lc({
+              type: "recover",
+              generation: reply.generation,
+              reason: "View unclear; finding the work area again.",
+            });
             handlers.current.show(
               "needs_verification",
               "View unclear. Finding the work area again automatically; no step was verified from missing evidence.",
@@ -843,6 +1197,8 @@ export default function LocalPractice() {
             );
             return;
           }
+          if (active.armed && !wasArmed)
+            lc({ type: "armed", generation: reply.generation });
           if (active.armed && !wasArmed) {
             setStartingVerified(true);
             const next = active.procedure.steps.find(
@@ -942,8 +1298,10 @@ export default function LocalPractice() {
         handlers.current.halt(
           "The local tracker stopped. Recalibrate before continuing.",
           true,
+          "failure",
         );
       const copy = new Uint8ClampedArray(setupImage.data);
+      const startWatch = watchSet(next.procedure, next.result);
       localWorker.postMessage(
         {
           ...(automatic
@@ -954,6 +1312,12 @@ export default function LocalPractice() {
                   zones: lesson.zoneBindings.map((binding) => binding.region),
                   objects: automatic.source.objects.map((object) => ({
                     ...object,
+                    // Only active required identities must be found now;
+                    // dormant later objects and supporting objects are not.
+                    required: startWatch.required.includes(object.id),
+                    active:
+                      startWatch.required.includes(object.id) ||
+                      startWatch.optional.includes(object.id),
                     expectedBox: resuming
                       ? lesson.zoneBindings.find(
                           (binding) =>
@@ -986,35 +1350,48 @@ export default function LocalPractice() {
   const voice = useVoiceControl({
     commands: LOCAL_PRACTICE_COMMANDS,
     enabled: voiceOn,
+    // Half-duplex turn-taking: a valid command stops our speech and runs;
+    // our own recent words are never treated as commands.
+    halfDuplex: true,
+    recentSpeech: () =>
+      spoken.current
+        .filter((item) => Date.now() - item.at < 15_000)
+        .map((item) => item.text),
+    onInterruptSpeech: () => {
+      speechGeneration.current++;
+      setSpeaking(false);
+      window.speechSynthesis?.cancel();
+    },
     onAction: (id, disposition) => {
       if (disposition !== "executed") {
         if (disposition === "needs-confirmation")
           speak(
-            "Say Guide, confirm restart practice to start a new attempt. Verified history will remain in the audit.",
+            "To start a new attempt, say the wake word and then confirm restart practice. Verified history will remain in the audit.",
           );
         return;
       }
-      if (id === "start-camera" || (id === "start-practice" && !cameraActive)) {
-        if (!lesson || cameraRequesting) {
-          speak(
-            "Choose an approved lesson first, or wait for camera permission.",
-          );
-          return false;
-        }
-        latest.current = null;
-        setFrameReady(false);
-        void startCamera(
-          lesson?.sourceLesson?.media.info.video
-            ? lesson.sourceLesson.media.info.video.width /
-                lesson.sourceLesson.media.info.video.height
-            : undefined,
-        );
-        return;
-      }
+      // Start, resume and restart go through the same lifecycle operation
+      // as the on-screen controls; success is reported only when it runs.
+      if (id === "start-practice" || id === "start-camera")
+        return ensurePracticeRunning(
+          session.current?.stopped ? "resume" : "start",
+        ).then((outcome) => {
+          speak(outcome.message);
+          return outcome;
+        });
+      if (id === "resume-practice")
+        return ensurePracticeRunning("resume").then((outcome) => {
+          speak(outcome.message);
+          return outcome;
+        });
+      if (id === "restart-practice")
+        return ensurePracticeRunning("restart").then((outcome) => {
+          speak(outcome.message);
+          return outcome;
+        });
       if (id === "stop-camera") {
-        halt("Camera stopped.");
-        stopCamera();
-        return;
+        closeCamera();
+        return Promise.resolve({ ok: true, message: "Camera stopped." });
       }
       if (id === "capture-setup") {
         if (worker.current) {
@@ -1023,88 +1400,43 @@ export default function LocalPractice() {
         }
         return prepareSetup(false);
       }
-      if (id === "start-practice") {
-        if (worker.current) {
-          speak("Practice is already running or starting.");
-          return false;
-        }
-        if (
-          lesson?.automaticSetup &&
-          automaticSource.current &&
-          !manualSetupOpen
-        ) {
-          automaticWanted.current = true;
-          automaticAttemptAt.current = -Infinity;
-          setNotice("Finding the starting view automatically.");
-          return;
-        }
-        if (!still) return prepareSetup(false);
-        if (!calibrationConsent || fields.some((field) => !marks[field.id])) {
-          speak(
-            "Mark every required object, zone and reference, then confirm calibration first.",
-          );
-          return false;
-        }
-        start();
-        return;
-      }
-      if (id === "resume-practice") {
-        if (
-          lesson?.automaticSetup &&
-          automaticSource.current &&
-          session.current?.stopped
-        ) {
-          setResumeRequested(true);
-          automaticWanted.current = true;
-          automaticAttemptAt.current = -Infinity;
-          setNotice("Resuming automatic tracking. Verified work is retained.");
-          if (!cameraActive)
-            void startCamera(
-              lesson?.sourceLesson?.media.info.video
-                ? lesson.sourceLesson.media.info.video.width /
-                    lesson.sourceLesson.media.info.video.height
-                : undefined,
-            );
-          return;
-        }
-        return prepareSetup(true);
-      }
-      if (id === "restart-practice") {
-        return prepareSetup(false);
-      }
       if (id === "end-practice") {
-        halt("Practice ended. The last observed result is retained.");
-        stopCamera();
-        return;
+        closeCamera("Practice ended. The last observed result is retained.");
+        lc({
+          type: "end",
+          reason: "Practice ended. The last observed result is retained.",
+        });
+        return Promise.resolve({
+          ok: true,
+          message: "Practice ended. The last observed result is retained.",
+        });
       }
       if (id === "pause-practice") {
-        if (!worker.current) {
-          speak("Practice is not running.");
-          return false;
-        }
-        halt();
-      } else if (id === "stop-speaking") {
+        const outcome = pausePractice();
+        if (!outcome.ok) speak(outcome.message);
+        return Promise.resolve(outcome);
+      }
+      if (id === "stop-speaking") {
         speechGeneration.current++;
         setSpeaking(false);
         window.speechSynthesis?.cancel();
-      } else {
-        if (!session.current) {
-          speak("Choose an approved lesson and start the camera first.");
-          return;
-        }
-        if (session.current.stopped) {
-          speak("Practice is paused. Recalibrate before continuing.");
-          return;
-        }
-        const next = session.current.procedure.steps.find(
-          (s) =>
-            session.current?.result.steps.find((state) => state.stepId === s.id)
-              ?.status !== "passed",
-        );
-        speak(
-          next?.description ?? "Goal verified; monitoring required states.",
-        );
+        return;
       }
+      // repeat / what next
+      if (!session.current) {
+        speak("Choose an approved lesson and start practice first.");
+        return false;
+      }
+      if (session.current.stopped) {
+        speak("Practice is paused. Say resume practice to continue.");
+        return false;
+      }
+      const next = session.current.procedure.steps.find(
+        (s) =>
+          session.current?.result.steps.find((state) => state.stepId === s.id)
+            ?.status !== "passed",
+      );
+      speak(next?.description ?? "Goal verified; monitoring required states.");
     },
     onEvent: log,
   });
@@ -1119,6 +1451,9 @@ export default function LocalPractice() {
       latency: metrics.current,
       latencySummary: summarizeLocalLatency(metrics.current),
       trackingCounters: trackingCounters.current,
+      lifecycle: lifecycleDiagnostics(lifecycleRef.current),
+      lifecycleHistory: lifecycleHistory.current,
+      identityAudit: session.current?.identityAudit ?? [],
       calibrations: session.current?.calibrations ?? [],
       evidence: evidence.current.frames().map((frame) => ({
         id: frame.id,
@@ -1170,7 +1505,14 @@ export default function LocalPractice() {
     const vh = v?.videoHeight || cameraSize.height;
     const box = v?.getBoundingClientRect();
     const area = v?.parentElement?.getBoundingClientRect();
-    if (!vw || !vh || !box?.width || !box?.height || !area?.width || !area?.height)
+    if (
+      !vw ||
+      !vh ||
+      !box?.width ||
+      !box?.height ||
+      !area?.width ||
+      !area?.height
+    )
       return null;
     const ratio = vw / vh;
     let cw = box.width,
@@ -1220,33 +1562,25 @@ export default function LocalPractice() {
       <div className="w-full space-y-2">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <h1 className="text-lg font-bold">Practice</h1>
-          <span className="text-sm text-slate-600">{lesson?.procedure.title}</span>
+          <span className="text-sm text-slate-600">
+            {lesson?.procedure.title}
+          </span>
           {!cameraActive ? (
             <button
               disabled={!lesson || cameraRequesting}
               onClick={() => {
-                latest.current = null;
-                setFrameReady(false);
-                void startCamera(
-                  lesson?.sourceLesson?.media.info.video
-                    ? lesson.sourceLesson.media.info.video.width /
-                        lesson.sourceLesson.media.info.video.height
-                    : undefined,
-                );
+                if (lesson?.automaticSetup)
+                  void ensurePracticeRunning(
+                    session.current?.stopped ? "resume" : "start",
+                  );
+                else void openCamera();
               }}
             >
               Start camera
             </button>
           ) : (
             <>
-              <button
-                onClick={() => {
-                  halt("Camera stopped.");
-                  stopCamera();
-                }}
-              >
-                Stop camera
-              </button>
+              <button onClick={() => closeCamera()}>Stop camera</button>
               {!running &&
                 !starting &&
                 (!lesson?.automaticSetup || manualSetupOpen) && (
@@ -1268,324 +1602,321 @@ export default function LocalPractice() {
                 Resume with fresh calibration
               </button>
             )}
-          {running && <button onClick={() => halt()}>Pause practice</button>}
+          {running && (
+            <button onClick={() => pausePractice()}>Pause practice</button>
+          )}
           {!running && lesson?.automaticSetup && result && (
-            <button
-              onClick={() => {
-                setResumeRequested(true);
-                automaticWanted.current = true;
-                automaticAttemptAt.current = -Infinity;
-                if (!cameraActive)
-                  void startCamera(
-                    lesson?.sourceLesson?.media.info.video
-                      ? lesson.sourceLesson.media.info.video.width /
-                          lesson.sourceLesson.media.info.video.height
-                      : undefined,
-                  );
-              }}
-            >
+            <button onClick={() => void ensurePracticeRunning("resume")}>
               Resume practice
             </button>
           )}
-          <p id="local-practice-status" role="status" className="text-sm text-slate-600">
+          <p
+            id="local-practice-status"
+            role="status"
+            data-lifecycle-state={lifecycle.state}
+            className="text-sm text-slate-600"
+          >
             {notice}
           </p>
         </div>
         <div className={calibrating ? "hidden" : "contents space-y-2"}>
-        <div className="flex flex-wrap items-stretch gap-2 text-xs">
-          {lesson && (
-            <section
-              aria-label="Current step and goal"
-              className="min-w-52 flex-1 space-y-0.5 rounded-2xl border bg-white p-2"
-            >
-              <p className="truncate font-semibold">
-                Goal: {lesson.procedure.execution?.goal}
-              </p>
-              <p>
-                Next:{" "}
-                {!running
-                  ? lesson.automaticSetup
-                    ? "Show the starting view; automatic tracking is preparing."
-                    : "Open a fresh Teach approval for automatic tracking."
-                  : !startingVerified
-                    ? "Checking starting positions."
-                    : (lesson.procedure.steps.find(
-                        (step) =>
-                          result?.steps.find(
-                            (state) => state.stepId === step.id,
-                          )?.status !== "passed",
-                      )?.description ??
-                      "Goal verified; keep required states in place.")}
-              </p>
-            </section>
-          )}
-          <div className="min-w-52 flex-1 space-y-0.5 rounded-2xl border bg-white p-2">
-            <label className="flex gap-2 font-medium">
-              <input
-                type="checkbox"
-                checked={voiceOn}
-                onChange={(e) => {
-                  setVoiceOn(e.target.checked);
-                  if (!e.target.checked) {
-                    speechGeneration.current++;
-                    setSpeaking(false);
-                    window.speechSynthesis?.cancel();
-                  }
-                }}
-              />
-              Enable microphone voice controls
-            </label>
-            <p
-              className="truncate text-slate-600"
-              title={`Voice control: ${voice.status}. ${voice.feedback}`}
-            >
-              Voice control: {voice.status}. {voice.feedback}
-            </p>
-            <p className="truncate text-slate-600" data-testid="voice-transcript">
-              {lastHeard ? `You said: “${lastHeard}”` : " "}
-              {lastHeard && lastGuide ? " · " : ""}
-              {lastGuide ? `Guide said: “${lastGuide}”` : ""}
-            </p>
-          </div>
-          <div className="min-w-52 flex-1 text-xs">
-            <GestureControls
-              compact
-              videoRef={videoRef}
-              onPauseRequest={() => halt()}
-            />
-          </div>
-        </div>
-        <div
-          data-testid="practice-live-row"
-          className="relative grid items-stretch gap-2 md:h-[calc(100dvh-300px)] md:min-h-[360px] md:grid-cols-[3fr_2fr]"
-        >
-          {running &&
-            (result?.status === "passed" || result?.status === "failed") && (
-              <div
-                key={alert?.key ?? result?.status}
-                data-testid="practice-glow"
-                aria-hidden="true"
-                className={`pointer-events-none absolute inset-0 z-10 rounded-2xl ${result?.status === "failed" ? "practice-glow-fail" : "practice-glow-pass"}`}
-              />
-            )}
-          <section
-            data-testid="practice-camera"
-            className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border-2 bg-white ${running && result?.status === "failed" ? "border-red-600 practice-frame-warning" : running && result?.status === "passed" ? "border-green-600" : "border-slate-200"}`}
-          >
-            <div className="flex items-center justify-between border-b px-3 py-2 text-sm font-semibold">
-              <span>Live work camera</span>
-              <button
-                type="button"
-                aria-pressed={guidanceOn}
-                onClick={() => {
-                  setGuidanceOn(!guidanceOn);
-                  if (guidanceOn) {
-                    speechGeneration.current++;
-                    setSpeaking(false);
-                    window.speechSynthesis?.cancel();
-                  }
-                }}
-              >
-                {guidanceOn ? "Voice on" : "Voice off"}
-              </button>
-              <span
-                className={
-                  running && result?.status === "failed"
-                    ? "text-red-700"
-                    : "text-emerald-800"
-                }
-              >
-                {cameraActive
-                  ? running
-                    ? result?.status === "failed"
-                      ? "Wrong move — stop"
-                      : result?.status === "passed"
-                        ? "Goal verified"
-                        : "Practice active"
-                    : "Camera on"
-                  : "Camera off"}
-              </span>
-            </div>
-            <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-950">
-              <video
-                ref={videoRef}
-                muted
-                playsInline
-                className="block h-full w-full bg-slate-950 object-contain"
-                aria-label="Live work camera"
-              />
-              {!cameraActive && (
-                <p className="absolute inset-0 flex items-center justify-center p-4 text-center text-sm text-slate-400">
-                  Choose a guide and start the camera when you’re ready.
-                </p>
-              )}
-              {running && trackingOverlay && (
-                <svg
-                  className="pointer-events-none absolute"
-                  style={{
-                    left: `${trackingOverlay.left}%`,
-                    top: `${trackingOverlay.top}%`,
-                    width: `${trackingOverlay.width}%`,
-                    height: `${trackingOverlay.height}%`,
-                  }}
-                  viewBox="0 0 100 100"
-                  preserveAspectRatio="none"
-                  aria-label="Live object tracking"
-                >
-                  {detections.map(
-                    (d) =>
-                      d.box && (
-                        <g key={d.objectId}>
-                          <rect
-                            x={d.box.left * 100}
-                            y={d.box.top * 100}
-                            width={(d.box.right - d.box.left) * 100}
-                            height={(d.box.bottom - d.box.top) * 100}
-                            fill="none"
-                            stroke={objectColour(d.objectId)}
-                            strokeWidth=".7"
-                          />
-                          <circle
-                            cx={(d.box.left + d.box.right) * 50}
-                            cy={
-                              lesson?.procedure.steps.find(
-                                (step) =>
-                                  step.condition.componentId === d.objectId,
-                              )?.measurement?.point === "bottom_center"
-                                ? d.box.bottom * 100
-                                : (d.box.top + d.box.bottom) * 50
-                            }
-                            r="1.8"
-                            fill={objectColour(d.objectId)}
-                            className={
-                              alert?.kind === "failed" &&
-                              lesson?.procedure.steps.find(
-                                (s) => s.id === alert.stepId,
-                              )?.condition.componentId === d.objectId
-                                ? "practice-correction-pulse"
-                                : ""
-                            }
-                          />
-                        </g>
-                      ),
-                  )}
-                </svg>
-              )}
-            </div>
-            {lesson && !running && references && (
-              <div className="p-2" aria-label="Before and after goal">
-                <p className="mb-1 text-xs font-bold">Before and after goal</p>
-                <div className="flex justify-start gap-2">
-                  <figure className="w-20 overflow-hidden rounded-lg border bg-slate-50">
-                    <img
-                      src={references.before}
-                      alt="Demonstrated starting state"
-                      className="block h-12 w-full object-cover"
-                    />
-                    <figcaption className="px-1 py-0.5 text-xs font-bold">
-                      Before
-                    </figcaption>
-                  </figure>
-                  <figure className="w-20 overflow-hidden rounded-lg border bg-slate-50">
-                    <img
-                      src={references.goal}
-                      alt="Demonstrated final goal"
-                      className="block h-12 w-full object-cover"
-                    />
-                    <figcaption className="px-1 py-0.5 text-xs font-bold">
-                      After
-                    </figcaption>
-                  </figure>
-                </div>
-              </div>
-            )}
+          <div className="flex flex-wrap items-stretch gap-2 text-xs">
             {lesson && (
               <section
-                aria-label="Steps"
-                className="px-2 py-1 text-xs"
+                aria-label="Current step and goal"
+                className="min-w-52 flex-1 space-y-0.5 rounded-2xl border bg-white p-2"
               >
-                <details open={running ? true : undefined}>
-                  <summary className="cursor-pointer font-bold">
-                    Steps · {running ? "live verification" : "last observed result"}
-                  </summary>
-                  <ol className="mt-1 max-h-20 space-y-1 overflow-y-auto">
-                    {lesson.procedure.steps.map((step, index) => {
-                      const s = result?.steps.find(
-                        (state) => state.stepId === step.id,
-                      ) ?? { stepId: step.id, status: "pending" };
-                      return (
-                        <li
-                          key={s.stepId}
-                          className="flex gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1"
-                        >
-                          <span className="font-bold text-emerald-800">
-                            {index + 1}.
-                          </span>
-                          <span>
-                            {
-                              lesson?.procedure.steps.find(
-                                (step) => step.id === s.stepId,
-                              )?.description
-                            }
-                            : <strong>{s.status.replaceAll("_", " ")}</strong>
-                          </span>
-                        </li>
-                      );
-                    })}
-                  </ol>
-                </details>
+                <p className="truncate font-semibold">
+                  Goal: {lesson.procedure.execution?.goal}
+                </p>
+                <p>
+                  Next:{" "}
+                  {!running
+                    ? lesson.automaticSetup
+                      ? "Show the starting view; automatic tracking is preparing."
+                      : "Open a fresh Teach approval for automatic tracking."
+                    : !startingVerified
+                      ? "Checking starting positions."
+                      : (lesson.procedure.steps.find(
+                          (step) =>
+                            result?.steps.find(
+                              (state) => state.stepId === step.id,
+                            )?.status !== "passed",
+                        )?.description ??
+                        "Goal verified; keep required states in place.")}
+                </p>
               </section>
             )}
-            {alert && (
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/85 to-transparent px-3 pb-2 pt-8">
-                <div
-                  key={alert.key}
-                  data-testid="practice-verdict"
-                  role={alert.kind === "failed" ? "alert" : "status"}
-                  aria-live="polite"
-                  className={`rounded-xl border-2 p-2 text-base font-bold ${alert.kind === "failed" ? "border-red-600 bg-red-50 text-red-800 practice-correction-pulse" : alert.kind === "passed" ? "border-green-600 bg-green-50 text-green-800" : "border-amber-600 bg-amber-50 text-amber-800"}`}
-                >
-                  {alert.text}
-                </div>
-              </div>
-            )}
-            {running && references && (
-              <div className="pointer-events-none absolute right-2 top-14 w-24 overflow-hidden rounded-lg border-2 border-white bg-slate-950 shadow-lg">
-                <img src={references.goal} alt="" className="block w-full" />
-                <p className="bg-slate-950 px-1 py-0.5 text-center text-[10px] font-bold text-white">
-                  Goal
-                </p>
-              </div>
-            )}
-          </section>
-          <div className="flex min-w-0 flex-col">
-            <div data-testid="practice-companion" className="min-w-0 flex-1">
-              <GuideAvatar
-                artClassName="mx-auto h-72 w-64 sm:h-80 sm:w-72"
-                mode={resolveAvatarMode({
-                  violation: running && result?.status === "failed",
-                  complete:
-                    running &&
-                    result?.status === "passed" &&
-                    alert?.kind !== "warning",
-                  uncertain:
-                    (!running && cameraActive) ||
-                    result?.status === "needs_verification" ||
-                    alert?.kind === "warning",
-                  busy: starting,
-                })}
-                speech={
-                  speaking
-                    ? "speaking"
-                    : voice.status === "listening"
-                      ? "listening"
-                      : "silent"
-                }
-                caption={alert?.text ?? notice}
+            <div className="min-w-52 flex-1 space-y-0.5 rounded-2xl border bg-white p-2">
+              <label className="flex gap-2 font-medium">
+                <input
+                  type="checkbox"
+                  checked={voiceOn}
+                  onChange={(e) => {
+                    setVoiceOn(e.target.checked);
+                    if (!e.target.checked) {
+                      speechGeneration.current++;
+                      setSpeaking(false);
+                      window.speechSynthesis?.cancel();
+                    }
+                  }}
+                />
+                Enable microphone voice controls
+              </label>
+              <p
+                className="truncate text-slate-600"
+                title={`Voice control: ${voice.status}. ${voice.feedback}`}
+              >
+                Voice control: {voice.status}. {voice.feedback}
+              </p>
+              <p
+                className="truncate text-slate-600"
+                data-testid="voice-transcript"
+              >
+                {lastHeard ? `You said: “${lastHeard}”` : " "}
+                {lastHeard && lastGuide ? " · " : ""}
+                {lastGuide ? `Guide said: “${lastGuide}”` : ""}
+              </p>
+            </div>
+            <div className="min-w-52 flex-1 text-xs">
+              <GestureControls
+                compact
+                videoRef={videoRef}
+                onPauseRequest={() => halt()}
               />
             </div>
           </div>
-        </div>
+          <div
+            data-testid="practice-live-row"
+            className="relative grid items-stretch gap-2 md:h-[calc(100dvh-300px)] md:min-h-[360px] md:grid-cols-[3fr_2fr]"
+          >
+            {running &&
+              (result?.status === "passed" || result?.status === "failed") && (
+                <div
+                  key={alert?.key ?? result?.status}
+                  data-testid="practice-glow"
+                  aria-hidden="true"
+                  className={`pointer-events-none absolute inset-0 z-10 rounded-2xl ${result?.status === "failed" ? "practice-glow-fail" : "practice-glow-pass"}`}
+                />
+              )}
+            <section
+              data-testid="practice-camera"
+              className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border-2 bg-white ${running && result?.status === "failed" ? "border-red-600 practice-frame-warning" : running && result?.status === "passed" ? "border-green-600" : "border-slate-200"}`}
+            >
+              <div className="flex items-center justify-between border-b px-3 py-2 text-sm font-semibold">
+                <span>Live work camera</span>
+                <button
+                  type="button"
+                  aria-pressed={guidanceOn}
+                  onClick={() => {
+                    setGuidanceOn(!guidanceOn);
+                    if (guidanceOn) {
+                      speechGeneration.current++;
+                      setSpeaking(false);
+                      window.speechSynthesis?.cancel();
+                    }
+                  }}
+                >
+                  {guidanceOn ? "Voice on" : "Voice off"}
+                </button>
+                <span
+                  className={
+                    running && result?.status === "failed"
+                      ? "text-red-700"
+                      : "text-emerald-800"
+                  }
+                >
+                  {cameraActive
+                    ? running
+                      ? result?.status === "failed"
+                        ? "Wrong move — stop"
+                        : result?.status === "passed"
+                          ? "Goal verified"
+                          : "Practice active"
+                      : "Camera on"
+                    : "Camera off"}
+                </span>
+              </div>
+              <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-slate-950">
+                <video
+                  ref={videoRef}
+                  muted
+                  playsInline
+                  className="block h-full w-full bg-slate-950 object-contain"
+                  aria-label="Live work camera"
+                />
+                {!cameraActive && (
+                  <p className="absolute inset-0 flex items-center justify-center p-4 text-center text-sm text-slate-400">
+                    Choose a guide and start the camera when you’re ready.
+                  </p>
+                )}
+                {running && trackingOverlay && (
+                  <svg
+                    className="pointer-events-none absolute"
+                    style={{
+                      left: `${trackingOverlay.left}%`,
+                      top: `${trackingOverlay.top}%`,
+                      width: `${trackingOverlay.width}%`,
+                      height: `${trackingOverlay.height}%`,
+                    }}
+                    viewBox="0 0 100 100"
+                    preserveAspectRatio="none"
+                    aria-label="Live object tracking"
+                  >
+                    {detections.map(
+                      (d) =>
+                        d.box && (
+                          <g key={d.objectId}>
+                            <rect
+                              x={d.box.left * 100}
+                              y={d.box.top * 100}
+                              width={(d.box.right - d.box.left) * 100}
+                              height={(d.box.bottom - d.box.top) * 100}
+                              fill="none"
+                              stroke={objectColour(d.objectId)}
+                              strokeWidth=".7"
+                            />
+                            <circle
+                              cx={(d.box.left + d.box.right) * 50}
+                              cy={
+                                lesson?.procedure.steps.find(
+                                  (step) =>
+                                    step.condition.componentId === d.objectId,
+                                )?.measurement?.point === "bottom_center"
+                                  ? d.box.bottom * 100
+                                  : (d.box.top + d.box.bottom) * 50
+                              }
+                              r="1.8"
+                              fill={objectColour(d.objectId)}
+                              className={
+                                alert?.kind === "failed" &&
+                                lesson?.procedure.steps.find(
+                                  (s) => s.id === alert.stepId,
+                                )?.condition.componentId === d.objectId
+                                  ? "practice-correction-pulse"
+                                  : ""
+                              }
+                            />
+                          </g>
+                        ),
+                    )}
+                  </svg>
+                )}
+              </div>
+              {lesson && !running && references && (
+                <div className="p-2" aria-label="Before and after goal">
+                  <p className="mb-1 text-xs font-bold">
+                    Before and after goal
+                  </p>
+                  <div className="flex justify-start gap-2">
+                    <figure className="w-20 overflow-hidden rounded-lg border bg-slate-50">
+                      <img
+                        src={references.before}
+                        alt="Demonstrated starting state"
+                        className="block h-12 w-full object-cover"
+                      />
+                      <figcaption className="px-1 py-0.5 text-xs font-bold">
+                        Before
+                      </figcaption>
+                    </figure>
+                    <figure className="w-20 overflow-hidden rounded-lg border bg-slate-50">
+                      <img
+                        src={references.goal}
+                        alt="Demonstrated final goal"
+                        className="block h-12 w-full object-cover"
+                      />
+                      <figcaption className="px-1 py-0.5 text-xs font-bold">
+                        After
+                      </figcaption>
+                    </figure>
+                  </div>
+                </div>
+              )}
+              {lesson && (
+                <section aria-label="Steps" className="px-2 py-1 text-xs">
+                  <details open={running ? true : undefined}>
+                    <summary className="cursor-pointer font-bold">
+                      Steps ·{" "}
+                      {running ? "live verification" : "last observed result"}
+                    </summary>
+                    <ol className="mt-1 max-h-20 space-y-1 overflow-y-auto">
+                      {lesson.procedure.steps.map((step, index) => {
+                        const s = result?.steps.find(
+                          (state) => state.stepId === step.id,
+                        ) ?? { stepId: step.id, status: "pending" };
+                        return (
+                          <li
+                            key={s.stepId}
+                            className="flex gap-2 rounded-xl border border-slate-200 bg-white px-2 py-1"
+                          >
+                            <span className="font-bold text-emerald-800">
+                              {index + 1}.
+                            </span>
+                            <span>
+                              {
+                                lesson?.procedure.steps.find(
+                                  (step) => step.id === s.stepId,
+                                )?.description
+                              }
+                              : <strong>{s.status.replaceAll("_", " ")}</strong>
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </details>
+                </section>
+              )}
+              {alert && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/85 to-transparent px-3 pb-2 pt-8">
+                  <div
+                    key={alert.key}
+                    data-testid="practice-verdict"
+                    role={alert.kind === "failed" ? "alert" : "status"}
+                    aria-live="polite"
+                    className={`rounded-xl border-2 p-2 text-base font-bold ${alert.kind === "failed" ? "border-red-600 bg-red-50 text-red-800 practice-correction-pulse" : alert.kind === "passed" ? "border-green-600 bg-green-50 text-green-800" : "border-amber-600 bg-amber-50 text-amber-800"}`}
+                  >
+                    {alert.text}
+                  </div>
+                </div>
+              )}
+              {running && references && (
+                <div className="pointer-events-none absolute right-2 top-14 w-24 overflow-hidden rounded-lg border-2 border-white bg-slate-950 shadow-lg">
+                  <img src={references.goal} alt="" className="block w-full" />
+                  <p className="bg-slate-950 px-1 py-0.5 text-center text-[10px] font-bold text-white">
+                    Goal
+                  </p>
+                </div>
+              )}
+            </section>
+            <div className="flex min-w-0 flex-col">
+              <div data-testid="practice-companion" className="min-w-0 flex-1">
+                <GuideAvatar
+                  artClassName="mx-auto h-72 w-64 sm:h-80 sm:w-72"
+                  mode={resolveAvatarMode({
+                    violation: running && result?.status === "failed",
+                    complete:
+                      running &&
+                      result?.status === "passed" &&
+                      alert?.kind !== "warning",
+                    uncertain:
+                      (!running && cameraActive) ||
+                      result?.status === "needs_verification" ||
+                      alert?.kind === "warning",
+                    busy: starting,
+                  })}
+                  speech={
+                    speaking
+                      ? "speaking"
+                      : voice.status === "listening"
+                        ? "listening"
+                        : "silent"
+                  }
+                  caption={alert?.text ?? notice}
+                />
+              </div>
+            </div>
+          </div>
         </div>
         {!saved.length && !lesson && (
           <p className="text-sm text-slate-600">
@@ -1600,84 +1931,88 @@ export default function LocalPractice() {
               Goal: {lesson.procedure.execution?.goal}
             </p>
             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_300px]">
-            <div className="mx-auto w-full max-w-xl">
-            <FrameMark
-              image={still.url}
-              width={still.image.width}
-              height={still.image.height}
-              mode="box"
-              mark={
-                marks[field]
-                  ? {
-                      kind: "box",
-                      left: marks[field].left * still.image.width,
-                      top: marks[field].top * still.image.height,
-                      right: marks[field].right * still.image.width,
-                      bottom: marks[field].bottom * still.image.height,
-                    }
-                  : null
-              }
-              onMark={(mark) => {
-                if (mark.kind !== "box") return;
-                setMarks((old) => ({
-                  ...old,
-                  [field]: {
-                    left: mark.left / still.image.width,
-                    top: mark.top / still.image.height,
-                    right: mark.right / still.image.width,
-                    bottom: mark.bottom / still.image.height,
-                  },
-                }));
-                setCalibrationConsent(false);
-              }}
-            />
-            </div>
-            <div className="min-w-0 space-y-2">
-            <select value={field} onChange={(e) => setField(e.target.value)}>
-              {fields.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {marks[f.id] ? "✓ " : ""}
-                  {f.name}
-                </option>
-              ))}
-            </select>
-            <label className="flex gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={calibrationConsent}
-                onChange={(e) => setCalibrationConsent(e.target.checked)}
-              />
-              <span>
-                I checked object identities, zone meanings and fixed
-                destinations against the approved lesson.{" "}
-                {resumeRequested
-                  ? "Completed states remain in place; unfinished actions are at their starting positions."
-                  : "The objects are in the demonstrated starting positions."}
-              </span>
-            </label>
-            <button
-              disabled={
-                starting ||
-                !calibrationConsent ||
-                fields.some((f) => !marks[f.id])
-              }
-              onClick={() => start()}
-            >
-              {resumeRequested
-                ? "Resume automatic practice"
-                : "Start automatic practice"}
-            </button>
-            <details className="text-sm text-slate-600">
-              <summary className="cursor-pointer font-medium">
-                How to mark this view
-              </summary>
-              Keep the camera fixed. Mark each movable object tightly. For a
-              fixed destination, mark a stable visible edge or feature. Then
-              mark the starting/destination zones and a separate stationary
-              textured reference. Fixed destination objects must remain in the
-              marked zones. If a destination moves, stop and recalibrate.
-            </details>
-            </div>
+              <div className="mx-auto w-full max-w-xl">
+                <FrameMark
+                  image={still.url}
+                  width={still.image.width}
+                  height={still.image.height}
+                  mode="box"
+                  mark={
+                    marks[field]
+                      ? {
+                          kind: "box",
+                          left: marks[field].left * still.image.width,
+                          top: marks[field].top * still.image.height,
+                          right: marks[field].right * still.image.width,
+                          bottom: marks[field].bottom * still.image.height,
+                        }
+                      : null
+                  }
+                  onMark={(mark) => {
+                    if (mark.kind !== "box") return;
+                    setMarks((old) => ({
+                      ...old,
+                      [field]: {
+                        left: mark.left / still.image.width,
+                        top: mark.top / still.image.height,
+                        right: mark.right / still.image.width,
+                        bottom: mark.bottom / still.image.height,
+                      },
+                    }));
+                    setCalibrationConsent(false);
+                  }}
+                />
+              </div>
+              <div className="min-w-0 space-y-2">
+                <select
+                  value={field}
+                  onChange={(e) => setField(e.target.value)}
+                >
+                  {fields.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {marks[f.id] ? "✓ " : ""}
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+                <label className="flex gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={calibrationConsent}
+                    onChange={(e) => setCalibrationConsent(e.target.checked)}
+                  />
+                  <span>
+                    I checked object identities, zone meanings and fixed
+                    destinations against the approved lesson.{" "}
+                    {resumeRequested
+                      ? "Completed states remain in place; unfinished actions are at their starting positions."
+                      : "The objects are in the demonstrated starting positions."}
+                  </span>
+                </label>
+                <button
+                  disabled={
+                    starting ||
+                    !calibrationConsent ||
+                    fields.some((f) => !marks[f.id])
+                  }
+                  onClick={() => start()}
+                >
+                  {resumeRequested
+                    ? "Resume automatic practice"
+                    : "Start automatic practice"}
+                </button>
+                <details className="text-sm text-slate-600">
+                  <summary className="cursor-pointer font-medium">
+                    How to mark this view
+                  </summary>
+                  Keep the camera fixed. Mark each movable object tightly. For a
+                  fixed destination, mark a stable visible edge or feature. Then
+                  mark the starting/destination zones and a separate stationary
+                  textured reference. Fixed destination objects must remain in
+                  the marked zones. If a destination moves, stop and
+                  recalibrate.
+                </details>
+              </div>
             </div>
           </section>
         )}
@@ -1695,48 +2030,52 @@ export default function LocalPractice() {
             Control settings
           </summary>
           <div className="space-y-3 py-2">
-          <button
-            onClick={() => {
-              setManualSetupOpen(true);
-              automaticWanted.current = false;
-              halt("Manual tracking adjustment selected.");
-            }}
-          >
-            Adjust tracking manually (optional)
-          </button>
-          {lesson?.automaticSetup && !running && (
+            <p
+              data-testid="practice-lifecycle"
+              className="text-xs text-slate-600"
+            >
+              Practice state: {lifecycle.state.replaceAll("_", " ")}
+              {lifecycle.lastTransition &&
+                ` (last change: ${lifecycle.lastTransition.reason})`}
+              . Camera {lifecycle.camera}; tracker {lifecycle.worker}; starting
+              objects{" "}
+              {lifecycle.acquisitionComplete ? "found" : "not yet found"};
+              verifier {lifecycle.armed ? "armed" : "not armed"}
+              {lifecycle.lastError && `. Last problem: ${lifecycle.lastError}`}
+            </p>
             <button
               onClick={() => {
-                setManualSetupOpen(false);
-                setStill(null);
-                setError("");
-                automaticWanted.current = true;
-                automaticAttemptAt.current = -Infinity;
-                if (!cameraActive)
-                  void startCamera(
-                    lesson?.sourceLesson?.media.info.video
-                      ? lesson.sourceLesson.media.info.video.width /
-                          lesson.sourceLesson.media.info.video.height
-                      : undefined,
-                  );
+                setManualSetupOpen(true);
+                automaticWanted.current = false;
+                halt("Manual tracking adjustment selected.");
               }}
             >
-              Retry automatic setup
+              Adjust tracking manually (optional)
             </button>
-          )}
-          <CommandFeedback
-            feedback={voice.feedback}
-            commands={voice.availableCommands}
-            onRestart={
-              voice.status === "error" || voice.status === "denied"
-                ? voice.restart
-                : undefined
-            }
-          />
-          <VoicePanel events={voiceLog} />
-          <button onClick={download}>
-            Export diagnostics and recent evidence
-          </button>
+            {lesson?.automaticSetup && !running && (
+              <button
+                onClick={() =>
+                  void ensurePracticeRunning(
+                    session.current?.stopped ? "resume" : "start",
+                  )
+                }
+              >
+                Retry automatic setup
+              </button>
+            )}
+            <CommandFeedback
+              feedback={voice.feedback}
+              commands={voice.availableCommands}
+              onRestart={
+                voice.status === "error" || voice.status === "denied"
+                  ? voice.restart
+                  : undefined
+              }
+            />
+            <VoicePanel events={voiceLog} />
+            <button onClick={download}>
+              Export diagnostics and recent evidence
+            </button>
           </div>
         </details>
         {error && (

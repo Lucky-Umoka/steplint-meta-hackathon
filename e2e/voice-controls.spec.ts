@@ -85,10 +85,27 @@ test("voice controls release the recognizer, cancel stale confirmations and do n
       get: () => true,
     }),
   );
+  await page.evaluate(() => {
+    const synth = window.speechSynthesis;
+    const original = synth.cancel.bind(synth);
+    (window as unknown as { qaCancels: number }).qaCancels = 0;
+    synth.cancel = () => {
+      (window as unknown as { qaCancels: number }).qaCancels++;
+      original();
+    };
+  });
+  // Half-duplex (Phase 4, owner decision): a valid command is not dropped
+  // while guidance speaks. It interrupts our speech, then runs through the
+  // lifecycle, which reports the real outcome (this fixture needs manual setup).
   await utter("Muse, start practice");
   await expect(page.getByTestId("voice-command-feedback")).toContainText(
-    "while guidance was speaking",
+    "manual calibration",
   );
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { qaCancels: number }).qaCancels,
+    ),
+  ).toBeGreaterThan(0);
   await page.evaluate(() =>
     Object.defineProperty(window.speechSynthesis, "speaking", {
       configurable: true,
@@ -96,8 +113,9 @@ test("voice controls release the recognizer, cancel stale confirmations and do n
     }),
   );
   await utter("Muse, pause");
+  // A failed lifecycle operation is reported as failed, never as success.
   await expect(page.getByTestId("voice-command-feedback")).toContainText(
-    "The action is not available in this state",
+    "Practice is not running",
   );
   await expect(page.getByTestId("voice-transcript")).toContainText(
     "Muse, pause",

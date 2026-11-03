@@ -81,3 +81,41 @@ Deliberately unchanged: `src/practice/`, `src/app/practice/`, `src/voice/`, `src
 - No desktop/mobile screenshot comparison or actual physical-camera, microphone or gesture acceptance is claimed. The Review source diff preserves layout/styles and removes only automatic narrowing and its obsolete notice, with revised unsupported-work copy.
 
 Only Phase 1 was implemented. Phase 2 requires explicit owner approval.
+
+## Follow-up verification and Spark request configuration
+
+Rechecked after owner reported `Spark request: meta Spark request failed` on commit `088bf65`.
+
+The local configuration contained a Baseten key but no `SPARK_PROVIDER`. The documented adapter default therefore selected Meta. Set the ignored local `.env.local` selection explicitly to `SPARK_PROVIDER=baseten`; credentials were not changed, printed or committed. This corrects provider selection, but does not establish the cause of Meta's original rejection: its HTTP/connection details had been discarded. `src/server/meta/spark.ts` now preserves safe typed distinctions for request rejection (HTTP 400/422), rate limits, other HTTP failures, timeout, cancellation and connection failure. No raw provider responses or secrets are returned. Retries and cross-provider fallback remain disabled.
+
+Only the adapter, its mocked tests, this record and the ignored local provider selection changed in this follow-up. The owner's modified `IMPLEMENTATION_FIXES.md` was preserved. No Practice, UI, schema, model role or Phase 2 change was made.
+
+Owner's requested Phase 1 checklist:
+
+| Required evidence | Verified result |
+| --- | --- |
+| Two actions on the same object retain separate windows | Passed: `[0,1,2]` and `[2,3,4]`, shared boundary retained |
+| Continuous carry stays one action | Passed deterministic normalization/suggestion regression; not a claim about an untested live model response |
+| Unsupported required actions remain visible | Passed scope-retention/blocker tests; canonical mocked browser evidence remains recorded above |
+| Invalid object, step and goal references rejected | Passed strict V3 validation regressions |
+| Final conditions and requirement coverage validated | Passed missing/dangling/unsupported coverage, shared-scene and source-region/separation evidence tests |
+| Existing Teach tests | Passed as part of the full suite |
+| Focused Teach/provider tests | 126 passed in 5 files |
+| `npm test` | 543 passed in 65 files |
+| `npm run lint` | Exit 0: 0 errors, same 5 warnings in unchanged files |
+| `npm run typecheck` | Exit 0 |
+| `npm run build` | Exit 0: compilation, TypeScript, static generation and route output passed |
+
+No paid request or new physical-camera/microphone test ran. Live V3 drafting through Baseten remains unverified; the previous failed Meta request's original status is unrecoverable from the displayed message. For an existing local server, ensure it reloads the environment/restart it before another deliberate attempt. On Vercel, configure server-side `SPARK_PROVIDER=baseten` and `BASETEN_API_KEY`, then redeploy; the local environment edit does not change Vercel. V3 approval/Practice remains intentionally gated pending Phase 2.
+
+## Shared-scene validation follow-up
+
+The reported `Scene predicates require shared initial/final scene evidence` error exposed a validator restriction: each predicate had to cite exactly the first action's start frame or exactly the last action's result frame. A clear common scene before movement or after the hand clears the result was rejected even when actual tracked evidence existed.
+
+Corrected `src/teach/v3-evidence.ts` to require an actual common source frame across all initial predicates at/before the first action, and across all final predicates at/after the last action. Every cited frame must remain within its corresponding initial/final interval. Unrelated moments, missing source frames, low confidence and unobserved separation remain rejected; no source evidence is invented or rebound automatically. The compiler instructions in `src/server/teach/pipeline.ts` and schema descriptions in `src/procedure/execution-v3.ts` now state the same rule. `tests/teach-v3.test.ts` adds four regressions, including a mocked canonical parser→normalizer→review-evidence case with distinct action/scene frames.
+
+Focused tests: 124 passed in four files. Full unit suite: 547 passed in 65 files. Lint: 0 errors, same 5 warnings in unchanged files. Typecheck passed. Production build passed (exit 0), including compilation, TypeScript, static generation and route output. No live model call, UI change, Practice change or approval migration occurred. The owner's actual failed draft was not supplied, so this reproduction establishes the overly restrictive code mechanism, not that every predicate in that particular model output was valid.
+
+Perception limitation remains explicit: Meta discovery sees the video; SAM returns tracking geometry; final Baseten drafting receives narration and sampled geometry, not another full-video visual check. Schema/source checks cannot establish that every meaningful demonstrated action was identified correctly.
+
+**Update 2026-11-02:** the Phase 1 approval gate was removed by the owner-authorized Phase 2; see TEACH_V3_PHASE2.md.

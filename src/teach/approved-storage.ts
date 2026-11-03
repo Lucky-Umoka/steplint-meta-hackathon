@@ -1,6 +1,6 @@
 import { MAX_LESSON_MS } from "../media/limits";
 import { z } from "zod";
-import { ApprovedArtifactSchema } from "./approved-artifact";
+import { parseApprovedArtifact } from "./approved-artifact";
 export const ProcedureReferencesSchema = z.strictObject({
   before: z
     .string()
@@ -40,7 +40,7 @@ export async function saveApprovedProcedure(
     : undefined;
   if (raw.length > 1_500_000)
     throw Error("Approved lesson exceeds the storage limit.");
-  const artifact = ApprovedArtifactSchema.parse(JSON.parse(raw));
+  const artifact = parseApprovedArtifact(JSON.parse(raw));
   const db = await database();
   try {
     await new Promise<void>((resolve, reject) => {
@@ -93,7 +93,7 @@ export async function listApprovedProcedures(): Promise<SavedProcedure[]> {
                 typeof row.raw !== "string"
               )
                 throw Error("Stored lesson is invalid.");
-              const a = ApprovedArtifactSchema.parse(JSON.parse(row.raw));
+              const a = parseApprovedArtifact(JSON.parse(row.raw));
               return {
                 id: a.procedure.id,
                 title: a.procedure.title,
