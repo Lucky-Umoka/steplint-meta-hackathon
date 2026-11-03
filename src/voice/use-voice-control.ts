@@ -2,7 +2,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   decideDisposition,
+  commandBody,
   commandFeedback,
+  isWakeOnly,
   requestConfirmation,
   type CommandDisposition,
   type PendingConfirmation,
@@ -271,11 +273,25 @@ export function useVoiceControl({
       if (gen === live.current.generation && !session.stopped)
         setStatus("listening");
     };
+    // Chrome finalizes at a pause, so "Guide, … pause" can arrive as two
+    // final results; a wake-word-only result is joined with the next one.
+    let heldWake: { text: string; at: number } | null = null;
     rec.onresult = (event) => {
       if (gen !== live.current.generation || session.stopped) return;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        if (result.isFinal) dispatch(result[0].transcript);
+        if (!result.isFinal) continue;
+        const text = result[0].transcript;
+        if (isWakeOnly(text)) {
+          heldWake = { text, at: Date.now() };
+          continue;
+        }
+        const joined =
+          heldWake && Date.now() - heldWake.at < 3000 && !commandBody(text)
+            ? `${heldWake.text} ${text}`
+            : text;
+        heldWake = null;
+        dispatch(joined);
       }
     };
     rec.onerror = (event) => {

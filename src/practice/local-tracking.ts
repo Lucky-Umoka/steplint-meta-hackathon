@@ -44,8 +44,9 @@ function groundNative(
   id: string,
   box: Box,
   fixed = false,
+  allowPalette = true,
 ): NativeTrack {
-  if (!fixed) {
+  if (!fixed && allowPalette) {
     const palette = groundNativePalette(image, id, box);
     if (palette)
       return {
@@ -82,6 +83,8 @@ function measureNative(
   image: Pixels,
   frame: ReturnType<typeof prepareTrackingFrame>,
   profile: NativeTrack,
+  retainFraction = 0.8,
+  occluders: Box[] = [],
 ): ObjectDetection {
   if (profile.lost)
     return {
@@ -96,15 +99,36 @@ function measureNative(
       profile.lost = true;
     return detection;
   }
-  const detection =
-    profile.method === "dense_rgb"
-      ? trackOverlay(image, profile.track, {
-          multiscale: !profile.fixed,
-          // Stationary references tolerate the same partial occlusion as
-          // movers (an object resting on the plate); position gates unchanged.
-          retainFraction: 0.8,
-        })
-      : trackPreparedAppearance(frame, profile.track);
+  let detection: ObjectDetection;
+  if (profile.method === "dense_rgb") {
+    // The mover covers a known part of a stationary reference. Exclude those
+    // approved sample indices from BOTH illumination fitting and scoring, so
+    // a red bottle does not change the plate's estimated exposure. Compare
+    // the same visible indices for every competing translation hypothesis.
+    const visible = profile.track.samples.filter(
+      (sample) =>
+        !occluders.some((box) => {
+          const x = sample.x / image.width,
+            y = sample.y / image.height;
+          return (
+            x >= box.left && x <= box.right && y >= box.top && y <= box.bottom
+          );
+        }),
+    );
+    const probe = {
+      ...profile.track,
+      samples: visible.length >= 32 ? visible : profile.track.samples,
+    };
+    detection = trackOverlay(image, probe, {
+      multiscale: !profile.fixed,
+      retainFraction,
+    });
+    profile.track.measurement = probe.measurement;
+    if (detection.quality === "observed") {
+      profile.track.last = probe.last;
+      profile.track.scale = probe.scale;
+    }
+  } else detection = trackPreparedAppearance(frame, profile.track);
   if (detection.quality !== "observed") {
     profile.lost = true;
     return detection;
@@ -132,6 +156,15 @@ type Slot = {
   profile: NativeTrack | null;
   /** Approved appearance template (Teach source pixels) used for searches. */
   template: OverlayTrack | null;
+  /**
+   * Colour profile grounded from the approved Teach view, when that view
+   * supports one. Kept so a live re-grounding whose palette test misses by a
+   * pixel margin does not silently downgrade a mover to a tracker that loses
+   * identity under a grasp (browser root cause, 2026-11-03).
+   */
+  sourcePalette?: NativePalette | null;
+  /** Observed frames since the last approved-palette upgrade attempt. */
+  upgradeTick?: number;
   /** Last reliable live box, or the approved expected location if never seen. */
   lastBox: Box | null;
   /** Candidate box being confirmed during recovery/acquisition. */
@@ -144,6 +177,7 @@ export type LocalTrackingState = {
   workspace: NativeTrack | null;
   reference: Box | null;
   fixed: Record<string, Box>;
+  zones: Box[];
   invalid: boolean;
   slots: Record<string, Slot>;
   /** Approved nested pairs ("a|b", sorted) whose boxes may overlap. */
@@ -162,6 +196,48 @@ function intersection(a: Box, b: Box) {
         (Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top))
     : 0;
 }
+/** A mover's last known box is over or next to this box (within 0.1). */
+function coveredByMover(state: LocalTrackingState, box: Box) {
+  const near = {
+    left: box.left - 0.1,
+    top: box.top - 0.1,
+    right: box.right + 0.1,
+    bottom: box.bottom + 0.1,
+  };
+  return Object.values(state.slots).some(
+    (slot) => !slot.fixed && slot.lastBox && overlaps(slot.lastBox, near),
+  );
+}
+/**
+ * Fixed-reference check only: a mover not clearly observed this frame (lost,
+ * or kept only by partial identity during a grasp) has a stale lastBox (where it was last seen), yet it may already rest on any approved
+ * zone, covering a reference there (bottle landing on the plate while its
+ * identity is still being reacquired). That reference is then uncertain, not
+ * proof of camera motion. The 2 s no-reference-seen guard still applies, a
+ * tracked mover far away still fails, and nothing here observes the mover.
+ */
+function possiblyCovered(
+  state: LocalTrackingState,
+  box: Box,
+  measured: Map<string, ObjectDetection>,
+) {
+  if (coveredByMover(state, box)) return true;
+  const near = {
+    left: box.left - 0.1,
+    top: box.top - 0.1,
+    right: box.right + 0.1,
+    bottom: box.bottom + 0.1,
+  };
+  return Object.entries(state.slots).some(
+    ([id, slot]) =>
+      !slot.fixed &&
+      slot.identity.status !== "dormant" &&
+      // Lost, or tracked only by partial identity with no box this frame.
+      (slot.identity.status !== "tracked" ||
+        measured.get(id)?.quality !== "observed") &&
+      state.zones.some((zone) => overlaps(zone, near)),
+  );
+}
 /** Nested approved boxes stay distinguishable only while their boxes differ. */
 function indistinct(a: Box, b: Box) {
   const shared = intersection(a, b);
@@ -179,6 +255,43 @@ function validBox(box: Box) {
   );
 }
 /** Source (Teach) pixels are matched against a live camera's own exposure. */
+/**
+ * Live grounding decides the tracking method from one frame. When it does not
+ * yield a colour profile but the approved Teach view did, place that approved
+ * profile at the live box and keep it only if it measures the object as
+ * observed with the unchanged 0.9 score; otherwise keep the live profile.
+ */
+function preferApprovedPalette(
+  image: Pixels,
+  frame: ReturnType<typeof prepareTrackingFrame>,
+  live: NativeTrack,
+  source: NativePalette | null | undefined,
+  box: Box,
+): NativeTrack {
+  if (live.method === "native_palette" || live.fixed || !source) return live;
+  const track = structuredClone(source);
+  track.lost = false;
+  track.partialIdentity = undefined;
+  track.measurement = undefined;
+  track.seedBox = { ...box };
+  track.last = {
+    x: ((box.left + box.right) / 2) * image.width,
+    y: ((box.top + box.bottom) / 2) * image.height,
+  };
+  const candidate: NativeTrack = {
+    objectId: live.objectId,
+    lost: false,
+    fixed: live.fixed,
+    method: "native_palette",
+    track,
+  };
+  const detection = measureNative(image, frame, candidate);
+  return detection.quality === "observed" &&
+    detection.score !== null &&
+    detection.score >= 0.9
+    ? candidate
+    : live;
+}
 function fromSource(profile: NativeTrack): NativeTrack {
   if (profile.method === "dense_rgb") profile.track.illumination = true;
   return profile;
@@ -258,12 +371,18 @@ function buildState(
     throw Error(
       "The view is too dark, overexposed or unclear for verification.",
     );
-  const profiles = objects.map((o) =>
-    groundNative(image, o.id, o.box, !!o.fixed),
-  );
+  const profiles = objects.map((o) => {
+    const profile = groundNative(image, o.id, o.box, !!o.fixed);
+    // Stationary references are the camera-motion reference: compensate the
+    // camera's continuous auto-exposure, or a still plate "moves" (live run 2).
+    if (o.fixed && profile.method === "dense_rgb")
+      profile.track.illumination = true;
+    return profile;
+  });
   const workspace = workspaceBox
     ? groundNative(image, "workspace-reference", workspaceBox, true)
     : null;
+  if (workspace?.method === "dense_rgb") workspace.track.illumination = true;
   const fixed = Object.create(null) as Record<string, Box>;
   for (const profile of profiles.filter((o) => o.fixed)) {
     const measured = measureNative(image, frame, profile);
@@ -301,6 +420,7 @@ function buildState(
     invalid: false,
     slots,
     nested,
+    zones: [],
   };
 }
 /** Explicit native-object feature calibration; no colour assumptions. */
@@ -366,19 +486,26 @@ export function trackLocal(
     state.workspace.lost = false; // stationary: re-measure every frame
     const anchor = measureNative(image, frame, state.workspace),
       ref = state.reference;
-    if (anchor.box && anchor.quality === "observed") {
-      if (
+    if (!anchor.box || anchor.quality !== "observed") {
+      // Not found and nothing of the procedure near it: the camera or the
+      // reference moved (the original safety rule). Near a mover: occlusion.
+      if (!coveredByMover(state, ref))
+        return fail(
+          "The camera or workspace reference moved. Recalibrate before continuing.",
+        );
+    } else {
+      const displaced =
         Math.max(
           Math.abs(anchor.box.left - ref.left),
           Math.abs(anchor.box.top - ref.top),
           Math.abs(anchor.box.right - ref.right),
           Math.abs(anchor.box.bottom - ref.bottom),
-        ) > 0.015
-      )
+        ) > 0.015;
+      if (displaced && !coveredByMover(state, ref))
         return fail(
           "The camera or workspace reference moved. Recalibrate before continuing.",
         );
-      referenceSeen = true;
+      if (!displaced) referenceSeen = true;
     }
   }
   const nowMs = context?.nowMs ?? 0;
@@ -393,15 +520,58 @@ export function trackLocal(
     if (state.fixed[id] && slot.profile) {
       slot.profile.lost = false;
       slot.identity = trackedIdentity();
+      if (slot.profile.method === "dense_rgb") {
+        const reference = state.fixed[id];
+        slot.profile.track.last = {
+          x: ((reference.left + reference.right) * image.width) / 2,
+          y: ((reference.top + reference.bottom) * image.height) / 2,
+        };
+        slot.profile.track.scale = 1;
+      }
     }
     if (slot.identity.status === "tracked" && slot.profile) {
-      const detection = measureNative(image, frame, slot.profile);
+      const detection = measureNative(
+        image,
+        frame,
+        slot.profile,
+        0.8,
+        state.fixed[id]
+          ? Object.values(state.slots)
+              .filter((other) => !other.fixed && other.lastBox)
+              .map((other) => other.lastBox!)
+          : [],
+      );
       if (detection.quality === "observed" && detection.box) {
         slot.lastBox = { ...detection.box };
         measured.set(id, detection);
+        // A mover set up on a frame where its colour profile could not be
+        // confirmed (hand in view) upgrades to the approved colour profile
+        // once a clear frame confirms it; bounded to every 10th observation.
+        if (
+          !slot.fixed &&
+          slot.sourcePalette &&
+          slot.profile.method !== "native_palette" &&
+          (slot.upgradeTick = (slot.upgradeTick ?? 0) + 1) % 10 === 0
+        ) {
+          const chosen = preferApprovedPalette(
+            image,
+            frame,
+            slot.profile,
+            slot.sourcePalette,
+            detection.box,
+          );
+          if (chosen !== slot.profile) {
+            const index = state.objects.indexOf(slot.profile);
+            if (index >= 0) state.objects[index] = chosen;
+            slot.profile = chosen;
+          }
+        }
         continue;
       }
-      if (!state.fixed[id]) {
+      const identityStillVisible =
+        slot.profile.method === "native_palette" &&
+        !!slot.profile.track.partialIdentity;
+      if (!state.fixed[id] && !identityStillVisible) {
         slot.identity = loseIdentity(slot.identity, nowMs);
         events.push({
           objectId: id,
@@ -417,18 +587,30 @@ export function trackLocal(
   }
   for (const [id, reference] of Object.entries(state.fixed)) {
     const observed = measured.get(id);
-    if (!observed?.box || observed.quality !== "observed") continue; // hidden
-    if (
+    if (!observed?.box || observed.quality !== "observed") {
+      if (!possiblyCovered(state, reference, measured))
+        return fail(
+          "A fixed destination or reference moved or became uncertain. Recalibrate the setup.",
+        );
+      continue; // hidden by the procedure's own objects
+    }
+    const displaced =
       Math.max(
         Math.abs(observed.box.left - reference.left),
         Math.abs(observed.box.top - reference.top),
         Math.abs(observed.box.right - reference.right),
         Math.abs(observed.box.bottom - reference.bottom),
-      ) > 0.025
-    )
+      ) > 0.025;
+    // An object being placed on (or a hand passing over) a stationary
+    // reference changes how it looks: occlusion by the procedure, not motion.
+    if (displaced && !possiblyCovered(state, reference, measured))
       return fail(
         "A fixed destination or reference moved. Recalibrate the setup.",
       );
+    if (displaced) {
+      measured.set(id, unknown(id)); // never report a disturbed reference box
+      continue;
+    }
     referenceSeen = true;
   }
   if (!referenceSeen) {
@@ -437,17 +619,10 @@ export function trackLocal(
       return fail(
         "No stationary reference has been visible for 2 seconds, so camera movement cannot be told apart from object movement. Show the stationary reference.",
       );
-    // Until a reference is seen again, nothing from this frame is evidence.
-    return {
-      detections: required.map(unknown),
-      optionalDetections: optional.map(unknown),
-      calibrationValid: true,
-      reason: "A stationary reference is hidden; this frame is not evidence.",
-      partialIdentities: [],
-      identityEvents: events,
-    };
-  }
-  state.referenceHiddenSince = null;
+    // References hidden by the procedure's own objects for under 2 s: the
+    // objects' evidence keeps flowing (the camera was confirmed still just
+    // before); a longer absence invalidates above.
+  } else state.referenceHiddenSince = null;
   // Colliding identities cannot both be authoritative observations, unless
   // they are an approved nested pair whose boxes remain distinguishable.
   const live = [...measured.values()];
@@ -495,33 +670,44 @@ export function trackLocal(
             objectId: id,
             status: "needs_user_view",
             reason: slot.template
-              ? "Not found again within the bounded search. Show it clearly, then restart tracking."
-              : "Its approved appearance has too little detail to search for it again. Show it clearly, then restart tracking.",
+              ? "Not found again within the bounded search. Show it clearly; tracking will keep looking."
+              : "Its approved appearance has too little detail to search for it again. Review the Teach reference before restarting tracking.",
           });
         continue;
       }
-      let candidate = searchIdentity(
-        image,
-        slot.template,
+      const distance = (box: Box) =>
+        Math.hypot(
+          box.left + box.right - slot.lastBox!.left - slot.lastBox!.right,
+          box.top + box.bottom - slot.lastBox!.top - slot.lastBox!.bottom,
+        );
+      const regions =
         action === "confirm" && slot.candidateBox
-          ? slot.candidateBox
-          : slot.lastBox,
-      );
+          ? [slot.candidateBox]
+          : [
+              slot.lastBox,
+              ...[...state.zones].sort((a, b) => distance(a) - distance(b)),
+            ];
       // Two approved identities never silently share one live detection.
-      if (
-        candidate &&
-        [...measured.values()].some(
-          (other) =>
-            other.objectId !== id &&
-            other.quality === "observed" &&
-            other.box &&
-            !state.nested.has(pairKey(id, other.objectId)) &&
-            intersection(candidate!, other.box) /
-              Math.min(area(candidate!), area(other.box)) >
-              0.5,
-        )
-      )
-        candidate = null;
+      let candidate: Box | null = null;
+      for (const region of regions) {
+        const found = searchIdentity(image, slot.template, region);
+        if (
+          found &&
+          ![...measured.values()].some(
+            (other) =>
+              other.objectId !== id &&
+              other.quality === "observed" &&
+              other.box &&
+              !state.nested.has(pairKey(id, other.objectId)) &&
+              intersection(found, other.box) /
+                Math.min(area(found), area(other.box)) >
+                0.5,
+          )
+        ) {
+          candidate = found;
+          break;
+        }
+      }
       const step = recordSearch(
         slot.identity,
         nowMs,
@@ -536,7 +722,13 @@ export function trackLocal(
       slot.identity = step.state;
       slot.candidateBox = step.state.candidates.length ? candidate : null;
       if (step.accepted && candidate) {
-        const profile = groundNative(image, id, candidate, slot.fixed);
+        const profile = preferApprovedPalette(
+          image,
+          frame,
+          groundNative(image, id, candidate, slot.fixed),
+          slot.sourcePalette,
+          candidate,
+        );
         slot.profile = profile;
         const index = state.objects.findIndex((o) => o.objectId === id);
         if (index >= 0) state.objects[index] = profile;
@@ -558,7 +750,7 @@ export function trackLocal(
           objectId: id,
           status: "needs_user_view",
           reason:
-            "Not found again within the bounded search. Show it clearly, then restart tracking.",
+            "Not found again within the bounded search. Show it clearly; tracking will keep looking.",
         });
     }
   return {
@@ -636,7 +828,8 @@ export function bootstrapLocal(
           object.fixed &&
           (object.required ?? true) === false &&
           movers.some(
-            (mover) => intersection(object.box, mover.box) / area(object.box) > 0.2,
+            (mover) =>
+              intersection(object.box, mover.box) / area(object.box) > 0.2,
           ),
       )
       .map((object) => object.id),
@@ -697,7 +890,7 @@ export function bootstrapLocal(
     if (contaminated.has(object.id)) continue; // optional and unreliable
     const required = object.required ?? true,
       active = object.active ?? true;
-    const profile = fromSource(
+    let profile = fromSource(
       groundNative(object.image, object.id, object.box, object.fixed),
     );
     const expected = object.expectedBox ?? object.box;
@@ -737,7 +930,26 @@ export function bootstrapLocal(
         y: point.y + dy,
       }));
     }
-    const detection = measureNative(image, frame, profile);
+    let detection = measureNative(image, frame, profile);
+    // The approved colour profile can miss on a given live frame (exposure,
+    // blur); the approved dense template is then tried under the same gate.
+    if (
+      profile.method === "native_palette" &&
+      !(detection.quality === "observed" && (detection.score ?? 0) >= 0.9)
+    ) {
+      const dense = fromSource(
+        groundNative(object.image, object.id, object.box, object.fixed, false),
+      );
+      if (dense.method !== "features") {
+        dense.track.last.x += dx;
+        dense.track.last.y += dy;
+      }
+      const retry = measureNative(image, frame, dense);
+      if (retry.quality === "observed" && (retry.score ?? 0) >= 0.9) {
+        profile = dense;
+        detection = retry;
+      }
+    }
     const observed =
       detection.quality === "observed" &&
       !!detection.box &&
@@ -827,6 +1039,27 @@ export function bootstrapLocal(
         object.id,
         object.box,
       );
+    if (object.fixed) continue;
+    const slot = state.slots[item.id];
+    slot.sourcePalette = groundNativePalette(
+      object.image,
+      object.id,
+      object.box,
+    );
+    if (slot.profile && slot.lastBox) {
+      const chosen = preferApprovedPalette(
+        image,
+        frame,
+        slot.profile,
+        slot.sourcePalette,
+        slot.lastBox,
+      );
+      if (chosen !== slot.profile) {
+        const index = state.objects.indexOf(slot.profile);
+        if (index >= 0) state.objects[index] = chosen;
+        slot.profile = chosen;
+      }
+    }
   }
   // Unreliable (contaminated) references are reported as unknown, never used.
   for (const id of contaminated)
@@ -844,6 +1077,12 @@ export function bootstrapLocal(
         : activateIdentity(dormantIdentity()),
       profile: null,
       template: item.template,
+      sourcePalette: (() => {
+        const object = source.objects.find((o) => o.id === item.id)!;
+        return item.fixed || !sameSize(object)
+          ? null
+          : groundNativePalette(object.image, object.id, object.box);
+      })(),
       lastBox: item.expected,
       fixed: item.fixed,
     };
@@ -871,6 +1110,12 @@ export function bootstrapLocal(
       ? { x: anchored.shifts[best].dx, y: anchored.shifts[best].dy }
       : { x: alignment.x, y: alignment.y };
   });
+  state.zones = (source.zones ?? []).map((zone, index) => ({
+    left: zone.left + zoneTranslations[index].x,
+    right: zone.right + zoneTranslations[index].x,
+    top: zone.top + zoneTranslations[index].y,
+    bottom: zone.bottom + zoneTranslations[index].y,
+  }));
   return {
     state,
     translation: { x: alignment.x, y: alignment.y },

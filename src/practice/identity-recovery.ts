@@ -8,8 +8,7 @@
  * template). A reacquisition is accepted only after RECOVERY.freshObservations
  * consecutive, mutually consistent template matches (one search hit plus fresh
  * confirmations); losses are bounded to RECOVERY.maxAttempts searches spread
- * across RECOVERY.windowMs, at most one action per fresh frame. After exhaustion nothing is searched automatically until the learner
- * restarts tracking (a new session generation). Pure: no clock, no I/O.
+ * across RECOVERY.windowMs, at most one action per fresh frame. After exhaustion one search per second continues while awaiting a clear view. Pure: no clock, no I/O.
  */
 export const RECOVERY = {
   maxAttempts: 3,
@@ -34,6 +33,7 @@ export type IdentityState = {
   /** Consecutive consistent candidate centres in the current search. */
   candidates: Point[];
   lastFrameId: string | null;
+  lastSearchMs: number | null;
 };
 export type IdentityEvent = {
   objectId: string;
@@ -47,6 +47,7 @@ export const trackedIdentity = (): IdentityState => ({
   attempts: 0,
   candidates: [],
   lastFrameId: null,
+  lastSearchMs: null,
 });
 export const dormantIdentity = (): IdentityState => ({
   ...trackedIdentity(),
@@ -65,6 +66,7 @@ export function loseIdentity(
     attempts: 0,
     candidates: [],
     lastFrameId: null,
+    lastSearchMs: null,
   };
 }
 /** An approved later object became part of the watch set. */
@@ -91,6 +93,10 @@ export function nextSearch(
   if (state.lastFrameId === frameId) return "none";
   if (state.candidates.length) return "confirm";
   if (state.status === "acquiring") return "attempt";
+  if (state.status === "needs_user_view")
+    return nowMs - (state.lastSearchMs ?? state.episodeStartMs ?? nowMs) >= 1000
+      ? "attempt"
+      : "none";
   if (state.status !== "occluded" && state.status !== "reacquiring")
     return "none";
   const elapsed = nowMs - (state.episodeStartMs ?? nowMs);
@@ -127,6 +133,7 @@ export function recordSearch(
     status: acquiring ? "acquiring" : "reacquiring",
     attempts: acquiring || confirming ? state.attempts : state.attempts + 1,
     lastFrameId: frameId,
+    lastSearchMs: nowMs,
     candidates: consistent ? [...state.candidates, candidate!] : [],
   };
   if (next.candidates.length >= RECOVERY.freshObservations)

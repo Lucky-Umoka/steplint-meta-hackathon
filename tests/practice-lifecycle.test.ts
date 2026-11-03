@@ -231,3 +231,34 @@ it("records the last transition and safe diagnostics without image data", () => 
     ].sort(),
   );
 });
+
+it("keeps silent retry workers in recovering until setup actually succeeds", () => {
+  let state = run([
+    { type: "start", intent: "start", cameraOn: true, automatic: true },
+  ]);
+  for (let generation = 1; generation <= 7; generation++) {
+    state = transition(
+      state,
+      { type: "worker_started", generation },
+      generation * 3000,
+    );
+    if (generation > 1) expect(state.state).toBe("recovering");
+    state = transition(
+      state,
+      {
+        type: "worker_failed",
+        generation,
+        message: "Finding component-1",
+        recoverable: true,
+      },
+      generation * 3000 + 1,
+    );
+    expect(state.state).toBe("recovering");
+    expect(state.automaticWanted).toBe(true);
+  }
+  state = transition(state, { type: "setup_complete", generation: 7 }, 22000);
+  expect(state.state).toBe("arming");
+  expect(transition(state, { type: "armed", generation: 7 }, 22001).state).toBe(
+    "running",
+  );
+});

@@ -294,3 +294,22 @@ it("the shared browser/replay adapter uses the approved base point and fails clo
   });
   expect(s.result.status).toBe("needs_verification");
 });
+
+it("a clear reversal after temporary uncertainty still invalidates a maintained verified action", () => {
+  const s = session();
+  for (let t = 0; t <= 400; t += 100) feedDetection(s, detection(0.2), t);
+  for (let t = 500; t <= 1000; t += 100) feedDetection(s, detection(0.8), t);
+  expect(s.result.status).toBe("passed");
+  feedDetection(
+    s,
+    { ...detection(0.8), quality: "missing", center: null, score: null },
+    1100,
+  );
+  expect(s.result.status).toBe("needs_verification");
+  for (let t = 1200; t <= 1800; t += 100) feedDetection(s, detection(0.2), t);
+  expect(s.result.steps[0].status).toBe("failed");
+  expect(s.result.events.some((e) => e.decision === "reversal")).toBe(true);
+  for (let t = 1900; t <= 2400; t += 100) feedDetection(s, detection(0.8), t);
+  expect(s.result.status).toBe("passed");
+  expect(s.result.events.at(-1)?.decision).toBe("restoration");
+});

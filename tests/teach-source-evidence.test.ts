@@ -17,6 +17,8 @@ import {
 } from "../src/teach/review-suggestions";
 import { localExecutionDraft } from "../src/teach/local-execution";
 import { teachV3Fixture } from "./fixtures/teach-v3";
+import type { ExecutionV3 } from "../src/procedure/execution-v3";
+import { alignScenePredicateEvidence } from "../src/teach/predicate-evidence";
 
 vi.mock("server-only", () => ({}));
 it("budgets Baseten reasoning and JSON without changing Meta's existing ceiling", () => {
@@ -371,4 +373,136 @@ it("explains why an object has no measured movement window, from its own trackin
   expect(input.sourceEvidencePolicy.objects[0].whyNoMovementWindow).toMatch(
     /never moved/,
   );
+});
+
+it("scene predicate observations do not widen step-derived zones into the target", () => {
+  const { context, draft, execution } = teachV3Fixture();
+  const baseline = suggestReviews(draft, context);
+  // A predicate citing the held view cannot redefine the settled action endpoint.
+  execution.initialConditions[0].evidenceFrames = [5];
+  const checks = suggestReviews(draft, context);
+  expect(checks.transfer.fromRegion).toEqual(baseline.transfer.fromRegion);
+  expect(checks.transfer.toRegion).toEqual(baseline.transfer.toRegion);
+  expect(checks.transfer.zoneConflict).not.toBe(true);
+});
+
+it("a slightly different initial scene position adds no overlap or approval blocker", () => {
+  const { context, draft } = teachV3Fixture();
+  // Normalized image drift of 0.005 is within the existing 0.01 rest policy.
+  context.tracking[0].samples[0].box.left += 0.005;
+  context.tracking[0].samples[0].box.right += 0.005;
+  const parsed = parseSparkDraft(
+    { status: "completed", output_text: JSON.stringify(draft) },
+    context,
+    { goal: "Transfer" },
+  );
+  const checks = suggestReviews(parsed, context);
+  for (const check of Object.values(checks)) {
+    check.reviewed = true;
+    check.conditionConfirmed = true;
+    expect(check.zoneConflict).not.toBe(true);
+  }
+  expect(reviewBlockers(parsed, context, checks)).toEqual([]);
+});
+
+/** Single-action fixture extended so the bottle is lifted again at frame 15. */
+function reliftedFixture() {
+  const fixture = teachV3Fixture();
+  const { context } = fixture;
+  const track = context.tracking[0];
+  const settled = track.samples.at(-1)!;
+  for (let frame = settled.frame + 1; frame <= 15; frame++) {
+    context.lesson.media.frameTimesMs.push(frame * 100);
+    track.samples.push({
+      ...settled,
+      frame,
+      timestampMs: frame * 100,
+      box:
+        frame === 15
+          ? { ...settled.box, top: settled.box.top - 0.2, bottom: settled.box.bottom - 0.2 }
+          : { ...settled.box },
+    });
+  }
+  context.lesson.media.info.video!.frames = 16;
+  fixture.execution.finalConditions[0].evidenceFrames = [15];
+  return fixture;
+}
+const v3Execution = (d: { procedure: { execution?: unknown } }) => {
+  const e = d.procedure.execution as { schemaVersion: number };
+  if (e?.schemaVersion !== 3) throw Error("expected V3");
+  return e as unknown as ExecutionV3;
+};
+const reviewedBlockers = (
+  d: Parameters<typeof suggestReviews>[0],
+  context: Parameters<typeof suggestReviews>[1],
+) => {
+  const checks = suggestReviews(d, context);
+  for (const check of Object.values(checks)) {
+    check.reviewed = true;
+    check.conditionConfirmed = true;
+  }
+  return reviewBlockers(d, context, checks);
+};
+
+it("a final predicate citing a re-lifted frame blocks approval unless bound to the measured result frame", () => {
+  const fixture = reliftedFixture();
+  const { context } = fixture;
+  // A draft compiled before boundary alignment existed (as in the owner's
+  // review): measured steps, but the model-cited re-lifted final frame.
+  const draft = structuredClone(
+    parseSparkDraft(
+      { status: "completed", output_text: JSON.stringify(fixture.draft) },
+      context,
+      { goal: "Transfer" },
+    ),
+  );
+  v3Execution(draft).finalConditions[0].evidenceFrames = [15];
+  // Original failure: approval blocks on the unsupported scene condition.
+  expect(reviewedBlockers(draft, context).join(" ")).toMatch(
+    /does not support its initial\/final source condition/,
+  );
+  const result = draft.procedure.steps[0].execution!.evidenceWindow.resultFrame;
+  const aligned = alignScenePredicateEvidence(draft, context);
+  for (const p of v3Execution(aligned).finalConditions)
+    expect(p.evidenceFrames).toEqual([result]);
+  expect(reviewedBlockers(aligned, context)).toEqual([]);
+  expect(v3Execution(draft).finalConditions[0].evidenceFrames).toEqual([15]);
+});
+
+it("the compile path binds a contradicting scene predicate to the measured result frame", () => {
+  const fixture = reliftedFixture();
+  const parsed = parseSparkDraft(
+    { status: "completed", output_text: JSON.stringify(fixture.draft) },
+    fixture.context,
+    { goal: "Transfer" },
+  );
+  const result = parsed.procedure.steps.at(-1)!.execution!.evidenceWindow.resultFrame;
+  for (const p of v3Execution(parsed).finalConditions)
+    expect(p.evidenceFrames).toEqual([result]);
+});
+
+it("keeps a clearer cited frame at the same resting position", () => {
+  const fixture = teachV3Fixture();
+  const parsed = parseSparkDraft(
+    { status: "completed", output_text: JSON.stringify(fixture.draft) },
+    fixture.context,
+    { goal: "Transfer" },
+  );
+  expect(alignScenePredicateEvidence(parsed, fixture.context)).toBe(parsed);
+});
+
+it("leaves a contradicting predicate unchanged when the boundary has no trusted sample", () => {
+  const fixture = reliftedFixture();
+  const draft = structuredClone(
+    parseSparkDraft(
+      { status: "completed", output_text: JSON.stringify(fixture.draft) },
+      fixture.context,
+      { goal: "Transfer" },
+    ),
+  );
+  v3Execution(draft).finalConditions[0].evidenceFrames = [15];
+  const result = draft.procedure.steps[0].execution!.evidenceWindow.resultFrame;
+  const track = fixture.context.tracking[0];
+  track.samples = track.samples.filter((s) => s.frame !== result);
+  expect(alignScenePredicateEvidence(draft, fixture.context)).toBe(draft);
 });

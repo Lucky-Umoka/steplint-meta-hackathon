@@ -208,3 +208,45 @@ it("keeps the SAM client and Voice endpoint on Meta when Baseten is selected", a
     input: "mock",
   });
 });
+
+it("retains a malformed completed candidate only for server-side correction, without serializing it", async () => {
+  const malformed = '{"ok":true,}';
+  const transport = mock(malformed, "stop");
+  const error: unknown = await sparkStructured(args).catch(
+    (failure: unknown) => failure,
+  );
+  const { SparkError } = await import("../src/server/meta/spark");
+  expect(error).toBeInstanceOf(SparkError);
+  if (!(error instanceof SparkError)) throw Error("Expected SparkError");
+  expect(error.candidateText).toBe(malformed);
+  expect(error.message).not.toContain(malformed);
+  expect(JSON.stringify(error)).not.toContain(malformed);
+  expect(
+    transport.mock.calls.filter(([url]) => String(url) !== "data:,"),
+  ).toHaveLength(1);
+});
+
+it("accepts a single complete JSON fence while retaining schema validation", async () => {
+  mock('```json\n{"ok":true}\n```');
+  await expect(sparkStructured(args)).resolves.toMatchObject({
+    data: { ok: true },
+  });
+  mock('```json\n{"ok":42}\n```');
+  await expect(sparkStructured(args)).rejects.toMatchObject({
+    code: "schema_validation_failed",
+  });
+});
+it.each([
+  'Here is JSON: ```json\n{"ok":true}\n```',
+  '```json\n{"ok":true}\n``` trailing text',
+  '```json\n{"ok":true}\n```\n```json\n{"ok":false}\n```',
+  '```json\n{"ok":true,}\n```',
+])(
+  "rejects commentary, extra payloads or invalid syntax: %s",
+  async (content) => {
+    mock(content);
+    await expect(sparkStructured(args)).rejects.toMatchObject({
+      code: "invalid_model_data",
+    });
+  },
+);

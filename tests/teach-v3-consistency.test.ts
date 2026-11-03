@@ -62,7 +62,9 @@ it("downgrades an unreferenced 'required' object to non-gating supporting and ne
   expect(derived.procedure.steps).toEqual(draft.procedure.steps);
   expect(derived.procedure.execution).toEqual(draft.procedure.execution);
   // Consistent objects are left untouched, without a reviewer note.
-  expect(derived.procedure.components[0]).toEqual(draft.procedure.components[0]);
+  expect(derived.procedure.components[0]).toEqual(
+    draft.procedure.components[0],
+  );
 });
 it("leaves irrelevant/supporting choices for unreferenced objects to the model", () => {
   const { draft } = teachV3Fixture();
@@ -157,7 +159,10 @@ it("never makes a third request and reports both rejections", async () => {
 });
 it("does not correct transport or truncation failures", async () => {
   const { calls, result } = run([
-    new SparkError("truncated_output", "Spark output exhausted its token budget."),
+    new SparkError(
+      "truncated_output",
+      "Spark output exhausted its token budget.",
+    ),
   ]);
   await expect(result).rejects.toThrow("token budget");
   expect(calls).toHaveLength(1);
@@ -175,7 +180,11 @@ it("uses review-evidence problems for the one correction, then returns the best 
   const conflicted = () => {
     const fixture = teachV3Fixture(true);
     fixture.draft.procedure.steps[1].condition.toZone = "origin";
-    fixture.execution.finalConditions[0] = { ...fixture.execution.finalConditions[0], kind: "object_in_zone", zoneId: "origin" };
+    fixture.execution.finalConditions[0] = {
+      ...fixture.execution.finalConditions[0],
+      kind: "object_in_zone",
+      zoneId: "origin",
+    };
     return fixture;
   };
   const { context, draft } = conflicted();
@@ -183,9 +192,13 @@ it("uses review-evidence problems for the one correction, then returns the best 
   const still = run([draft, conflicted().draft], context);
   const kept = await still.result;
   expect(still.calls).toHaveLength(2);
-  expect(JSON.parse(still.calls[1].text).validationIssues).toContain('Zone "origin"');
+  expect(JSON.parse(still.calls[1].text).validationIssues).toContain(
+    'Zone "origin"',
+  );
   expect(kept.corrected).toBe(false);
-  expect(kept.reviewIssue).toMatch(/Zone "origin".*the one correction still had/);
+  expect(kept.reviewIssue).toMatch(
+    /Zone "origin".*the one correction still had/,
+  );
   // Correction fixed it: the corrected draft is used.
   const fixed = run([conflicted().draft, teachV3Fixture(true).draft], context);
   const outcome = await fixed.result;
@@ -193,7 +206,9 @@ it("uses review-evidence problems for the one correction, then returns the best 
   expect(outcome.reviewIssue).toBeNull();
   // A rejected correction never discards a valid first draft.
   const rejected = run([conflicted().draft, { not: "a draft" }], context);
-  expect((await rejected.result).reviewIssue).toMatch(/the one correction was rejected/);
+  expect((await rejected.result).reviewIssue).toMatch(
+    /the one correction was rejected/,
+  );
 });
 
 it("reproduces the owner's 'Final goal conditions must remain maintained' failure with an actionable message", () => {
@@ -206,7 +221,9 @@ it("reproduces the owner's 'Final goal conditions must remain maintained' failur
   );
   // The rule is unchanged: the object's last action alone is a valid goal step.
   execution.goalStepIds = ["transfer-again"];
-  expect(parse(draft, context).procedure.execution!.goalStepIds).toEqual(["transfer-again"]);
+  expect(parse(draft, context).procedure.execution!.goalStepIds).toEqual([
+    "transfer-again",
+  ]);
 });
 it("lets the one correction request fix an intermediate goal step from the named reason", async () => {
   const broken = teachV3Fixture(true);
@@ -219,11 +236,97 @@ it("lets the one correction request fix an intermediate goal step from the named
     'remove "transfer" from goalStepIds',
   );
   expect(outcome.corrected).toBe(true);
-  expect(outcome.draft.procedure.execution!.goalStepIds).toEqual(["transfer-again"]);
+  expect(outcome.draft.procedure.execution!.goalStepIds).toEqual([
+    "transfer-again",
+  ]);
 });
 it("tells the compiler that only an object's last action may be a goal step", () => {
   const { context } = teachV3Fixture(true);
   expect(sparkRequest(context, { goal: "Transfer" }).instructions).toContain(
     "for each object only its LAST action may be a goal step",
   );
+});
+
+const malformedCompleted = (candidateText: string) => {
+  const error = new SparkError(
+    "invalid_model_data",
+    "Spark returned invalid JSON.",
+  );
+  Object.defineProperty(error, "candidateText", { value: candidateText });
+  return error;
+};
+it("uses the one correction budget for completed malformed JSON and validates its draft", async () => {
+  const { draft } = teachV3Fixture();
+  const { calls, result } = run([malformedCompleted('{"procedure":'), draft]);
+  expect((await result).corrected).toBe(true);
+  expect(calls).toHaveLength(2);
+  expect(calls[1].instructions).toContain("SYNTAX CORRECTION PASS");
+  expect(JSON.parse(calls[1].text).previousResponse).toBe('{"procedure":');
+  expect(JSON.parse(calls[1].text).evidence).toHaveProperty(
+    "sourceEvidencePolicy",
+  );
+});
+it("never makes a third request when the syntax correction is still malformed", async () => {
+  const { draft } = teachV3Fixture();
+  const { calls, result } = run([
+    malformedCompleted("{"),
+    malformedCompleted("{"),
+    draft,
+  ]);
+  await expect(result).rejects.toThrow("invalid JSON");
+  expect(calls).toHaveLength(2);
+});
+it("never makes a semantic third request after using the syntax correction", async () => {
+  const { draft, execution } = teachV3Fixture();
+  execution.requirements[0].goalPredicateIds = [];
+  const { calls, result } = run([
+    malformedCompleted("{"),
+    draft,
+    teachV3Fixture().draft,
+  ]);
+  await expect(result).rejects.toThrow("Covered claims require");
+  expect(calls).toHaveLength(2);
+});
+it("does not send malformed text when candidate plus evidence exceeds the request bound", async () => {
+  const failure = malformedCompleted("{".repeat(28000));
+  const { calls, result } = run([failure, teachV3Fixture().draft]);
+  await expect(result).rejects.toBe(failure);
+  expect(calls).toHaveLength(1);
+});
+it.each([
+  "timeout",
+  "auth_failure",
+  "rate_limited",
+  "connection_error",
+  "provider_error",
+  "truncated_output",
+])("never syntax-corrects %s failures", async (code) => {
+  const failure = new SparkError(code, "Safe failure");
+  const { calls, result } = run([failure, teachV3Fixture().draft]);
+  await expect(result).rejects.toBe(failure);
+  expect(calls).toHaveLength(1);
+});
+it("does not syntax-correct invalid model data without a completed candidate", async () => {
+  const failure = new SparkError("invalid_model_data", "No completed answer");
+  const { calls, result } = run([failure, teachV3Fixture().draft]);
+  await expect(result).rejects.toBe(failure);
+  expect(calls).toHaveLength(1);
+});
+
+it("returns reviewable issues without a third request after syntax correction", async () => {
+  const { context, draft, execution } = teachV3Fixture(true);
+  draft.procedure.steps[1].condition.toZone = "origin";
+  execution.finalConditions[0] = {
+    ...execution.finalConditions[0],
+    kind: "object_in_zone",
+    zoneId: "origin",
+  };
+  const { calls, result } = run(
+    [malformedCompleted("{"), draft, teachV3Fixture(true).draft],
+    context,
+  );
+  const corrected = await result;
+  expect(corrected.corrected).toBe(true);
+  expect(corrected.reviewIssue).toContain('Zone "origin"');
+  expect(calls).toHaveLength(2);
 });

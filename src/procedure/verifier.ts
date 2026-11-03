@@ -347,7 +347,11 @@ export function createVerifier(procedureInput: unknown) {
         continue;
       }
       if (
-        state.status === "passed" &&
+        (state.status === "passed" ||
+          (procedure.execution &&
+            revalidate.has(index) &&
+            step.measurement?.persistence === "maintain")) &&
+        !observation.identityOnly &&
         observation.zone !== step.condition.toZone
       ) {
         invalidateFrom(index);

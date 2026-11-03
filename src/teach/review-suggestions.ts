@@ -191,7 +191,7 @@ export function suggestReviews(
         toRegion: null,
       };
   }
-  reconcileSharedZones(draft, context, suggestions, sharedRegions, endpoints);
+  reconcileSharedZones(draft, suggestions, sharedRegions, endpoints);
   return suggestions;
 }
 const inside = (r: Region, p: { x: number; y: number }) =>
@@ -199,15 +199,13 @@ const inside = (r: Region, p: { x: number; y: number }) =>
 /**
  * Approval binds one region per zone ID. When a zone ID is used at several
  * observed places (for example two different objects starting from
- * "table centre", or a final predicate), the first suggested region may not
- * contain them all. Only such zones are widened to cover every observation
- * that uses them; zones that already work keep their exact region. A step
+ * "table centre"), the first suggested region may not
+ * contain them all. Only such zones are widened to cover step endpoints; zones that already work keep their exact region. A step
  * whose zones then overlap, or whose start already lies in its target, is
  * marked unsupported with the reason, never silently approved.
  */
 function reconcileSharedZones(
   draft: TeachDraft,
-  context: TeachContext,
   suggestions: Record<string, SuggestedCheck>,
   regions: Map<string, Region>,
   endpoints: Map<
@@ -240,26 +238,7 @@ function reconcileSharedZones(
     addUse(step.condition.toZone, e.to, e.radius);
   }
   const execution = draft.procedure.execution;
-  if (execution?.schemaVersion === 3)
-    for (const predicate of [
-      ...execution.initialConditions,
-      ...execution.finalConditions,
-    ]) {
-      if (predicate.kind !== "object_in_zone" || !uses.has(predicate.zoneId))
-        continue;
-      const track = context.tracking.find(
-        (t) => t.componentId === predicate.objectId,
-      );
-      for (const frame of predicate.evidenceFrames) {
-        const box = track?.samples.find((s) => s.frame === frame)?.box;
-        if (box)
-          addUse(
-            predicate.zoneId,
-            { x: (box.left + box.right) / 2, y: (box.top + box.bottom) / 2 },
-            uses.get(predicate.zoneId)!.radius,
-          );
-      }
-    }
+  // Scene predicates validate against endpoint-derived regions; they cannot widen them.
   const widened = new Set<string>();
   for (const [zone, { points, radius }] of uses) {
     const current = regions.get(zone);

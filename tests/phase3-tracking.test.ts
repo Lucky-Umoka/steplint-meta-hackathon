@@ -215,7 +215,7 @@ it("a lookalike replacement or two indistinguishable candidates are never assign
     expect(state.slots.mover.identity.status).toBe("needs_user_view");
   }
 });
-it("stops searching after the bounded attempts and does not resume automatically (resource limits)", () => {
+it("continues rate-limited recovery after the bounded initial attempts", () => {
   const { state } = bootstrapLocal(startView(), {
     scene: source,
     objects: objects(),
@@ -228,13 +228,10 @@ it("stops searching after the bounded attempts and does not resume automatically
   }
   expect(attempts).toBe(3); // never more than three searches per loss episode
   expect(state.slots.mover.identity.status).toBe("needs_user_view");
-  // Even a perfectly clear view does not restart searching by itself; the
-  // learner restarts tracking (a new generation re-runs setup).
-  for (let i = 0; i < 4; i++)
-    expect(
-      trackLocal(startView(), state, { ...tick(), watch }).detections[0]
-        .quality,
-    ).not.toBe("observed");
+  // A later clear view recovers automatically, with three fresh matches.
+  for (let i = 0; i < 6; i++)
+    trackLocal(startView(), state, { ...tick(300), watch });
+  expect(state.slots.mover.identity.status).toBe("tracked");
 });
 it("one frame never runs more than one search per object, and a repeated frame id does not count twice", () => {
   const { state } = bootstrapLocal(startView(), {
@@ -298,4 +295,29 @@ it("a hand covering the object for half a second still allows safe reacquisition
   ]);
   expect(qualities).toContain("observed");
   expect(state.slots.mover.identity.status).toBe("tracked");
+});
+it("a lost mover landing on a fixed reference inside an approved zone is occlusion, not camera motion; without that zone it still invalidates", () => {
+  const onPlate = { left: 0.62, top: 0.55, right: 0.82, bottom: 0.85 };
+  const landing = smoothTable([
+    { box: P, seed: 2 },
+    { box: onPlate, seed: 1 },
+  ]);
+  const hidden = smoothTable([{ box: P, seed: 2 }]);
+  for (const [zones, valid] of [
+    [[M, { left: 0.58, top: 0.5, right: 0.88, bottom: 0.92 }], true],
+    [[M], false],
+  ] as const) {
+    const { state } = bootstrapLocal(startView(), {
+      scene: source,
+      objects: objects(),
+      zones: [...zones],
+    });
+    // The hand takes the mover: its identity is lost, lastBox stays at M.
+    expect(trackLocal(hidden, state, { ...tick(), watch }).calibrationValid).toBe(true);
+    const landed = trackLocal(landing, state, { ...tick(), watch });
+    expect(landed.calibrationValid).toBe(valid);
+    if (valid)
+      // Uncertain plate is never reported as an observed box; nothing passes.
+      expect(landed.detections.find((d) => d.objectId === "plate")?.quality).not.toBe("observed");
+  }
 });

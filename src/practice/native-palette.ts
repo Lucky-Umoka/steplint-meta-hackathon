@@ -48,12 +48,18 @@ export function groundNativePalette(
     y1 = Math.ceil(box.bottom * image.height);
   for (let y = y0; y < y1; y += 2)
     for (let x = x0; x < x1; x += 2) samples.push(pixel(image, x, y));
+  // Surroundings are sampled a margin outside the reviewed box: a SAM box
+  // that slightly crops the object (e.g. excludes a bottle's cap) must not
+  // count the object's own pixels as background (browser root cause,
+  // 2026-11-03). The distinctiveness limits below are unchanged.
+  const mx = Math.max(3, Math.round((x1 - x0) * 0.1)),
+    my = Math.max(3, Math.round((y1 - y0) * 0.1));
   for (let i = 0; i < 24; i++)
     for (const [x, y] of [
-      [x0 - 3, y0 + ((y1 - y0) * i) / 24],
-      [x1 + 3, y0 + ((y1 - y0) * i) / 24],
-      [x0 + ((x1 - x0) * i) / 24, y0 - 3],
-      [x0 + ((x1 - x0) * i) / 24, y1 + 3],
+      [x0 - mx, y0 + ((y1 - y0) * i) / 24],
+      [x1 + mx, y0 + ((y1 - y0) * i) / 24],
+      [x0 + ((x1 - x0) * i) / 24, y0 - my],
+      [x0 + ((x1 - x0) * i) / 24, y1 + my],
     ]) {
       const xx = Math.round(x),
         yy = Math.round(y);

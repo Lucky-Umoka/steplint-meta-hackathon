@@ -116,11 +116,15 @@ export async function utter(page: Page, text: string) {
  */
 export async function lifecycleHarness(
   page: Page,
-  options: { denyCamera?: boolean } = {},
+  options: { denyCamera?: boolean; findingSetup?: boolean } = {},
 ) {
   await camera(page);
-  await page.addInitScript((deny) => {
-    const qa = { workers: 0, silent: false };
+  await page.addInitScript((options) => {
+    const qa = {
+      workers: 0,
+      silent: false,
+      findingSetup: !!options.findingSetup,
+    };
     Object.assign(window, { qaLifecycle: qa });
     const Native = window.Worker;
     class CountingWorker extends Native {
@@ -129,6 +133,33 @@ export async function lifecycleHarness(
         qa.workers++;
       }
       postMessage(message: unknown, transfer?: unknown) {
+        // Inject a schema-valid missing-view setup reply to exercise the page's
+        // automatic retry controller independently of synthetic perception.
+        if (
+          qa.findingSetup &&
+          message &&
+          typeof message === "object" &&
+          "type" in message &&
+          message.type === "bootstrap" &&
+          "generation" in message
+        ) {
+          const generation = message.generation;
+          setTimeout(
+            () =>
+              this.dispatchEvent(
+                new MessageEvent("message", {
+                  data: {
+                    type: "error",
+                    generation,
+                    message:
+                      "Finding component-1. Show its demonstrated starting position clearly.",
+                  },
+                }),
+              ),
+            0,
+          );
+          return;
+        }
         // Silence: frames are swallowed, so no reply ever arrives.
         if (
           qa.silent &&
@@ -141,11 +172,11 @@ export async function lifecycleHarness(
       }
     }
     Object.assign(window, { Worker: CountingWorker });
-    if (deny)
+    if (options.denyCamera)
       navigator.mediaDevices.getUserMedia = async () => {
         throw new DOMException("denied", "NotAllowedError");
       };
-  }, !!options.denyCamera);
+  }, options);
   const { artifact } = fixture();
   await page.addInitScript((raw) => {
     const image = (window as unknown as { localReferenceImage: string })

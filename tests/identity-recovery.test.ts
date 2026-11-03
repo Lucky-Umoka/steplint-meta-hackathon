@@ -46,7 +46,11 @@ it("an inconsistent confirmation discards the candidate, and attempts are capped
   expect(nextSearch(s, 2 * slot + 1, "e")).toBe("attempt");
   const last = recordSearch(s, 2 * slot + 1, "e", null);
   expect(last.state.status).toBe("needs_user_view");
-  expect(nextSearch(last.state, 2 * slot + 100, "f")).toBe("none"); // no automatic search after exhaustion
+  expect(nextSearch(last.state, 2 * slot + 100, "f")).toBe("none"); // cooldown after exhaustion
+  expect(nextSearch(last.state, 2 * slot + 1002, "g")).toBe("attempt");
+  const retry = recordSearch(last.state, 2 * slot + 1002, "g", null).state;
+  expect(nextSearch(retry, 2 * slot + 1500, "h")).toBe("none");
+  expect(nextSearch(retry, 2 * slot + 2003, "i")).toBe("attempt");
 });
 it("a loss episode with no successful attempt expires to needs_user_view after the window", () => {
   const s = loseIdentity(trackedIdentity(), 0);

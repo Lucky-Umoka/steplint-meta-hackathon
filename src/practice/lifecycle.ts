@@ -157,7 +157,11 @@ export function transition(
       next.worker = "starting";
       next.armed = false;
       next.acquisitionComplete = false;
-      next.state = "acquiring_initial_objects";
+      // Retry workers belong to the same recovery episode until setup succeeds.
+      next.state =
+        current.state === "recovering"
+          ? "recovering"
+          : "acquiring_initial_objects";
       break;
     case "setup_complete":
       next.worker = "running";

@@ -39,6 +39,31 @@ import { useVoiceControl, type VoiceEvent } from "@/voice/use-voice-control";
 import CommandFeedback from "@/voice/CommandFeedback";
 import VoicePanel, { appendVoiceEvent } from "@/voice/VoicePanel";
 import GestureControls from "@/gesture/GestureControls";
+import CommandHelp from "@/voice/CommandHelp";
+import {
+  TrackingReadiness,
+  readinessRows,
+  type LiveTracking,
+} from "./tracking-readiness";
+
+const PRACTICE_GESTURES = [
+  {
+    gesture: "Enable gesture control",
+    action: "Tick the box under the camera controls first; it is off by default.",
+  },
+  {
+    gesture: "Point your index finger UP inside the dashed strip on the right edge of the camera picture",
+    action: "A cyan dot follows your fingertip; the strip covers the whole screen. Pointing never clicks.",
+  },
+  {
+    gesture: "Pinch: aim the dot at a button, then touch thumb to index finger and hold about half a second",
+    action: "Clicks exactly like a mouse at the spot you aimed. Open your fingers before the next pinch.",
+  },
+  {
+    gesture: "Open palm held flat in the strip for 1.2 seconds",
+    action: "Pauses practice, the same as the Pause button. Verified work is kept.",
+  },
+];
 import { LOCAL_PRACTICE_COMMANDS } from "@/practice/local-commands";
 import { watchSet } from "@/practice/watch-set";
 import {
@@ -98,6 +123,9 @@ export default function LocalPractice() {
   const [resumeRequested, setResumeRequested] = useState(false);
   // Phase 5: final-goal completion gate from the pipeline session.
   const [goal, setGoal] = useState<GoalState | null>(null);
+  const [liveTracking, setLiveTracking] = useState<LiveTracking | null>(null);
+  const replyTimes = useRef<number[]>([]);
+  const staleSince = useRef<number | null>(null);
   const goalRef = useRef<GoalState | null>(null);
   // Phase 4: the single authoritative lifecycle, shared by UI and voice.
   const [lifecycle, setLifecycle] = useState<Lifecycle>(initialLifecycle);
@@ -210,6 +238,7 @@ export default function LocalPractice() {
     submitted: 0,
     processed: 0,
     droppedBusy: 0,
+    droppedStale: 0,
   });
   const evidence = useRef(new EvidenceBuffer());
   const trackingMeasurements = useRef<TrackingMeasurement[]>([]);
@@ -355,8 +384,10 @@ export default function LocalPractice() {
     text: string,
     stepId: string | null,
     key: string,
-  ) {
-    if (lastAlert.current === key) return;
+    /** Spoken after `text` in the same utterance (speech is latest-wins). */
+    alsoSay: string | null = null,
+  ): boolean {
+    if (lastAlert.current === key) return false;
     lastAlert.current = key;
     setAlert({ kind, text, stepId, key });
     log({
@@ -364,10 +395,11 @@ export default function LocalPractice() {
       source: kind === "instruction" ? "guidance" : "verdict",
       text,
     });
-    speak(text, false);
+    speak(alsoSay ? `${text} ${alsoSay}` : text, false);
+    return true;
   }
   function halt(
-    reason = "Practice paused. Say resume practice to continue.",
+    reason = "Practice paused. Say “Guide, resume practice” to continue.",
     invalidate = false,
     kind: "pause" | "failure" | "camera" = "pause",
   ) {
@@ -439,7 +471,7 @@ export default function LocalPractice() {
         !worker.current &&
         automaticWanted.current &&
         automaticSource.current &&
-        now - automaticAttemptAt.current > 1200
+        now - automaticAttemptAt.current > 3000
       ) {
         automaticAttemptAt.current = now;
         handlers.current.automaticStart(image);
@@ -897,7 +929,7 @@ export default function LocalPractice() {
     return {
       ok: true,
       message:
-        "Practice paused. Verified work is kept; say resume practice to continue.",
+        "Practice paused. Verified work is kept; say “Guide, resume practice” to continue.",
     };
   }
   function prepareSetup(resume = false) {
@@ -1025,7 +1057,12 @@ export default function LocalPractice() {
       lastEvent.current = resuming ? next.result.events.length : 0;
       lastAlert.current = "";
       if (!resuming) metrics.current = [];
-      trackingCounters.current = { submitted: 0, processed: 0, droppedBusy: 0 };
+      trackingCounters.current = {
+        submitted: 0,
+        processed: 0,
+        droppedBusy: 0,
+        droppedStale: 0,
+      };
       if (!resuming) evidence.current = new EvidenceBuffer();
       localWorker.onmessage = (event: MessageEvent<unknown>) => {
         try {
@@ -1056,10 +1093,10 @@ export default function LocalPractice() {
             setResult(previousSession?.result ?? null);
             setStarting(false);
             setDetections([]);
-            // Repeated setup failures must not retry forever: each attempt
-            // re-announces and re-chokes speech while suppressing voice
-            // commands, so stop asking after a short bounded run.
-            const exhausted = ++autoFailures.current >= 5;
+            // A missing starting view is normal while objects are positioned.
+            // Retry it silently; bound actual setup errors separately.
+            const finding = /^Finding\b/i.test(reply.message);
+            const exhausted = !finding && ++autoFailures.current >= 5;
             lc({
               type: "worker_failed",
               generation: reply.generation,
@@ -1075,7 +1112,14 @@ export default function LocalPractice() {
                 "Automatic setup keeps failing. Adjust the view, or capture the setup for manual calibration.",
               );
             } else {
-              setNotice(reply.message);
+              // Name the object as reviewed in Teach, not by its internal ID.
+              setNotice(
+                (lesson?.procedure.components ?? []).reduce(
+                  (text, component) =>
+                    text.replaceAll(component.id, component.description),
+                  reply.message,
+                ),
+              );
             }
             return;
           }
@@ -1132,21 +1176,30 @@ export default function LocalPractice() {
           lc({ type: "reply", generation: reply.generation });
           const active = session.current;
           if (!active) return;
+          // Evidence older than the approved observation gap is never applied.
+          // One late reply (a busy browser main thread) is discarded and the
+          // verifier sees an observation gap (uncertainty); only replies that
+          // stay late for 3 s mean the device cannot verify in time.
+          const replyAt = performance.now();
           if (
-            performance.now() - reply.timestampMs >
+            replyAt - reply.timestampMs >
             Math.min(
               ...active.procedure.steps.map(
                 (step) => step.measurement?.maxObservationGapMs ?? 600,
               ),
             )
           ) {
-            handlers.current.halt(
-              "Tracking evidence arrived too late. Verification stopped; recalibrate before continuing.",
-              true,
-              "failure",
-            );
+            trackingCounters.current.droppedStale++;
+            staleSince.current ??= replyAt;
+            if (replyAt - staleSince.current > 3000)
+              handlers.current.halt(
+                "Tracking evidence keeps arriving too late on this device. Verification stopped; close other tabs or apps, then resume.",
+                true,
+                "failure",
+              );
             return;
           }
+          staleSince.current = null;
           // A reply measured for an earlier watch-set revision is never applied.
           if (
             reply.watchRevision !== undefined &&
@@ -1160,6 +1213,22 @@ export default function LocalPractice() {
             watchKey: watchKey.current,
           });
           if (frame.stale) return;
+          const repliedAt = performance.now();
+          replyTimes.current = [
+            ...replyTimes.current.filter((at) => repliedAt - at < 1000),
+            repliedAt,
+          ];
+          setLiveTracking({
+            rows: readinessRows(active, reply.detections),
+            calibrationValid: reply.calibrationValid,
+            armed: active.armed,
+            lastReplyAtMs: repliedAt,
+            fps: replyTimes.current.length,
+          });
+          // speak() is latest-wins: a step verdict spoken later in this same
+          // reply would silently cancel a separate goal announcement, so the
+          // goal transition is spoken together with that verdict (or alone).
+          let goalSpeech: string | null = null;
           if (
             goalGatedV3 &&
             (frame.goal.status !== goalRef.current?.status ||
@@ -1171,9 +1240,9 @@ export default function LocalPractice() {
             if (frame.goal.status !== "incomplete")
               setNotice(goalMessage(frame.goal));
             if (frame.goal.status === "complete" && before !== "complete")
-              speak("Final goal verified.");
+              goalSpeech = "Final goal verified.";
             if (frame.goal.status === "invalidated" && before === "complete")
-              speak("Completion invalidated. Restore the final state.");
+              goalSpeech = "Completion invalidated. Restore the final state.";
           }
           const unseen = reply.identityEvents.find(
             (event) => event.status === "needs_user_view",
@@ -1229,6 +1298,7 @@ export default function LocalPractice() {
               "View unclear. Finding the work area again automatically; no step was verified from missing evidence.",
               null,
               "automatic-realignment",
+              goalSpeech,
             );
             setNotice(
               "Finding the work area again automatically. Keep the required objects visible.",
@@ -1262,7 +1332,8 @@ export default function LocalPractice() {
             const newEvents = updated.events.slice(lastEvent.current);
             lastEvent.current = updated.events.length;
             const significant = newEvents.filter((e) => e.status !== "ignored");
-            for (const decision of feedbackEvents(updated, significant)) {
+            const decisions = feedbackEvents(updated, significant);
+            for (const [index, decision] of decisions.entries()) {
               const step = active.procedure.steps.find(
                 (s) => s.id === decision.stepId,
               );
@@ -1272,12 +1343,18 @@ export default function LocalPractice() {
                   : decision.status === "failed"
                     ? `Stop. ${decision.recovery?.instruction ?? decision.reason}`
                     : decision.reason;
-              handlers.current.show(
-                decision.status,
-                text,
-                decision.stepId,
-                `${decision.stepId}:${decision.status}:${decision.decision ?? decision.reason}`,
-              );
+              const last = index === decisions.length - 1;
+              if (
+                handlers.current.show(
+                  decision.status,
+                  text,
+                  decision.stepId,
+                  `${decision.stepId}:${decision.status}:${decision.decision ?? decision.reason}`,
+                  last ? goalSpeech : null,
+                ) &&
+                last
+              )
+                goalSpeech = null;
             }
             const record = {
               frameId: reply.frameId,
@@ -1301,6 +1378,7 @@ export default function LocalPractice() {
               );
             if (updated.status === "passed") setNotice(goalMessage(frame.goal));
           }
+          if (goalSpeech) speak(goalSpeech);
           if (
             warning &&
             !active.result.steps.some((step) => step.status === "failed") &&
@@ -1390,7 +1468,7 @@ export default function LocalPractice() {
     halfDuplex: true,
     recentSpeech: () =>
       spoken.current
-        .filter((item) => Date.now() - item.at < 15_000)
+        .filter((item) => Date.now() - item.at < 5_000)
         .map((item) => item.text),
     onInterruptSpeech: () => {
       speechGeneration.current++;
@@ -1463,7 +1541,7 @@ export default function LocalPractice() {
         return false;
       }
       if (session.current.stopped) {
-        speak("Practice is paused. Say resume practice to continue.");
+        speak("Practice is paused. Say “Guide, resume practice” to continue.");
         return false;
       }
       const next = session.current.procedure.steps.find(
@@ -1653,6 +1731,9 @@ export default function LocalPractice() {
           >
             {notice}
           </p>
+          {lifecycle.state !== "idle" && (
+            <TrackingReadiness live={liveTracking} state={lifecycle.state} />
+          )}
         </div>
         <div className={calibrating ? "hidden" : "contents space-y-2"}>
           <div className="flex flex-wrap items-stretch gap-2 text-xs">
@@ -1702,6 +1783,10 @@ export default function LocalPractice() {
                 />
                 Enable microphone voice controls
               </label>
+              <CommandHelp
+                commands={LOCAL_PRACTICE_COMMANDS}
+                gestures={PRACTICE_GESTURES}
+              />
               <p
                 className="truncate text-slate-600"
                 title={`Voice control: ${voice.status}. ${voice.feedback}`}
@@ -1721,7 +1806,7 @@ export default function LocalPractice() {
               <GestureControls
                 compact
                 videoRef={videoRef}
-                onPauseRequest={() => halt()}
+                onPauseRequest={() => setNotice(pausePractice().message)}
               />
             </div>
           </div>

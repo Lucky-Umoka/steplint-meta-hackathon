@@ -5,6 +5,7 @@ import {
   bindAutomaticSetup,
 } from "@/teach/automatic-setup";
 import { saveApprovedProcedure } from "@/teach/approved-storage";
+import { alignScenePredicateEvidence } from "@/teach/predicate-evidence";
 import { ApprovedArtifactSchema } from "@/teach/approved-artifact";
 import {
   RehearsalSchema,
@@ -125,7 +126,12 @@ export default function Review({
   const router = useRouter();
   const feedback = useFeedback();
   // Preserve the creator's entire intended scope, including unsupported work.
-  const base = initial;
+  // Scene predicates cite the measured boundary frames the reviewed zones
+  // come from; the server re-validates this at approval.
+  const base = useMemo(
+    () => alignScenePredicateEvidence(initial, context),
+    [initial, context],
+  );
   const [draft, setDraft] = useState(base),
     [editor, setEditor] = useState(JSON.stringify(base, null, 2));
   const [checks, setChecks] = useState<Record<string, Check>>(() =>
@@ -826,6 +832,7 @@ export default function Review({
           !reviewer.trim() ||
           effectiveBlockers.length > 0
         }
+        className="primary"
         onClick={() => void approve()}
       >
         Approve procedure

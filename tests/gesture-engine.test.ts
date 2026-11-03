@@ -147,3 +147,11 @@ it("geometric pinch uses dwell and one-shot click without a fabricated classifie
     "none",
   );
 });
+
+it("a pinch clicks where the pointer was aimed, not where the closing fingers drifted", () => {
+  const engine = new GestureEngine();
+  expect(engine.observe({ kind: "point", confidence: 0.9, x: 0.85, y: 0.5, at: 0 })).toMatchObject({ kind: "move" });
+  engine.observe({ kind: "pinch", confidence: 0.9, x: 0.9, y: 0.6, pinchGap: 0.01, at: 100 });
+  const click = engine.observe({ kind: "pinch", confidence: 0.9, x: 0.9, y: 0.6, pinchGap: 0.01, at: 400 });
+  expect(click).toEqual({ kind: "click", x: 0.85, y: 0.5 });
+});

@@ -7,6 +7,8 @@ import { decodeTeachVideo } from "../teach/video-evidence";
 import { sparkCompletionLimit } from "./spark-limits";
 
 export class SparkError extends TeachError {
+  /** Server-only candidate for the bounded correction path; never serialized. */
+  readonly candidateText?: string;
   constructor(
     public readonly code: string,
     message: string,
@@ -16,8 +18,14 @@ export class SparkError extends TeachError {
       reasoningTokens: number | null;
       answerCharacters: number;
     },
+    candidateText?: string,
   ) {
     super(status, message);
+    if (candidateText !== undefined)
+      Object.defineProperty(this, "candidateText", {
+        value: candidateText,
+        enumerable: false,
+      });
   }
 }
 export async function sparkStructured<T>({
@@ -268,11 +276,21 @@ export async function sparkStructured<T>({
       "invalid_model_data",
       "Spark JSON exceeds the response bound.",
     );
+  // A single whole-response JSON fence is presentation, not a JSON repair.
+  // Prose, multiple payloads and malformed/truncated JSON remain rejected.
+  const fenced = /^\s*```json\s*\r?\n([\s\S]*?)\r?\n```\s*$/i.exec(output);
+  const jsonText = fenced ? fenced[1] : output;
   let raw: unknown;
   try {
-    raw = JSON.parse(output);
+    raw = JSON.parse(jsonText);
   } catch {
-    throw new SparkError("invalid_model_data", "Spark returned invalid JSON.");
+    throw new SparkError(
+      "invalid_model_data",
+      "Spark returned invalid JSON.",
+      502,
+      undefined,
+      output,
+    );
   }
   const parsed = schema.safeParse(raw);
   if (!parsed.success)

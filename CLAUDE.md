@@ -48,3 +48,10 @@
 - For each meaningful task, state its phase and intended files, inspect, implement only the scoped change, verify, review the diff for accidental changes/secrets, and explain what changed, test evidence, failures, and next step in beginner-friendly language.
 - Keep progress records truthful and short. Distinguish mocked tests, real API calls, manual checks, unrun checks, and planned features.
 - Follow [PLANS.md](PLANS.md) as the detailed roadmap. Phase 1 is complete as recorded in [docs/PHASE1.md](docs/PHASE1.md); later phases require the owner's explicit authorization. Before any additional live Meta API request, follow the notice and approval rules above.
+
+## Live paid tests and versioning (owner rules, 2026-11-03)
+- Read this file at the start of every task and keep it under 100 lines.
+- Live paid tests run Teach to Practice end to end (bottle or phone-unboxing video) only within the owner's current authorization (currently 3 runs), each logged in `.media-lab/live-e2e/ledger.json`, with the notice above.
+- Before each live test: all known errors are fixed at their root cause, and type-check, lint, unit tests, build and local browser/replay tests pass. After each live test: diagnose every error from its artifacts, fix the root cause, add a regression, rerun local tests, then start the next.
+- The last authorized live test must pass Teach to Practice smoothly; otherwise report the failure truthfully. Never spend an extra run without new authorization.
+- Version as we build: use semantic versioning in `package.json` (patch for fixes, minor for features, major for breaking contracts). Bump it for every meaningful delivered change and add a dated entry to `CHANGELOG.md` saying what changed and how it was verified.

@@ -163,3 +163,49 @@ test("Phase 4: Teach stays voice-free (24)", async ({ page }) => {
     ),
   ).toBe(0);
 });
+
+// Injected Finding replies test the real page retry controller, then actual
+// worker tracking must recover. This is not a perception-accuracy assertion.
+test("injected Finding setup replies keep retrying after five attempts and real tracking recovers", async ({
+  page,
+}) => {
+  await lifecycleHarness(page, { findingSetup: true });
+  await page.goto("/practice");
+  await expect.poll(() => workers(page), { timeout: 30000 }).toBeGreaterThan(5);
+  await expect.poll(() => lifecycleState(page)).toBe("recovering");
+  expect(await lifecycleState(page)).not.toBe("running");
+  await page.evaluate(() => {
+    (
+      window as unknown as { qaLifecycle: { findingSetup: boolean } }
+    ).qaLifecycle.findingSetup = false;
+  });
+  await running(page);
+});
+
+test("real-browser voice shapes drive the canonical page: narration prefix, split wake word, filler, bare command, help popup", async ({
+  page,
+}) => {
+  await lifecycleHarness(page);
+  await page.goto("/practice");
+  await page.getByLabel("Enable microphone voice controls").check();
+  await running(page);
+  // App narration merged in front of the command in one final result.
+  await utter(page, "Missing, unknown, obstructed evidence. Guide, pause");
+  await expect.poll(() => lifecycleState(page)).toBe("paused");
+  // Chrome finalizes "Guide" separately from the command after a pause.
+  await page.waitForTimeout(1600);
+  await utter(page, "Guide");
+  await utter(page, "resume the practice");
+  await running(page);
+  // A bare exact command without the wake word (not an echo of the app).
+  await page.waitForTimeout(5200);
+  await utter(page, "pause");
+  await expect.poll(() => lifecycleState(page)).toBe("paused");
+  // The manual opens as a popup, generated from the live allowlist.
+  await page.getByRole("button", { name: "Voice & gesture commands" }).click();
+  const manual = page.getByRole("dialog", { name: "Voice and gesture commands" });
+  await expect(manual).toContainText("“Guide, resume practice”");
+  await expect(manual).toContainText("Pinch");
+  await manual.getByRole("button", { name: "Close" }).click();
+  await expect(manual).toBeHidden();
+});
