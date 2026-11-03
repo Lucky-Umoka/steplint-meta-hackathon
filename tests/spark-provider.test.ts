@@ -106,35 +106,6 @@ it.each([401, 403, 500])(
     ).toHaveLength(1);
   },
 );
-it("defaults to Meta and uses its existing Responses transport", async () => {
-  vi.stubEnv("SPARK_PROVIDER", "");
-  const { createMetaClient } = await import("../src/server/meta/client");
-  vi.stubEnv("MODEL_API_KEY", "meta-mock");
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "data:,") return new Response("");
-      const request = new Request(input, init);
-      expect(request.url).toBe("https://api.meta.ai/v1/responses");
-      expect((await request.json()).model).toBe("muse-spark-1.3");
-      return Response.json({
-        status: "completed",
-        output_text: '{"ok":true}',
-        output: [
-          {
-            type: "message",
-            content: [{ type: "output_text", text: '{"ok":true}' }],
-          },
-        ],
-      });
-    }),
-  );
-  expect(
-    (await sparkStructured({ ...args, metaClient: createMetaClient() }))
-      .diagnostic.provider,
-  ).toBe("meta");
-});
-
 it.each([400, 422, 429, 503])(
   "preserves safe HTTP %i diagnostics without exposing upstream data",
   async (status) => {
@@ -161,28 +132,6 @@ it.each([400, 422, 429, 503])(
     ).toHaveLength(1);
   },
 );
-
-it("classifies Meta timeout and connection failures without returning exception details", async () => {
-  const OpenAI = (await import("openai")).default;
-  vi.stubEnv("SPARK_PROVIDER", "meta");
-  const { createMetaClient } = await import("../src/server/meta/client");
-  vi.stubEnv("MODEL_API_KEY", "meta-mock");
-  const client = createMetaClient();
-  const create = vi.spyOn(client.responses, "create");
-  for (const [failure, code] of [
-    [new OpenAI.APIConnectionTimeoutError(), "timeout"],
-    [
-      new OpenAI.APIConnectionError({ message: "private details" }),
-      "connection_error",
-    ],
-  ] as const) {
-    create.mockRejectedValueOnce(failure);
-    await expect(
-      sparkStructured({ ...args, metaClient: client }),
-    ).rejects.toMatchObject({ code });
-  }
-  expect(create).toHaveBeenCalledTimes(2);
-});
 
 it("keeps the SAM client and Voice endpoint on Meta when Baseten is selected", async () => {
   vi.stubEnv("SPARK_PROVIDER", "baseten");
@@ -250,3 +199,71 @@ it.each([
     });
   },
 );
+
+it("the real Teach drafting and discovery schemas contain no oneOf", async () => {
+  const { sparkRequest } = await import("../src/server/teach/pipeline");
+  const { discoveryRequest } = await import("../src/server/teach/discovery");
+  const { teachV3Fixture } = await import("./fixtures/teach-v3");
+  const { context } = teachV3Fixture();
+  expect(JSON.stringify(sparkRequest(context, { goal: "Transfer" }))).not.toContain("oneOf");
+  expect(JSON.stringify(discoveryRequest("file-abc", context.lesson, "Transfer"))).not.toContain("oneOf");
+});
+
+
+it("never sends oneOf to the provider; the Zod union still validates (HTTP 400 root cause)", async () => {
+  const transport = mock('{"items":[{"kind":"a","x":1}]}');
+  const { providerJsonSchema } = await import("../src/server/meta/spark");
+  const union = z.object({
+    items: z.array(
+      z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("a"), x: z.number() }),
+        z.object({ kind: z.literal("b"), y: z.string() }),
+      ]),
+    ),
+  });
+  expect(JSON.stringify(z.toJSONSchema(union))).toContain("oneOf");
+  expect(JSON.stringify(providerJsonSchema(union))).not.toContain("oneOf");
+  const result = await sparkStructured({ ...args, schema: union });
+  expect(result.data.items[0]).toEqual({ kind: "a", x: 1 });
+  const call = transport.mock.calls.find(([url]) => String(url) !== "data:,")!;
+  const sent = await new Request(call[0], call[1]).text();
+  expect(sent).not.toContain("oneOf");
+  expect(sent).toContain("anyOf");
+});
+
+it.each(["", "meta", "baseten"])(
+  "Muse Spark always goes to Baseten, never Meta (SPARK_PROVIDER=%j)",
+  async (value) => {
+    vi.stubEnv("SPARK_PROVIDER", value);
+    vi.stubEnv("STEPLINT_ALLOW_META_SPARK", "1");
+    vi.stubEnv("BASETEN_API_KEY", "mock-private-key");
+    vi.stubEnv("MODEL_API_KEY", "meta-mock");
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "data:,") return new Response("");
+        urls.push(new Request(input).url);
+        return Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"ok":true}' } }] });
+      }),
+    );
+    expect((await sparkStructured(args)).diagnostic.provider).toBe("baseten");
+    expect(urls).toEqual(["https://inference.baseten.co/v1/chat/completions"]);
+  },
+);
+
+it("the Meta client (MODEL_API_KEY) refuses any Muse Spark model before the network, but serves SAM", async () => {
+  vi.stubEnv("MODEL_API_KEY", "meta-mock");
+  const fetchMock = vi.fn(async () => Response.json({ id: "resp", status: "completed", output: [] }));
+  vi.stubGlobal("fetch", fetchMock);
+  const { createMetaClient, SAM_MODEL } = await import("../src/server/meta/client");
+  const client = createMetaClient();
+  const refused = await client.responses
+    .create({ model: "muse-spark-1.3", input: "x" })
+    .then(() => null, (error: unknown) => error as { cause?: Error });
+  expect(refused?.cause?.message).toMatch(/only by Baseten/);
+  expect(fetchMock).not.toHaveBeenCalled();
+  await client.post("/responses", { body: { model: SAM_MODEL, input: "x" } });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain("https://api.meta.ai/v1/responses");
+});

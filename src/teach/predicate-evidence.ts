@@ -87,8 +87,19 @@ export function alignScenePredicateEvidence(
     finalConditions === execution.finalConditions
   )
     return draft;
+  // The video review's goal cites the same final scene, and validation
+  // requires its frames to be shared by every final condition: move it with
+  // them, or a realigned draft would be rejected as inconsistent (live run 6).
+  const videoReview =
+    finalConditions !== execution.finalConditions && draft.videoReview
+      ? {
+          ...draft.videoReview,
+          goal: { ...draft.videoReview.goal, evidenceFrames: [last] },
+        }
+      : draft.videoReview;
   return {
     ...draft,
+    ...(videoReview ? { videoReview } : {}),
     procedure: {
       ...draft.procedure,
       execution: { ...execution, initialConditions, finalConditions },

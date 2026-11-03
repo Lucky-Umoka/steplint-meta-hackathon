@@ -1,8 +1,15 @@
 import "server-only";
 import { z } from "zod";
-import type OpenAI from "openai";
 import { validateSelections, type Lesson } from "../../teach/schema";
 import { TeachError } from "./security";
+import { providerJsonSchema, SparkError, sparkStructured } from "../meta/spark";
+
+/**
+ * Baseten counts Muse Spark Open's always-on reasoning with the answer, so
+ * the earlier 1,800-token Meta ceiling would truncate. Bounded, below the
+ * drafting ceiling.
+ */
+const DISCOVERY_COMPLETION_TOKENS = 12_000;
 const LegacyDiscoverySchema = z.strictObject({
   components: z
     .array(
@@ -77,7 +84,7 @@ export function discoveryRequest(
         type: "json_schema" as const,
         name: "TeachComponentProposals",
         strict: true,
-        schema: z.toJSONSchema(discoverySchema(!!goal)),
+        schema: providerJsonSchema(discoverySchema(!!goal)),
       },
     },
   };
@@ -166,19 +173,62 @@ export function parseDiscovery(
   });
   return validateSelections(selections, lesson.media);
 }
+/**
+ * Automatic component discovery. Owner rule (2026-11-03): every Muse Spark
+ * call goes to Baseten (BASETEN_API_KEY, inference.baseten.co); Meta's API
+ * serves only SAM 3.1 and Muse Voice Transcribe. The same bounded prompt and
+ * schema are sent with the bound lesson video; the reply is validated by the
+ * unchanged parser.
+ */
 export async function discoverComponents(
-  client: OpenAI,
-  fileId: string,
   lesson: Lesson,
   signal: AbortSignal,
-  goal?: string,
+  goal: string | undefined,
+  videoBase64: string | undefined,
 ) {
-  return parseDiscovery(
-    await client.responses.create(discoveryRequest(fileId, lesson, goal), {
+  if (!videoBase64)
+    throw new TeachError(
+      422,
+      "Automatic component analysis needs the lesson video. No marks were invented.",
+    );
+  const request = discoveryRequest("file-baseten-not-used", lesson, goal);
+  const content = request.input[0].content[0];
+  const text = content.type === "input_text" ? content.text : "";
+  const attempt = async (correction?: string) => {
+    const result = await sparkStructured({
+      instructions: request.instructions,
+      text: correction
+        ? `${text}\nYOUR PREVIOUS ANSWER WAS REJECTED by deterministic validation: ${correction}. Return a corrected answer that satisfies every schema rule; do not invent objects.`
+        : text,
+      videoBase64,
+      schema: discoverySchema(!!goal),
+      name: "TeachComponentProposals",
+      maxTokens: DISCOVERY_COMPLETION_TOKENS,
       signal,
-      timeout: 120_000,
-    }),
-    lesson,
-    goal,
-  );
+    });
+    return parseDiscovery(
+      { status: "completed", output_text: JSON.stringify(result.data) },
+      lesson,
+      goal,
+    );
+  };
+  try {
+    return await attempt();
+  } catch (error) {
+    // Baseten does not enforce the schema for Muse Spark Open, so discovery
+    // gets the same single bounded correction as drafting (run 7 failed here).
+    // Transport, auth, timeout and truncation failures are never retried.
+    const reason =
+      error instanceof SparkError &&
+      (error.code === "schema_validation_failed" ||
+        error.code === "invalid_model_data")
+        ? (error.issues?.join("; ") ?? "the JSON was invalid")
+        : error instanceof TeachError &&
+            !(error instanceof SparkError) &&
+            error.status === 422
+          ? error.message
+          : null;
+    if (!reason) throw error;
+    return attempt(reason.slice(0, 1500));
+  }
 }

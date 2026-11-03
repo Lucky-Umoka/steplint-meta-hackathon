@@ -837,9 +837,28 @@ export function bootstrapLocal(
   // On resume, movers are expected at their last verified zones, which may
   // rest on a stationary reference (bottle on the plate after the goal). Those
   // regions are excluded from reference matching, as during normal tracking.
-  const expectedMovers = movers.flatMap((object) =>
-    object.expectedBox ? [object.expectedBox] : [],
-  );
+  // The mask is the mover's own approved box centred on its expected zone
+  // (a zone is smaller than the object resting in it).
+  const expectedMask = new Map<string, Box>();
+  for (const object of movers)
+    if (object.expectedBox)
+      expectedMask.set(
+        object.id,
+        translateBox(
+          object.box,
+          (object.expectedBox.left +
+            object.expectedBox.right -
+            object.box.left -
+            object.box.right) /
+            2,
+          (object.expectedBox.top +
+            object.expectedBox.bottom -
+            object.box.top -
+            object.box.bottom) /
+            2,
+        ),
+      );
+  const expectedMovers = [...expectedMask.values()];
   const anchors = source.objects
     .filter(
       (object) =>
@@ -1015,6 +1034,16 @@ export function bootstrapLocal(
     for (const other of source.objects.slice(i + 1))
       if (overlaps(source.objects[i].box, other.box))
         nested.add(pairKey(source.objects[i].id, other.id));
+  // Resume: a mover verified at a zone on a stationary object (bottle on the
+  // plate) rests on it by the approved procedure; distinctness is still checked.
+  for (const mover of movers)
+    for (const object of source.objects)
+      if (
+        object.fixed &&
+        expectedMask.has(mover.id) &&
+        overlaps(expectedMask.get(mover.id)!, object.box)
+      )
+        nested.add(pairKey(mover.id, object.id));
   let workspace: Box | null = alignment.workspace;
   // With matched stationary references, they are the camera reference; a
   // table patch is chosen only when none matched (a scanned patch can land on

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { ExecutionV3 } from "../src/procedure/execution-v3";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import OpenAI from "openai";
@@ -100,59 +101,11 @@ it("sends actual bounded video bytes to Baseten Chat Completions in one request 
     name: "Video",
     maxTokens: 128,
     videoBase64: url,
-    metaVideoFileId: "file-meta-only",
   });
   expect(result.diagnostic.visualInput).toBe("video");
   expect(
     transport.mock.calls.filter(([url]) => String(url) !== "data:,"),
   ).toHaveLength(1);
-});
-it("keeps configured Meta video drafting on its own uploaded file transport", async () => {
-  vi.stubEnv("SPARK_PROVIDER", "meta");
-  const { url } = await clip();
-  const transport = vi.fn(
-    async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input) === "data:,") return new Response("");
-      const request = new Request(input, init),
-        body = await request.json();
-      expect(request.url).toBe("https://api.meta.ai/v1/responses");
-      expect(JSON.stringify(body.input)).toContain(
-        '"file_id":"file-meta-only"',
-      );
-      expect(JSON.stringify(body)).not.toContain("data:video");
-      return Response.json({
-        status: "completed",
-        output_text: '{"ok":true}',
-        output: [
-          {
-            type: "message",
-            content: [{ type: "output_text", text: '{"ok":true}' }],
-          },
-        ],
-      });
-    },
-  );
-  const client = new OpenAI({
-    apiKey: "fake-key",
-    baseURL: "https://api.meta.ai/v1",
-    maxRetries: 0,
-    fetch: transport,
-  });
-  const { z } = await import("zod");
-  await sparkStructured({
-    instructions: "Watch",
-    text: "Narration",
-    schema: z.object({ ok: z.boolean() }),
-    name: "Video",
-    maxTokens: 128,
-    videoBase64: url,
-    metaVideoFileId: "file-meta-only",
-    metaClient: client,
-  });
-  expect(
-    transport.mock.calls.filter(([url]) => String(url) !== "data:,"),
-  ).toHaveLength(1);
-  expect(fetch).not.toHaveBeenCalled();
 });
 it("binds video to the reviewed upload and rejects substitution, legacy references and malformed media before network", async () => {
   const { url, bytes, videoSha256 } = await clip();
@@ -390,4 +343,38 @@ it("passes the exact bound video through the canonical compile handler and retur
     { goal: "Visible transfer", videoBase64: url },
   );
   expect(fetch).not.toHaveBeenCalled();
+});
+
+it("realigning a contradicted final condition also realigns the video goal review (live run 6 root cause)", async () => {
+  const fixture = visualDraft();
+  const { draft, context, execution } = fixture;
+  // Extend the source: the object rests after the last result, then is lifted
+  // again at frame 20, which the model cites for the final scene.
+  const track = context.tracking[0];
+  const settled = track.samples.at(-1)!;
+  for (let frame = settled.frame + 1; frame <= 20; frame++) {
+    context.lesson.media.frameTimesMs.push(frame * 100);
+    track.samples.push({
+      ...settled,
+      frame,
+      timestampMs: frame * 100,
+      box:
+        frame === 20
+          ? { ...settled.box, top: settled.box.top - 0.2, bottom: settled.box.bottom - 0.2 }
+          : { ...settled.box },
+    });
+  }
+  context.lesson.media.info.video!.frames = 21;
+  execution.finalConditions[0].evidenceFrames = [20];
+  draft.videoReview!.goal.evidenceFrames = [20];
+  const { url } = await clip();
+  const parsed = parseSparkDraft(
+    { status: "completed", output_text: JSON.stringify(draft) },
+    context,
+    { goal: "Narration", videoBase64: url },
+  );
+  const result = parsed.procedure.steps.at(-1)!.execution!.evidenceWindow.resultFrame;
+  const e = parsed.procedure.execution as unknown as ExecutionV3;
+  expect(e.finalConditions[0].evidenceFrames).toEqual([result]);
+  expect(parsed.videoReview!.goal.evidenceFrames).toEqual([result]);
 });

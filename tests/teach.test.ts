@@ -6,7 +6,7 @@ import { parseVideoStream, type ResponsesEvent } from "@meta-sam/parser";
 import { approveDraft, validateDraft, validateSelections, type TeachContext, type TeachDraft, type TeachReview } from "../src/teach/schema";
 import { inspectLessonVideo, validateLessonAudio } from "../src/teach/media";
 import { stageFromMessage } from "../src/teach/progress";
-import { discoveryRequest, parseDiscovery } from "../src/server/teach/discovery";
+import { discoverComponents, discoveryRequest, parseDiscovery } from "../src/server/teach/discovery";
 import { suggestReviews, keyFrames, narrowToVerifiableScope, reviewBlockers, reviewErrorMessage } from "../src/teach/review-suggestions";
 import { normalizeTranscript, samSelectionRequest, summarizeTracking, sparkRequest, parseSparkDraft, uploadLesson, compileLesson } from "../src/server/teach/pipeline";
 import { authorize, seal, unseal } from "../src/server/teach/security";
@@ -155,15 +155,18 @@ describe("server batch pipeline (mock provider)", () => {
       if (req.method === "DELETE") return Response.json({ id: "file-teach", deleted: true });
       const body = await req.json() as { model: string; input: unknown };
       if (body.model === "sam-3.1") { expect(JSON.stringify(body.input)).toContain('"file_id":"file-teach"'); return new Response(events(geometry(0, 10) + geometry(1, 200)).map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } }); }
-      expect(body.model).toBe("muse-spark-1.3");
-      return Response.json({ id: "resp-mock", object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: invalid ? "{}" : JSON.stringify(draftFor(currentId)), annotations: [] }] }] });
+      throw new Error(`Unexpected Meta model ${body.model}: Muse Spark must never reach the Meta API`);
     };
     const client = new OpenAI({ apiKey: "mock-key", baseURL: "https://api.meta.ai/v1", fetch: transport, maxRetries: 0 });
     const upload = await uploadLesson(client, video, wav(seconds, seconds === 60 ? 16000 : 24000), new AbortController().signal); currentId = upload.lesson.lessonId;
     expect(vi.mocked(media.transcribeWav)).toHaveBeenCalledWith(expect.any(Blob), "mock-key", fetch, expect.objectContaining({ mode: "ENDPOINTING" }));
+    // Muse Spark drafting goes only to Baseten (its own client and key).
+    vi.stubEnv("BASETEN_API_KEY", "mock-baseten-key"); const baseten: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, options?: RequestInit) => { if (String(url) === "data:,") return new Response(""); const req = new Request(url, options); baseten.push(req.url); expect((await req.json() as { model: string }).model).toBe("meta-models/muse-spark-open-1026"); return Response.json({ choices: [{ finish_reason: "stop", message: { content: invalid ? "{}" : JSON.stringify(draftFor(currentId)) } }] }); }));
     const promise = compileLesson(client, upload, context.selections, () => {}, new AbortController().signal);
     if (invalid) await expect(promise).rejects.toThrow(); else expect((await promise).draft.procedure.approval).toBeNull();
-    expect(calls).toEqual(["POST /v1/files", "POST /v1/responses", "POST /v1/responses", "DELETE /v1/files/file-teach"]);
+    expect(calls).toEqual(["POST /v1/files", "POST /v1/responses", "DELETE /v1/files/file-teach"]);
+    expect(baseten).toEqual(["https://inference.baseten.co/v1/chat/completions"]);
   });
 });
 
@@ -250,21 +253,50 @@ describe("automatic lesson discovery and review suggestions", () => {
     expect(() => parseDiscovery({ status: "incomplete", output_text: "{}" }, context.lesson)).toThrow("did not complete");
     expect(() => parseDiscovery({ status: "completed", output_text: "not JSON" }, context.lesson)).toThrow("invalid JSON");
   });
-  it.each([false, true])("automatic pipeline reuses one file and cleans up, discovery invalid=%s", async (invalid) => {
-    const calls: string[] = []; let sparkCalls = 0;
+  it("automatic discovery without the bound lesson video fails closed before any Spark call and still deletes the upload", async () => {
+    const calls: string[] = [];
     const transport: typeof fetch = async (url, options) => {
       const req = new Request(url, options);
       if (req.method === "DELETE") { calls.push("delete"); return Response.json({ id: "file-teach", deleted: true }); }
-      const body = await req.json() as { model: string; input: unknown };
-      calls.push(body.model); if (body.model === "sam-3.1" || sparkCalls === 0) expect(JSON.stringify(body.input)).toContain('"file_id":"file-teach"');
-      if (body.model === "sam-3.1") return new Response(events(geometry(0, 10) + geometry(1, 200)).map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
-      const text = ++sparkCalls === 1 ? JSON.stringify(invalid ? { components: [] } : discovery) : JSON.stringify(draftFor());
-      return Response.json({ id: "resp-mock", object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text, annotations: [] }] }] });
+      calls.push((await req.json() as { model: string }).model);
+      return Response.json({});
     };
     const client = new OpenAI({ apiKey: "mock-key", baseURL: "https://api.meta.ai/v1", fetch: transport, maxRetries: 0 });
-    const result = compileLesson(client, { fileId: "file-teach", lesson: context.lesson }, undefined, () => {}, new AbortController().signal);
-    if (invalid) { await expect(result).rejects.toThrow("deletion was confirmed"); expect(calls).toEqual(["muse-spark-1.3", "delete"]); }
-    else { expect((await result).draft.procedure.approval).toBeNull(); expect(calls).toEqual(["muse-spark-1.3", "sam-3.1", "muse-spark-1.3", "delete"]); }
+    await expect(compileLesson(client, { fileId: "file-teach", lesson: context.lesson }, undefined, () => {}, new AbortController().signal)).rejects.toThrow(/needs the lesson video[\s\S]*deletion was confirmed/);
+    expect(calls).toEqual(["delete"]);
+  });
+  it.each([false, true])("automatic discovery runs on Baseten with the lesson video (never Meta); invalid=%s", async (invalid) => {
+    const bytes = await readFile(new URL("./fixtures/teach-synthetic.mp4", import.meta.url));
+    vi.stubEnv("BASETEN_API_KEY", "mock-baseten-key"); const sent: { url: string; video: boolean; model: string }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, options?: RequestInit) => {
+      if (String(url) === "data:,") return new Response("");
+      const req = new Request(url, options); const body = await req.json() as { model: string };
+      sent.push({ url: req.url, model: body.model, video: JSON.stringify(body).includes('"video_url"') });
+      return Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify(invalid ? { components: [] } : discovery) } }] });
+    }));
+    const run = discoverComponents(context.lesson, new AbortController().signal, undefined, `data:video/mp4;base64,${bytes.toString("base64")}`);
+    if (invalid) await expect(run).rejects.toThrow(); else expect((await run)[0].mark.kind).toBe("point");
+    // An invalid reply gets exactly one bounded correction; every call is Baseten with video.
+    expect(sent).toEqual(Array(invalid ? 2 : 1).fill({ url: "https://inference.baseten.co/v1/chat/completions", model: "meta-models/muse-spark-open-1026", video: true }));
+  });
+  it.each([
+    ["schema failure then valid", [{ components: [{ description: "x" }] }, "valid"], 2, true],
+    ["two failures stop after one correction", [{ components: [] }, { components: [] }], 2, false],
+    ["transport failure is never retried", ["http500"], 1, false],
+  ] as const)("discovery gets one bounded correction on Baseten: %s", async (_label, replies, expectedCalls, ok) => {
+    const bytes = await readFile(new URL("./fixtures/teach-synthetic.mp4", import.meta.url));
+    vi.stubEnv("BASETEN_API_KEY", "mock-baseten-key"); let n = 0; const bodies: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, options?: RequestInit) => {
+      if (String(url) === "data:,") return new Response("");
+      bodies.push(await new Request(url, options).text());
+      const reply = replies[Math.min(n++, replies.length - 1)];
+      if (reply === "http500") return Response.json({ error: { message: "down" } }, { status: 500 });
+      return Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify(reply === "valid" ? discovery : reply) } }] });
+    }));
+    const run = discoverComponents(context.lesson, new AbortController().signal, undefined, `data:video/mp4;base64,${bytes.toString("base64")}`);
+    if (ok) expect((await run).length).toBe(1); else await expect(run).rejects.toThrow();
+    expect(n).toBe(expectedCalls);
+    if (expectedCalls === 2) expect(bodies[1]).toContain("PREVIOUS ANSWER WAS REJECTED");
   });
   it("prefills supported zones but never marks human review complete", () => {
     const draft = draftFor(), suggestions = suggestReviews(draft, context), check = suggestions["move-base"];

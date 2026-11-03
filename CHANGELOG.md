@@ -2,6 +2,30 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.4.1 — 2026-11-03
+
+### Fixed
+- Teach on Meta Spark (Vercel) failed with HTTP 400. The V3 drafting schema sent `oneOf` (Zod's discriminated union for scene conditions); strict structured outputs document `anyOf` only. Provider schemas now use the equivalent `anyOf`, and Zod still validates the exact union. The provider's rejection reason is now logged server-side (bounded, redacted, never sent to the browser). Confirmed by code and schema inspection; not yet confirmed by a live Meta request.
+- Practice: one late tracker reply no longer stops the whole session. It is discarded as stale evidence; Practice halts only if replies stay late for 3 s. This was the cause of paid run 5's "Tracking evidence arrived too late" stop after the first real end-to-end goal verification.
+- Practice resume with the bottle resting on the plate: the plate is matched with the expected bottle region masked out, and the resting overlap is allowed for the verified zone. Local setup retries once per second instead of every 3 s.
+- Teach recording: refuses to record without a live microphone track, only uses recording formats that name an audio codec, and explains a silent recording instead of "No audio track".
+- The voice and gesture commands popup is centred on screen.
+- Automatic component discovery (now on Baseten, which does not enforce schemas for Muse Spark Open) gets the same single bounded correction as drafting, and schema failures log their field paths server-side. Paid run 7 failed at discovery before this fix.
+- Teach drafting no longer rejects a draft whose final condition was realigned to the measured result frame: the video goal review's final-scene frames are realigned with it (paid run 6 failed on this mismatch).
+
+### Changed
+- Two keys, two clients (owner rule): every Muse Spark call (automatic component discovery and drafting) goes only to Baseten Muse Spark Open with `BASETEN_API_KEY`; `MODEL_API_KEY`/api.meta.ai serves only SAM 3.1 and Muse Voice Transcribe. The Meta drafting path was removed, and the Meta client refuses any Muse Spark model at its HTTP boundary. The Vercel 400 happened because `SPARK_PROVIDER` was unset there and the old code defaulted to Meta. Legacy guide workflows that used Meta-hosted Spark now fail closed.
+- Unit tests remove real provider keys before running, so an unmocked call can never reach a paid API.
+
+### Added
+- Front/back camera switch on Practice (shown when the device has more than one camera; restarts Practice on the new view) and on Teach recording (back camera by default).
+
+### Verified
+- 696 unit tests; type-check; lint 0 errors; production build; full browser suite 45 passed, 1 expected skip.
+- Paid run 5 (Baseten): real Teach → approve → automatic Practice → first final goal verified; it then stopped on the late-reply halt fixed above.
+- Paid runs: 5 reached the first real end-to-end final goal, then hit the late-reply halt (fixed); 6 failed at drafting on the video-goal frame mismatch (fixed); 7 failed at discovery schema validation (fixed). Fixes after run 7 are verified offline only; no authorized paid run remains.
+- Not yet: a clean paid end-to-end pass after these fixes, camera switch on a real phone, physical-camera acceptance.
+
 ## 0.4.0 — 2026-11-03
 
 ### Fixed

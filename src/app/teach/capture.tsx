@@ -42,6 +42,9 @@ export default function LessonCapture({
   const [state, setState] = useState("idle");
   const [seconds, setSeconds] = useState(0);
   const [error, setError] = useState("");
+  // Back camera by default on phones (pointing at the work); switchable.
+  const [facing, setFacing] = useState<"environment" | "user">("environment");
+  const facingRef = useRef<"environment" | "user">("environment");
   const camera = useRef<HTMLVideoElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const resources = useRef({
@@ -149,7 +152,13 @@ export default function LessonCapture({
     } catch (e) {
       if (!controller.signal.aborted) {
         setState("idle");
-        fail(e instanceof Error ? e.message : "Unable to prepare lesson.");
+        const message =
+          e instanceof Error ? e.message : "Unable to prepare lesson.";
+        fail(
+          !existing && message.startsWith("No audio track")
+            ? `This browser saved the recording without sound (format ${source.type || "unknown"}), although the microphone was on. Try recording in Chrome or Safari, or upload an MP4 recorded with the phone's camera app.`
+            : message,
+        );
       }
     }
   }
@@ -196,6 +205,7 @@ export default function LessonCapture({
           width: { ideal: 640, max: 640 },
           height: { ideal: 480, max: 480 },
           frameRate: { ideal: LESSON_FRAME_RATE, max: LESSON_FRAME_RATE },
+          facingMode: { ideal: facingRef.current },
         },
         audio: true,
       });
@@ -227,10 +237,13 @@ export default function LessonCapture({
         throw new Error(
           "Consent, camera access and H.264 encoding are required; use the upload option if unavailable.",
         );
+      // Only formats that name an audio codec: a bare container may record
+      // video only on some browsers.
       const type = [
         "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+        "video/mp4;codecs=avc1,opus",
         "video/webm;codecs=vp8,opus",
-        "video/webm",
+        "video/webm;codecs=vp9,opus",
       ].find((mime) => MediaRecorder.isTypeSupported(mime));
       if (!type)
         throw new Error(
@@ -241,6 +254,7 @@ export default function LessonCapture({
           width: { ideal: 640, max: 640 },
           height: { ideal: 480, max: 480 },
           frameRate: { ideal: LESSON_FRAME_RATE, max: LESSON_FRAME_RATE },
+          facingMode: { ideal: facingRef.current },
         },
         audio: true,
       });
@@ -249,6 +263,15 @@ export default function LessonCapture({
         return;
       }
       resources.current.stream = stream;
+      // A lesson needs narration: refuse to record silently when the browser
+      // gave no live microphone track (blocked/absent/in use elsewhere).
+      const mic = stream.getAudioTracks()[0];
+      if (!mic || mic.readyState !== "live") {
+        stream.getTracks().forEach((t) => t.stop());
+        throw new Error(
+          "No microphone audio is available, so the lesson would have no narration. Allow the microphone for this site (and close other apps using it), then start recording again.",
+        );
+      }
       if (camera.current) {
         camera.current.srcObject = stream;
         await camera.current.play();
@@ -277,7 +300,15 @@ export default function LessonCapture({
       };
       recorder.onstop = () => {
         if (!controller.signal.aborted) {
+          const micEnded = mic.readyState !== "live" || mic.muted;
           stopTracks();
+          if (micEnded) {
+            setState("idle");
+            fail(
+              "The microphone stopped or was muted during recording, so the lesson has no usable narration. Check the microphone, then record again.",
+            );
+            return;
+          }
           void prepare(
             new Blob(parts, { type: recorder.mimeType }),
             false,
@@ -369,6 +400,19 @@ export default function LessonCapture({
           }}
         >
           Start recording
+        </button>
+        <button
+          type="button"
+          disabled={state !== "idle" && state !== "preview"}
+          onClick={() => {
+            const next = facing === "environment" ? "user" : "environment";
+            facingRef.current = next;
+            setFacing(next);
+            markControl(`use ${next === "user" ? "front" : "back"} camera`);
+            if (state === "preview") void preview();
+          }}
+        >
+          {facing === "environment" ? "Use front camera" : "Use back camera"}
         </button>
         <button
           type="button"

@@ -1,14 +1,41 @@
 import "server-only";
 import OpenAI from "openai";
 import { z } from "zod";
-import { createMetaClient, SPARK_MODEL } from "./client";
 import { TeachError } from "../teach/security";
 import { decodeTeachVideo } from "../teach/video-evidence";
 import { sparkCompletionLimit } from "./spark-limits";
 
+/**
+ * JSON Schema for provider structured output. Zod emits a discriminated union
+ * as `oneOf`; strict structured-output formats document `anyOf` only. The
+ * branches are told apart by a constant `kind`, so at most one can match and
+ * `anyOf` is equivalent. The exact Zod union still validates every reply.
+ */
+export function providerJsonSchema(schema: z.ZodType): Record<string, unknown> {
+  const rename = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(rename)
+      : value && typeof value === "object"
+        ? Object.fromEntries(
+            Object.entries(value).map(([key, inner]) => [
+              key === "oneOf" ? "anyOf" : key,
+              rename(inner),
+            ]),
+          )
+        : value;
+  return rename(z.toJSONSchema(schema)) as Record<string, unknown>;
+}
+/** Provider's own rejection reason, bounded; never request bodies or keys. */
+function providerReason(error: unknown): string {
+  const message =
+    error instanceof Error ? error.message.replace(/\s+/g, " ").trim() : "";
+  const safe = message.replace(/(sk|key|token)[-_A-Za-z0-9]{8,}/gi, "[redacted]");
+  return safe ? ` Provider said: ${safe.slice(0, 300)}` : "";
+}
 export class SparkError extends TeachError {
   /** Server-only candidate for the bounded correction path; never serialized. */
   readonly candidateText?: string;
+  readonly issues?: string[];
   constructor(
     public readonly code: string,
     message: string,
@@ -19,8 +46,12 @@ export class SparkError extends TeachError {
       answerCharacters: number;
     },
     candidateText?: string,
+    /** Schema issue paths/messages for the one bounded correction; server-only. */
+    issues?: string[],
   ) {
     super(status, message);
+    if (issues)
+      Object.defineProperty(this, "issues", { value: issues, enumerable: false });
     if (candidateText !== undefined)
       Object.defineProperty(this, "candidateText", {
         value: candidateText,
@@ -37,8 +68,6 @@ export async function sparkStructured<T>({
   name,
   maxTokens,
   signal,
-  metaClient,
-  metaVideoFileId,
 }: {
   instructions: string;
   text: string;
@@ -48,17 +77,10 @@ export async function sparkStructured<T>({
   name: string;
   maxTokens: number;
   signal?: AbortSignal;
-  /** Existing server transport injection, used by the compiler and offline tests. */
-  metaClient?: OpenAI;
-  metaVideoFileId?: string;
 }) {
-  const provider = process.env.SPARK_PROVIDER || "meta";
-  if (provider !== "meta" && provider !== "baseten")
-    throw new SparkError(
-      "invalid_provider",
-      "SPARK_PROVIDER must be meta or baseten.",
-      503,
-    );
+  // Owner rule: Muse Spark runs only on Baseten (BASETEN_API_KEY,
+  // inference.baseten.co); never on Meta's API.
+  const provider = "baseten";
   if (
     text.length > 28000 ||
     instructions.length > 20000 ||
@@ -77,24 +99,12 @@ export async function sparkStructured<T>({
       "Spark input exceeds supported bounds.",
       400,
     );
-  if (videoBase64) {
-    decodeTeachVideo(videoBase64);
-    if (
-      provider === "meta" &&
-      !/^file-[A-Za-z0-9_-]+$/.test(metaVideoFileId ?? "")
-    )
-      throw new SparkError(
-        "invalid_input",
-        "Meta video drafting requires the matching uploaded file reference.",
-        400,
-      );
-  }
-  const modelId =
-    provider === "baseten" ? "meta-models/muse-spark-open-1026" : SPARK_MODEL;
+  if (videoBase64) decodeTeachVideo(videoBase64);
+  const modelId = "meta-models/muse-spark-open-1026";
   let output: string;
   let outputTokens: number | null = null;
   try {
-    if (provider === "baseten") {
+    {
       const key = process.env.BASETEN_API_KEY?.trim();
       if (!key)
         throw new SparkError(
@@ -120,7 +130,7 @@ export async function sparkStructured<T>({
               messages: [
                 {
                   role: "system",
-                  content: `${instructions}\nReturn ONLY raw JSON, with no markdown or commentary, matching this schema: ${JSON.stringify(z.toJSONSchema(schema))}`,
+                  content: `${instructions}\nReturn ONLY raw JSON, with no markdown or commentary, matching this schema: ${JSON.stringify(providerJsonSchema(schema))}`,
                 },
                 {
                   role: "user",
@@ -162,66 +172,6 @@ export async function sparkStructured<T>({
         );
       output = choice.message.content;
       outputTokens = response.usage?.completion_tokens ?? null;
-    } else {
-      const response = await (
-        metaClient ?? createMetaClient()
-      ).responses.create(
-        {
-          model: modelId,
-          store: false,
-          instructions,
-          max_output_tokens: maxTokens,
-          reasoning: { effort: "low" },
-          input:
-            images.length || videoBase64
-              ? [
-                  {
-                    role: "user",
-                    content: [
-                      { type: "input_text", text },
-                      ...images.map((image_url) => ({
-                        type: "input_image" as const,
-                        image_url,
-                        detail: "auto" as const,
-                      })),
-                      ...(videoBase64
-                        ? [
-                            {
-                              type: "input_file" as const,
-                              file_id: metaVideoFileId!,
-                            },
-                          ]
-                        : []),
-                    ],
-                  },
-                ]
-              : text,
-          text: {
-            format: {
-              type: "json_schema",
-              name,
-              strict: true,
-              schema: z.toJSONSchema(schema),
-            },
-          },
-        },
-        { signal, timeout: 120000 },
-      );
-      if (
-        response.status === "incomplete" &&
-        response.incomplete_details?.reason === "max_output_tokens"
-      )
-        throw new SparkError(
-          "truncated_output",
-          "Spark output exhausted its token budget. No JSON was parsed.",
-        );
-      if (response.status !== "completed" || !response.output_text)
-        throw new SparkError(
-          "invalid_model_data",
-          "Spark did not return a completed JSON answer.",
-        );
-      output = response.output_text;
-      outputTokens = response.usage?.output_tokens ?? null;
     }
   } catch (error) {
     if (error instanceof SparkError) throw error;
@@ -256,11 +206,16 @@ export async function sparkStructured<T>({
           `${provider} Spark rate limit reached (HTTP 429). No retry was attempted.`,
           429,
         );
-      if (status === 400 || status === 422)
+      if (status === 400 || status === 422) {
+        // Diagnosable in server logs only; provider bodies never reach clients.
+        console.warn(
+          `[spark] ${provider} rejected ${name} (HTTP ${status}).${providerReason(error)}`,
+        );
         throw new SparkError(
           "request_rejected",
           `${provider} Spark rejected the request (HTTP ${status}). Check the selected provider and its supported request/schema format. No retry or fallback was attempted.`,
         );
+      }
       throw new SparkError(
         "provider_error",
         `${provider} Spark request failed (HTTP ${status}). No retry or provider fallback was attempted.`,
@@ -293,11 +248,22 @@ export async function sparkStructured<T>({
     );
   }
   const parsed = schema.safeParse(raw);
-  if (!parsed.success)
+  if (!parsed.success) {
+    // Field paths and rule messages only (no model content), so a provider
+    // without enforced schemas can be diagnosed from server logs.
+    const issues = parsed.error.issues
+      .slice(0, 8)
+      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
+    console.warn(`[spark] ${name} schema issues: ${issues.join(" | ")}`);
     throw new SparkError(
       "schema_validation_failed",
       "Spark JSON failed procedure schema validation.",
+      502,
+      undefined,
+      output,
+      issues,
     );
+  }
   return {
     data: parsed.data,
     diagnostic: {
