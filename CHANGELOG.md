@@ -2,6 +2,14 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.19.3 — 2026-11-04
+
+### Fixed (owner: "no tracking" after 0.19.2)
+- Root cause: 0.19.2's live-window palette check ran on every image, including full-resolution Teach images where the object is larger than the 128 px live window. The object was clipped, every colour palette was refused, and movers fell back to the texture tracker that loses them under a grasp. The check now applies only to objects that fit the live window; larger objects keep the ring-tested palette as before 0.19.2 (the live camera still re-measures it at the unchanged 0.9 gate).
+
+### Verified
+- New regression (1280x720 Teach-size bowl keeps its palette; failed on 0.19.2) plus the 0.19.2 latency tests; full unit suite, type-check, lint. Not yet measured on the owner's physical camera.
+
 ## 0.19.2 — 2026-11-04
 
 ### Fixed (owner: "the AI keeps taking long to confirm" a right or wrong move)

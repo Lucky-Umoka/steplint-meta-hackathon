@@ -148,3 +148,19 @@ it("the hand still covers the bowl as it lands, then withdraws: verified within 
   console.info(`[latency] hand withdrawn ${visibleAt} ms -> verified ${passedAt} ms: ${passedAt! - visibleAt} ms`);
   expect(passedAt! - visibleAt).toBeLessThan(1000);
 });
+
+it("regression 0.19.3: a large object in a full-resolution Teach image keeps its colour palette (0.19.2 refused it: no tracking)", async () => {
+  const { groundNativePalette } = await import("../src/practice/native-palette");
+  const W2 = 1280, H2 = 720, R = 88;
+  const data = new Uint8ClampedArray(W2 * H2 * 4);
+  for (let y = 0; y < H2; y++)
+    for (let x = 0; x < W2; x++) {
+      let c = [205, 190, 170];
+      if (y > H2 * 0.53 && y < H2 * 0.94 && x > W2 * 0.09 && x < W2 * 0.5) c = [30, 60, 195];
+      const r = Math.hypot(x - W2 * 0.3, y - H2 * 0.72);
+      if (r < R) c = r > R * 0.77 ? [236, 236, 236] : [150 + ((x * 5 + y * 11) % 60), 135 + ((x + y * 7) % 50), 115];
+      data.set([c[0], c[1], c[2], 255], (y * W2 + x) * 4);
+    }
+  const bowl = { left: 0.3 - R / W2, right: 0.3 + R / W2, top: 0.72 - R / H2, bottom: 0.72 + R / H2 };
+  expect(groundNativePalette({ width: W2, height: H2, data }, "bowl", bowl)).not.toBeNull();
+});
