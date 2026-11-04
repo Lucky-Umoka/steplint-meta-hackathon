@@ -39,6 +39,16 @@ import {
   type Tracking,
 } from "../../teach/schema";
 import { TeachError, TeachStageError } from "./security";
+import {
+  felicityRepairSelections,
+  repairImproves,
+  repairTargets,
+} from "./felicity-repair";
+import {
+  buildRepairedWire,
+  requestRepairPlan,
+  type RepairPlan,
+} from "./repair";
 import { discoverComponents } from "./discovery";
 import {
   sourceEvidenceCatalog,
@@ -770,7 +780,7 @@ export async function compileLesson(
     draft: ReturnType<typeof parseSparkDraft>;
     providerDiagnostic: Awaited<
       ReturnType<typeof sparkStructured>
-    >["diagnostic"];
+    >["diagnostic"] | null;
   } | null = null;
   let failure: TeachStageError | null = null;
   try {
@@ -860,6 +870,77 @@ export async function compileLesson(
       );
       if (still) throw new TeachError(422, still);
     }
+    // Felicity tracking repair: objects SAM lost long enough that no move
+    // can be measured get re-anchored views from Muse Spark Open and ONE
+    // more SAM pass, kept only if it measures more movement (bowl video).
+    // One Felicity repair call per lesson (owner override 2026-11-04).
+    let repairUsed = false;
+    // Free first: SAM again from discovery's box alone for objects whose
+    // move is lost (no Spark call). Kept only if it measures more.
+    const lost = options
+      ? repairTargets(upload.lesson, selections, tracking).map((t) => t.id)
+      : [];
+    const boxOnly = selections.map((s) =>
+      lost.includes(s.id) && s.mark.kind === "point" && s.mark.within
+        ? { ...s, mark: { kind: "box" as const, ...s.mark.within } }
+        : s,
+    );
+    if (boxOnly.some((s, i) => s !== selections[i])) {
+      progress("Re-tracking objects whose movement was lost…");
+      const retracked = await track(boxOnly);
+      if (
+        retracked.every((t) => t.samples.length) &&
+        implausibleTrack(boxOnly, retracked, upload.lesson.media) === null &&
+        repairImproves(
+          upload.lesson,
+          { selections, tracking },
+          { selections: boxOnly, tracking: retracked },
+        )
+      ) {
+        selections = boxOnly;
+        tracking = retracked;
+      }
+    }
+    if (
+      options?.videoBase64 &&
+      tracking.every((t) => t.samples.length) &&
+      repairTargets(upload.lesson, selections, tracking).length
+    ) {
+      try {
+        repairUsed = true;
+        const repair = await felicityRepairSelections(
+          upload.lesson,
+          selections,
+          tracking,
+          options.videoBase64,
+          signal,
+        );
+        if (repair) {
+          progress(
+            `Felicity is re-anchoring ${repair.targets.map((t) => t.description).join(", ")} where tracking was lost…`,
+          );
+          const retracked = await track(repair.selections);
+          if (
+            retracked.every((t) => t.samples.length) &&
+            implausibleTrack(repair.selections, retracked, upload.lesson.media) === null &&
+            repairImproves(
+              upload.lesson,
+              { selections, tracking },
+              { selections: repair.selections, tracking: retracked },
+            )
+          ) {
+            selections = repair.selections;
+            tracking = retracked;
+            progress("Felicity recovered the lost tracking.");
+          } else progress("Felicity's re-anchoring did not measure more; keeping the original tracking.");
+        }
+      } catch (error) {
+        if (signal.aborted) throw error;
+        console.warn(
+          `[teach] Felicity tracking repair skipped: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}`,
+        );
+      }
+    }
     if (tracking.some((track) => !track.samples.length))
       throw new TeachError(
         422,
@@ -870,6 +951,16 @@ export async function compileLesson(
       selections,
       tracking,
     });
+    // Diagnostics only: each object's measured evidence before drafting.
+    console.info(
+      `[teach] objects: ${sourceEvidenceCatalog(context)
+        .map(
+          (e) =>
+            `${e.componentId} reliable=${e.trustedFrames.length} windows=${JSON.stringify(e.displacementWindows.map((w) => [w.startFrame, w.resultFrame]))}${e.movementDiagnosis ? ` why=${e.movementDiagnosis.slice(0, 160)}` : ""}`,
+        )
+        .join(" | ")
+        .slice(0, 1500)}`,
+    );
     // No object has a measured movement window: every V3 step would be
     // impossible, so a drafting request can only fail (paid run 14). Stop
     // here with each object's measured reason instead of spending it.
@@ -889,12 +980,12 @@ export async function compileLesson(
         console.warn(`[teach] no measured movement: ${reasons.slice(0, 800)}`);
         throw new TeachError(
           422,
-          `No object's movement could be measured, so no steps can be drafted (${reasons}). Retry, or record with the moved object clearly visible and still for a moment before and after the move.`,
+          "We couldn't see the moved object clearly enough to build steps. Please record again with the object fully visible, holding it still for a moment before and after each move.",
         );
       }
     }
     progress("Drafting candidate steps and review questions…");
-    const drafted = await draftWithOneCorrection(
+    const draftOnce = () => draftWithOneCorrection(
       context,
       options,
       (call) =>
@@ -908,6 +999,70 @@ export async function compileLesson(
       },
       progress,
     );
+    let drafted:
+      | (Omit<Awaited<ReturnType<typeof draftOnce>>, "diagnostic"> & {
+          diagnostic: Awaited<ReturnType<typeof draftOnce>>["diagnostic"] | null;
+        })
+      | null = null;
+    let draftFailure: unknown = null;
+    try {
+      drafted = await draftOnce();
+    } catch (error) {
+      if (!(error instanceof TeachError) || error.status !== 422 || !options)
+        throw error;
+      draftFailure = error;
+    }
+    // Felicity draft repair: one bounded plan request when drafting was
+    // rejected or left review issues; applied only if every validator passes.
+    if (options && !repairUsed && (draftFailure || drafted?.reviewIssue)) {
+      repairUsed = true;
+      const issues =
+        draftFailure instanceof Error
+          ? draftFailure.message
+          : (drafted?.reviewIssue ?? "");
+      console.warn(`[teach] Felicity draft repair triggered: ${issues.slice(0, 400)}`);
+      progress("Felicity is checking the steps against the measured video…");
+      try {
+        stage = "Felicity draft repair";
+        const plan = await requestRepairPlan(
+          context,
+          issues,
+          drafted?.draft ?? null,
+          options.videoBase64,
+          signal,
+        );
+        const { draft: repaired, remaining } = applyRepairPlan(
+          context,
+          plan,
+          options,
+        );
+        if (!remaining || !drafted) {
+          drafted = {
+            draft: repaired,
+            diagnostic: drafted?.diagnostic ?? null,
+            corrected: true,
+            reviewIssue: remaining,
+          };
+          draftFailure = null;
+          progress("Felicity rebuilt the steps from the measured video.");
+        } else
+          console.warn(`[teach] Felicity repair kept prior draft: ${remaining.slice(0, 300)}`);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        console.warn(
+          `[teach] Felicity draft repair failed: ${error instanceof Error ? error.message.slice(0, 300) : "unknown"}`,
+        );
+      }
+    }
+    if (!drafted) {
+      console.warn(
+        `[teach] drafting failed after repair: ${draftFailure instanceof Error ? draftFailure.message.slice(0, 400) : "unknown"}`,
+      );
+      throw new TeachError(
+        422,
+        "We couldn't build a reliable lesson from this recording. Please try once more; if it happens again, record with each object clearly visible before and after it moves.",
+      );
+    }
     result = {
       context,
       draft: drafted.draft,
@@ -935,4 +1090,21 @@ export async function compileLesson(
       "No validated draft was produced; temporary upload deletion was confirmed.",
     );
   return result;
+}
+/**
+ * Felicity's plan -> full V3 draft -> every existing validator (parse,
+ * evidence, video review) -> remaining review issue. Throws when invalid.
+ */
+export function applyRepairPlan(
+  context: TeachContext,
+  plan: RepairPlan,
+  options: LocalCompileOptions,
+) {
+  const wire = buildRepairedWire(context, plan, !!options.videoBase64);
+  const draft = parseSparkDraft(
+    { status: "completed", output_text: JSON.stringify(wire) },
+    context,
+    options,
+  );
+  return { draft, remaining: reviewEvidenceIssue(draft, context) };
 }

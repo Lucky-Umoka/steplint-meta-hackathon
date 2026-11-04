@@ -88,18 +88,14 @@ test("Phase 2: a corrected V3 lesson survives approve → save → reload → Pr
   await expect(page.getByText(`Goal: ${corrected.procedure.execution!.goal}`)).toBeVisible();
   await expect(page.getByText("Needs attention before approval")).toHaveCount(0);
 
-  // 3. Approve.
+  // 3–4. Approve, save and open Practice with the single primary action.
   await page.getByLabel("Your reviewer name").fill("Phase 2 reviewer");
   await page.getByLabel("I approve this lesson for Practice.").check();
-  await page.getByRole("button", { name: "Approve procedure", exact: true }).click();
-  await expect(page.getByText(/Procedure approved. Save and open Practice/)).toBeVisible();
-  await expect(page.getByText("Rehearsal: not run for this exact revision.")).toBeVisible();
-  expect(approvedDraftInput).toEqual(JSON.parse(JSON.stringify(corrected)));
-
-  // 4. Save.
-  await page.getByRole("button", { name: "Save and open Practice", exact: true }).click();
+  await page.getByRole("button", { name: "Approve and practice", exact: true }).click();
   const id = context.lesson.lessonId;
   await expect(page).toHaveURL(new RegExp(`lesson=${id}`));
+  expect(approvedDraftInput).toEqual(JSON.parse(JSON.stringify(corrected)));
+  expect((approvedResponse as { rehearsal?: unknown }).rehearsal).toEqual({ status: "not_run" });
   const savedRaw = await storedRaw(page, id);
   expect(JSON.parse(savedRaw)).toEqual(JSON.parse(JSON.stringify(approvedResponse)));
 

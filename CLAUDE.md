@@ -55,3 +55,4 @@
 - Before each live test: all known errors are fixed at their root cause, and type-check, lint, unit tests, build and local browser/replay tests pass. After each live test: diagnose every error from its artifacts, fix the root cause, add a regression, rerun local tests, then start the next.
 - The last authorized live test must pass Teach to Practice smoothly; otherwise report the failure truthfully. Never spend an extra run without new authorization.
 - Version as we build: use semantic versioning in `package.json` (patch for fixes, minor for features, major for breaking contracts). Bump it for every meaningful delivered change and add a dated entry to `CHANGELOG.md` saying what changed and how it was verified.
+- Efficiency and speed are priorities (owner rule, 2026-11-04): choose the shortest safe path, batch independent work, use sub-agents in parallel when they save time, and never trade away evidence or approval rules for speed.

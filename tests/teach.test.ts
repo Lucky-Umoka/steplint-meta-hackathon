@@ -223,11 +223,16 @@ describe("no measured movement stops before drafting (paid run 14)", () => {
     const client = new OpenAI({ apiKey: "mock-key", baseURL: "https://api.meta.ai/v1", fetch: transport, maxRetries: 0 });
     await expect(
       compileLesson(client, { fileId: "file-teach", lesson: context.lesson }, context.selections, () => {}, new AbortController().signal, { goal: "Move the base", videoBase64: `data:video/mp4;base64,${bytes.toString("base64")}` }, (value) => diagnostics.push(value)),
-    ).rejects.toThrow(/No object's movement could be measured.*deletion was confirmed/);
+    ).rejects.toThrow(/couldn't see the moved object clearly enough.*deletion was confirmed/);
     // The per-frame SAM evidence was reported before the failure (for diagnosis).
     expect(diagnostics).toHaveLength(1);
     expect(JSON.stringify(diagnostics[0])).toContain('"componentId":"component-1"');
-    expect(baseten.mock.calls.filter(([u]) => String(u) !== "data:,")).toHaveLength(0);
+    // Felicity makes its one bounded tracking-repair attempt first; no
+    // drafting request is ever made without a measured move.
+    const calls = baseten.mock.calls.filter(([u]) => String(u) !== "data:,") as unknown as [RequestInfo | URL, RequestInit | undefined][];
+    const bodies = calls.map(([, init]) => String(init?.body ?? ""));
+    expect(bodies.filter((b) => b.includes("Felicity"))).toHaveLength(calls.length);
+    expect(calls.length).toBeLessThanOrEqual(1);
   });
 });
 

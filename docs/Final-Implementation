@@ -1,93 +1,137 @@
-# STEPLINT — PHASE 4: END-TO-END INTEGRATION TEST
+Felicity should automatically resolve inconsistencies when the existing evidence supports a correction. She must not invent missing physical evidence or declare an unobservable action successful.
 
-Verify the complete Teach-to-Practice experience.
+The creator or learner should not see internal technical errors, validation exceptions or agent logs. They should see a ready lesson, or one simple instruction if the camera genuinely needs help.
 
-Do not rebuild existing features.
+Branch fix/phyical-practice-test. TIME-BOXED 20 minutes. Do NOT change behaviour.
+Find the exact stage where Teach -> Practice fails on my real clip.
+1. Read src/server/teach/pipeline.ts (compileLesson, draftWithOneCorrection),
+   src/app/teach/local-teach.tsx, review.tsx, src/app/practice/local-practice.tsx,
+   src/practice/local-tracking.ts (bootstrapLocal).
+2. Add structured logging (no secrets, no video bytes): stage reached, objects
+   kept/dropped with reasons, movement windows per object, Spark validation issues,
+   and in Practice the exact bootstrapLocal error and lifecycle state.
+3. Tell me the exact paid request counts, wait for my approval, then I run one
+   Teach+Practice cycle.
+4. Output a failure ledger: every place the user sees an error or dead end, with
+   file:line, cause, and whether code, Felicity repair, or only a re-record fixes it.
+Run tsc/vitest and report real output.
 
-## Workflow
+# STEPLINT EMERGENCY REPAIR — PHASE 1
+## Diagnose the actual Teach → Practice failure
 
-1. Open Teach.
-2. Upload a real demonstration video.
-3. Allow the existing Meta AI pipeline to process it.
-4. Review the generated V3 procedure.
-5. Review Felicity's audit findings.
-6. Correct any relevant issues.
-7. Approve the procedure.
-8. Open the approved procedure in Practice.
-9. Confirm that the correct objects and steps are available.
-10. Start the camera.
-11. Perform a correct action.
-12. Deliberately perform an incorrect action.
-13. Confirm immediate Gideon feedback.
-14. Confirm Felicity's additional advice when relevant.
-15. Cover an object and confirm the visibility request.
-16. Restore visibility and continue.
-17. Complete the procedure.
-18. Confirm final deterministic verification.
+We have a hackathon submission deadline approaching. The Teach → Practice experience has repeatedly failed to work smoothly in real use.
 
-## Technical checks
+I do not want another architecture, another Practice engine, another AI framework, or another generic error-handling layer.
 
-Verify:
+I want you to inspect the CURRENT repository and identify the exact reason the latest Teach → Practice workflow fails.
 
-- The approved procedure is the one loaded in Practice.
-- Procedure revisions are handled correctly.
-- No old incident or AI response leaks into a new session.
-- Teach approval is not treated as proof of physical success.
-- Final completion requires fresh evidence.
-- Errors in Felicity do not break the main workflow.
+### STEP 1 — Establish the real repository state
 
-## REPORT
+Run:
 
-Produce a checklist showing:
+- `git branch --show-current`
+- `git status --short`
+- `git log -6 --oneline`
+- `git diff --stat`
+- `git diff`
 
-- End-to-end tests passed.
-- End-to-end tests failed.
-- Real camera tests completed.
-- Mocked tests only.
-- Remaining submission blockers.
+Do not discard or overwrite uncommitted owner changes.
 
-Do not add new features during this phase unless necessary to fix a blocker.
+Read:
 
-Do not commit, push, or deploy without approval.
+- `CLAUDE.md`
+- `AGENTS.md`
+- `PLANS.md`
+- `docs/DECISIONS.md`
+- `docs/HANDOFF_NEXT_AGENT.md`
+- `docs/REPAIR_VERIFICATION.md`
+- `docs/ACCURACY_GAPS.md`
+- `docs/PRACTICE_V3_PHASE3.md`
+- `docs/PRACTICE_V4_PHASE4.md`
+- `docs/PRACTICE_V5_PHASE5.md`
 
+Use the newest recorded decisions and retained test evidence. Historical documents may contradict one another.
 
-# STEPLINT — PHASE 5: GIDEON 3D VISUAL UPGRADE
+### STEP 2 — Inspect the entire Teach pipeline
 
-Upgrade Gideon's existing visual appearance using Three.js only if all Phase 1–4 acceptance tests pass.
+Trace the real implementation:
 
-## Requirements
+`local-teach.tsx → /api/teach/compile → pipeline.ts → review.tsx → /api/teach/approve → approved artifact → Practice lesson loading`
 
-1. Inspect the current React and Three.js compatibility.
-2. Use compatible Three.js and React Three Fiber versions.
-3. Create a lightweight procedural holographic face.
-4. Connect the face to Gideon's existing avatar states:
-   - Idle.
-   - Listening.
-   - Thinking.
-   - Warning.
-   - Uncertain.
-   - Speaking.
-   - Success.
-5. Add subtle facial animation when speaking.
-6. Use appropriate visual feedback for warnings and successful completion.
-7. Preserve the existing Gideon voice and behavior.
-8. Use lazy loading and a Suspense fallback.
-9. Keep the existing SVG avatar as a reliable fallback.
-10. Respect reduced-motion preferences and avoid unnecessary GPU usage.
+Inspect:
 
-## Restrictions
+- Original video and its timestamps.
+- Voice transcript and its timestamps.
+- SAM object identities, boxes and masks.
+- Source reference frames.
+- Starting conditions.
+- Every intermediate action.
+- Every action's start/change/result evidence.
+- Final conditions and final goal.
+- Felicity audit findings.
+- Procedure approval and revision.
+- The exact saved artifact consumed by Practice.
 
-- Do not modify the deterministic verifier.
-- Do not modify camera tracking.
-- Do not modify procedure logic.
-- Do not replace the existing voice system.
-- Do not add Three.js if compatibility problems threaten the application.
-- Do not spend time on elaborate 3D assets.
+Determine whether the full intended procedure survives every transformation.
 
-## Acceptance
+### STEP 3 — Inspect Practice execution
 
-The application must remain functional with or without the 3D avatar.
+Trace:
 
-Test all Gideon states and confirm the fallback works.
+`approved artifact → load-approved-lesson → automatic setup → local tracking → watch set → verifier → final goal`
 
-Do not commit, push, or deploy without approval.
+Identify whether the approved starting positions, object identities, zones and measurement points match the evidence Practice actually observes.
+
+Inspect the latest recorded Practice failure, including any retained run artifacts, logs, screenshots, offline replays and diagnostic exports available in the current repository.
+
+Prioritize the newest failure, not an old failure that has already been repaired.
+
+### STEP 4 — Inspect Felicity's actual responsibilities
+
+Inspect:
+
+- `src/server/teach/audit.ts`
+- `src/app/api/teach/audit/route.ts`
+- `src/app/teach/review.tsx`
+- `src/practice/felicity.ts`
+- `src/app/practice/local-practice.tsx`
+- `src/app/api/practice/recover/route.ts`, if present.
+
+Determine:
+
+1. Does Teach Felicity actually compare transcript, measured video evidence, draft steps and final goal?
+2. Are audit findings only displayed, or can grounded issues be automatically corrected?
+3. Does Practice Felicity receive the current step, current object identity, current observations and verifier state?
+4. Can the existing system recover from a bad setup or inconsistent evidence without asking the learner to debug it?
+5. Are old or stale AI responses prevented from affecting a new incident?
+
+### STEP 5 — Identify the single highest-impact root cause
+
+Rank the failures by impact on the complete workflow.
+
+Do not simply list every possible improvement.
+
+Identify:
+
+- The exact failing file and function.
+- The exact data that becomes incorrect or is lost.
+- The reason the existing recovery architecture does not resolve it.
+- The smallest safe correction.
+- The existing test or retained artifact that can prove the correction.
+
+### Restrictions
+
+- Do not change source code yet.
+- Do not make paid Meta or Baseten calls.
+- Do not change model providers or model identifiers.
+- Do not lower confidence or identity thresholds.
+- Do not bypass approval.
+- Do not modify the deterministic verifier to force completion.
+- Do not create a hardcoded phone/bottle-specific production workaround.
+- Do not commit, push or deploy.
+
+### Final response
+
+Give me the three most important findings, the exact root cause of the latest failure, and the smallest implementation plan.
+
+I need a practical diagnosis, not another architectural proposal.

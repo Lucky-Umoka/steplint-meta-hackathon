@@ -2,6 +2,19 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.12.0 — 2026-11-04
+
+### Added (owner override: Felicity repairs, the creator only records and approves)
+- Felicity tracking repair (`src/server/teach/felicity-repair.ts`): objects SAM lost long enough that no move is measured get re-anchored views from Muse Spark Open and one more SAM pass, kept only if it measures more. Before it, a free SAM retry from discovery's box alone.
+- Felicity draft repair (`src/server/teach/repair.ts`): when drafting is rejected (paid run 20: invalid JSON twice) or leaves review issues, ONE bounded Spark request returns a small plan (steps as indexes into measured movement windows + goal); code builds the V3 draft and every existing validator decides. One Spark repair call per lesson (shared budget).
+- Review page: one "Approve and practice" button; Felicity suggestions and technical details collapsed; creator sees one plain sentence.
+- Diagnostics: rejected Spark JSON (head/tail), per-object measured windows.
+
+### Verified
+- tsc clean; Vitest 86 files / 766 tests; lint 0 errors; build; Playwright 50 passed / 1 skipped.
+- Real data, no paid calls: run 20's recorded bowl tracking after Felicity re-anchoring has both narrated moves measured (20.4–21.5 s, 34.6–36.3 s); a repair plan builds a draft that passes every validator and approval (2 steps), with a Practice setup plan.
+- Not working yet: offline Practice replay of that bowl lesson cannot find the white bowl at setup for most of the clip and loses calibration when the book (a reference) moves. Bottle lessons (runs 16/17) verify offline.
+
 ## 0.11.0 — 2026-11-04
 
 ### Fixed (paid run 17: Teach passed; Practice never armed)

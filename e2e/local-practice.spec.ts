@@ -452,14 +452,9 @@ test("default Teach reviews the full goal and source moments, then hands the app
     .getByLabel("Your reviewer name")
     .fill("Synthetic browser reviewer");
   await page.getByLabel("I approve this lesson for Practice.").check();
+  // One primary action: approve (human gate above), save, then open Practice.
   await page
-    .getByRole("button", { name: "Approve procedure", exact: true })
-    .click();
-  await expect(
-    page.getByText(/Procedure approved. Save and open Practice/),
-  ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Save and open Practice", exact: true })
+    .getByRole("button", { name: "Approve and practice", exact: true })
     .click();
   await expect(page).toHaveURL(new RegExp(`lesson=${context.lesson.lessonId}`));
   await expect(page.getByText("Goal: Object at destination")).toBeVisible();

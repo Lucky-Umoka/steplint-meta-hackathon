@@ -241,7 +241,12 @@ export async function sparkStructured<T>({
   let raw: unknown;
   try {
     raw = JSON.parse(jsonText);
-  } catch {
+  } catch (parseError) {
+    // Diagnostics only (no secrets, no media): why the model text is not
+    // JSON (paid run 20: the rejected draft was never visible).
+    console.warn(
+      `[spark] ${name} invalid JSON: ${parseError instanceof Error ? parseError.message.slice(0, 160) : "parse error"}; ${jsonText.length} chars; head=${JSON.stringify(jsonText.slice(0, 300))}; tail=${JSON.stringify(jsonText.slice(-300))}`,
+    );
     throw new SparkError(
       "invalid_model_data",
       "Spark returned invalid JSON.",
