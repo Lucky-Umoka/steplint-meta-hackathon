@@ -213,6 +213,25 @@ export default function LocalPractice() {
     const id = window.setInterval(() => setClockMs(performance.now()), 500);
     return () => window.clearInterval(id);
   }, [practiceStartedAt]);
+  /**
+   * Full-camera status light (owner request 2026-11-04): bright green when a
+   * step is verified, bright red while a confirmed wrong move is unresolved,
+   * blue when Practice has started and waits for the learner's move. Driven
+   * only by the verifier's decisions (via show()), never by predictions.
+   */
+  const [light, setLight] = useState<{
+    kind: "passed" | "failed" | "started";
+    text: string;
+    key: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!light || light.kind === "failed") return;
+    const id = window.setTimeout(
+      () => setLight((l) => (l?.key === light.key ? null : l)),
+      3000,
+    );
+    return () => window.clearTimeout(id);
+  }, [light]);
   useEffect(() => {
     if (!celebration) return;
     const id = window.setTimeout(() => setCelebration(null), 9000);
@@ -286,6 +305,9 @@ export default function LocalPractice() {
       stepId: string | null;
       key: string;
     } | null>(null);
+  // The red light shows only while the verifier reports a failure.
+  const shownLight =
+    light?.kind === "failed" && result?.status !== "failed" ? null : light;
   const goalGatedV3 = lesson?.procedure.execution?.schemaVersion === 3;
   /** "Complete" only when every gate passes (V3) or all steps pass (V2). */
   const complete =
@@ -379,7 +401,17 @@ export default function LocalPractice() {
   function log(event: VoiceEvent) {
     setVoiceLog((old) => appendVoiceEvent(old, event));
   }
-  function speak(text: string, recordGuidance = true) {
+  /**
+   * `queue`: confirmations ("Verified", "Final goal verified") play after
+   * the current utterance instead of cancelling it (owner export 2026-11-04:
+   * the goal sentence cut "Verified" off after 0.4 s, then Chrome's engine
+   * stuck). Corrections and instructions still replace (latest wins).
+   */
+  function speak(
+    text: string,
+    recordGuidance = true,
+    mode: "replace" | "queue" = "replace",
+  ) {
     if (recordGuidance) log({ at: Date.now(), source: "guidance", text });
     // Remember our own words so the microphone never treats them as commands.
     const at = Date.now();
@@ -393,6 +425,27 @@ export default function LocalPractice() {
       typeof SpeechSynthesisUtterance !== "function"
     )
       return;
+    if (mode === "queue" && window.speechSynthesis.speaking) {
+      try {
+        const queued = new SpeechSynthesisUtterance(text);
+        const voice = (window.speechSynthesis.getVoices?.() ?? []).find((v) =>
+          v.lang?.toLowerCase().startsWith("en"),
+        );
+        if (voice) {
+          queued.voice = voice;
+          queued.lang = voice.lang;
+        }
+        queued.onstart = () => {
+          setSpeaking(true);
+          log({ at: Date.now(), source: "steplint", text });
+        };
+        queued.onend = () => setSpeaking(false);
+        window.speechSynthesis.speak(queued);
+        return;
+      } catch {
+        /* Fall through to the normal replace path. */
+      }
+    }
     try {
       const gen = ++speechGeneration.current;
       // Chrome drops a speak() issued in the same task as cancel(): defer
@@ -418,8 +471,10 @@ export default function LocalPractice() {
       utterance.onend = () => {
         if (gen === speechGeneration.current) setSpeaking(false);
       };
-      utterance.onerror = () => {
+      utterance.onerror = (event) => {
         if (gen === speechGeneration.current) setSpeaking(false);
+        // Replaced by a newer sentence is not a failure.
+        if (event.error === "interrupted" || event.error === "canceled") return;
         log({
           at: Date.now(),
           source: "control",
@@ -584,7 +639,14 @@ export default function LocalPractice() {
         ...(evidenceImage ? { evidenceImage } : {}),
       }),
     })
-      .then((response) => (response.ok ? response.json() : null))
+      // Always consume the body: an unread error body (e.g. the provider's
+      // 502) is errored by a later abort() and Chrome reports it as an
+      // uncaught AbortError (owner console 2026-11-04).
+      .then((response) =>
+        response.ok
+          ? (response.json() as Promise<unknown>)
+          : response.text().then(() => null),
+      )
       .then((data: unknown) => {
         const advice =
           data &&
@@ -685,9 +747,19 @@ export default function LocalPractice() {
       // Once Practice has started, a hand carrying the object hides it for a
       // few seconds by design (the verifier bridges that, bounded): Gideon
       // waits longer before asking, instead of "I can't see it" mid-carry.
+      // A verified object is monitored silently: only a clear reversal
+      // (red) speaks; momentary loss of view after the goal is not news.
+      const verifiedAll = active.procedure.steps
+        .filter((s) => s.condition.componentId === detection.objectId)
+        .every(
+          (s) =>
+            active.result.steps.find((r) => r.stepId === s.id)?.status ===
+            "passed",
+        );
       if (
+        !verifiedAll &&
         now - since >=
-        (active.armed ? CARRY_PATIENCE_MS : VISIBILITY_TIMEOUT_MS)
+          (active.armed ? CARRY_PATIENCE_MS : VISIBILITY_TIMEOUT_MS)
       ) {
         const name = shortNoun(
           active.procedure.components.find((c) => c.id === detection.objectId)
@@ -740,12 +812,21 @@ export default function LocalPractice() {
     if (lastAlert.current === key) return false;
     lastAlert.current = key;
     setAlert({ kind, text, stepId, key });
+    if (kind === "passed") setLight({ kind: "passed", text, key });
+    else if (kind === "failed") setLight({ kind: "failed", text, key });
+    else if (kind === "instruction" && key.startsWith("start:"))
+      setLight({ kind: "started", text, key });
+    else setLight((l) => (l?.kind === "failed" ? null : l));
     log({
       at: Date.now(),
       source: kind === "instruction" ? "guidance" : "verdict",
       text,
     });
-    speak(alsoSay ? `${text} ${alsoSay}` : text, false);
+    speak(
+      alsoSay ? `${text} ${alsoSay}` : text,
+      false,
+      kind === "passed" ? "queue" : "replace",
+    );
     return true;
   }
   function halt(
@@ -1885,7 +1966,20 @@ export default function LocalPractice() {
             ? performance.now() -
               (lostSince.current.get(unseen.objectId) ?? performance.now())
             : 0;
-          if (unseen && (!active.armed || unseenFor >= CARRY_PATIENCE_MS)) {
+          const unseenVerified =
+            !!unseen &&
+            active.procedure.steps
+              .filter((s) => s.condition.componentId === unseen.objectId)
+              .every(
+                (s) =>
+                  active.result.steps.find((r) => r.stepId === s.id)
+                    ?.status === "passed",
+              );
+          if (
+            unseen &&
+            !unseenVerified &&
+            (!active.armed || unseenFor >= CARRY_PATIENCE_MS)
+          ) {
             const description =
               active.procedure.components.find(
                 (component) => component.id === unseen.objectId,
@@ -2099,7 +2193,7 @@ export default function LocalPractice() {
               celebrate(active);
             }
           }
-          if (goalSpeech) speak(goalSpeech);
+          if (goalSpeech) speak(goalSpeech, true, "queue");
           handlers.current.felicityTick(active, reply.detections);
           if (
             warning &&
@@ -2735,21 +2829,42 @@ export default function LocalPractice() {
                     Choose a guide and start the camera when you’re ready.
                   </p>
                 )}
+                {shownLight && running && (
+                  <div
+                    data-testid="practice-light"
+                    data-light={shownLight.kind}
+                    aria-hidden="true"
+                    className={`pointer-events-none absolute inset-0 z-20 flex items-start justify-center p-3 ring-[10px] ring-inset ${shownLight.kind === "passed" ? "bg-green-500/30 ring-green-400" : shownLight.kind === "failed" ? "practice-correction-pulse bg-red-600/35 ring-red-500" : "bg-sky-500/20 ring-sky-400"}`}
+                  >
+                    <p
+                      className={`max-w-[90%] rounded-2xl px-5 py-3 text-center text-2xl font-extrabold text-white shadow-2xl md:text-3xl ${shownLight.kind === "passed" ? "bg-green-600" : shownLight.kind === "failed" ? "bg-red-600" : "bg-sky-600"}`}
+                    >
+                      {shownLight.kind === "passed"
+                        ? "✓ STEP VERIFIED"
+                        : shownLight.kind === "failed"
+                          ? "✗ WRONG MOVE"
+                          : "▶ PRACTICE STARTED — your move"}
+                      <span className="mt-1 block text-base font-semibold md:text-lg">
+                        {shownLight.text}
+                      </span>
+                    </p>
+                  </div>
+                )}
                 {celebration && (
                   <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-4">
                     <section
                       role="dialog"
                       aria-label="Goal complete"
                       data-testid="practice-celebration"
-                      className="practice-celebrate pointer-events-auto w-full max-w-xs rounded-2xl border-2 border-emerald-500 bg-white p-4 text-center shadow-2xl"
+                      className="practice-celebrate pointer-events-auto w-full max-w-lg rounded-3xl border-4 border-emerald-500 bg-white p-6 text-center shadow-2xl ring-8 ring-emerald-400/60"
                     >
-                      <p className="text-3xl" aria-hidden="true">
+                      <p className="text-6xl" aria-hidden="true">
                         🏆🎉
                       </p>
-                      <h2 className="text-xl font-extrabold text-emerald-700">
+                      <h2 className="text-4xl font-extrabold text-emerald-700">
                         Goal complete!
                       </h2>
-                      <p className="mt-1 text-sm text-slate-800">
+                      <p className="mt-2 text-lg text-slate-800">
                         All {celebration.steps} step
                         {celebration.steps === 1 ? "" : "s"} verified in{" "}
                         <strong>{formatDuration(celebration.elapsedMs)}</strong>

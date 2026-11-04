@@ -6,9 +6,24 @@
  * It only *reflects* the deterministic evaluator result and the real
  * SpeechSynthesis state it is given — it never verifies anything itself.
  */
-import { Component, Suspense, lazy, useEffect, useState } from "react";
+import {
+  Component,
+  Suspense,
+  lazy,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { ReactNode } from "react";
 import { resolveGuideVisual } from "./guide-avatar-visual";
+import {
+  getServerSpeechSnapshot,
+  getSpeechSnapshot,
+  installSpeechTap,
+  revealedText,
+  spokenPosition,
+  subscribeSpeech,
+} from "./guide-speech-clock";
 
 // Lazy chunk: three.js only loads in browsers that can render it.
 const GuideAvatar3D = lazy(() => import("./GuideAvatar3D"));
@@ -43,6 +58,39 @@ function useCan3D(): { ready: boolean; webgl: boolean; reduced: boolean } {
     return () => mq.removeEventListener("change", update);
   }, []);
   return s;
+}
+
+/**
+ * Live transcript: follows the utterance really being spoken (passive tap on
+ * the browser's speech events) and reveals it word by word at talking pace.
+ */
+function useLiveTranscript() {
+  useEffect(() => installSpeechTap(), []);
+  const speech = useSyncExternalStore(
+    subscribeSpeech,
+    getSpeechSnapshot,
+    getServerSpeechSnapshot,
+  );
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    if (!speech.startedAt) return;
+    let frame = 0;
+    let last = 0;
+    const loop = (t: number) => {
+      if (t - last > 50) {
+        last = t;
+        setNow(t);
+      }
+      frame = requestAnimationFrame(loop);
+    };
+    frame = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(frame);
+  }, [speech]);
+  const active = speech.startedAt > 0 && now >= speech.startedAt;
+  const shown = active
+    ? revealedText(speech.text, spokenPosition(speech, now))
+    : "";
+  return { speech, active, shown, done: active && shown === speech.text };
 }
 
 export type GuideAvatarMode =
@@ -147,6 +195,7 @@ export default function GuideAvatar({
                 ? "Gideon, listening"
                 : "Gideon, idle";
   const can3D = useCan3D();
+  const transcript = useLiveTranscript();
   // SVG stays the fallback for SSR, no WebGL and prefers-reduced-motion.
   const use3D = can3D.ready && can3D.webgl && !can3D.reduced;
   const svgArt = (
@@ -268,6 +317,7 @@ export default function GuideAvatar({
               <GuideAvatar3D
                 visual={resolveGuideVisual(mode, speech)}
                 animate
+                speech={transcript.speech}
               />
             </Suspense>
           </AvatarBoundary>
@@ -278,9 +328,12 @@ export default function GuideAvatar({
       <p className="mt-1 text-sm font-semibold text-cyan-100">
         Gideon · {label.replace("Gideon, ", "")}
       </p>
-      {caption && !compact && (
+      {(caption || transcript.active) && !compact && (
         <p className="mt-1 min-h-10 line-clamp-2 text-sm text-slate-200">
-          {caption}
+          {transcript.active ? transcript.shown : caption}
+          {transcript.active && !transcript.done && (
+            <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-cyan-300" />
+          )}
         </p>
       )}
       <span className="sr-only" role="status">

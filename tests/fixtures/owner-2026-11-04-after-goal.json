@@ -1,0 +1,1118 @@
+{
+"source": "owner export steplint-local-practice-diagnostics.json 17:10, 2026-11-04; zones renamed onto the demo fixture",
+"observations": [
+{
+"t": 107864,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.9802413273001508,
+"spatialState": "zone"
+},
+{
+"t": 109400,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.9794871794871794,
+"spatialState": "zone"
+},
+{
+"t": 110951,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.9768476621417798,
+"spatialState": "zone"
+},
+{
+"t": 112517,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.979788838612368,
+"spatialState": "zone"
+},
+{
+"t": 114021,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.9791855203619909,
+"spatialState": "zone"
+},
+{
+"t": 115551,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.9751885369532428,
+"spatialState": "zone"
+},
+{
+"t": 117084,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.971945701357466,
+"spatialState": "zone"
+},
+{
+"t": 118585,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.944419306184012,
+"spatialState": "zone"
+},
+{
+"t": 119635,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 119885,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 121386,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.9681749622926094,
+"spatialState": "zone"
+},
+{
+"t": 122918,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.9741327300150829,
+"spatialState": "zone"
+},
+{
+"t": 124452,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.9710407239819004,
+"spatialState": "zone"
+},
+{
+"t": 125986,
+"quality": "ambiguous",
+"zone": null,
+"confidence": 0.9710407239819004,
+"spatialState": "zone"
+},
+{
+"t": 127854,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 128585,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 128635,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 130302,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 130869,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 131669,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 131754,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 133685,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 133736,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 136102,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 136920,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 139035,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 139119,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 140804,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 142369,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 143890,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 145436,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 147103,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 149070,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 150653,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 152254,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 153787,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 155453,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 157043,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 158621,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 159838,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 160722,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 162621,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 163422,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 164071,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9797134238310709,
+"spatialState": "zone"
+},
+{
+"t": 164371,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9763197586726998,
+"spatialState": "zone"
+},
+{
+"t": 164737,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 169366,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 170371,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.980920060331825,
+"spatialState": "zone"
+},
+{
+"t": 170639,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9822775263951734,
+"spatialState": "zone"
+},
+{
+"t": 170937,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9797134238310709,
+"spatialState": "zone"
+},
+{
+"t": 171271,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9800904977375565,
+"spatialState": "zone"
+},
+{
+"t": 171571,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9814479638009049,
+"spatialState": "zone"
+},
+{
+"t": 171905,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9824283559577677,
+"spatialState": "zone"
+},
+{
+"t": 172174,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9815233785822021,
+"spatialState": "zone"
+},
+{
+"t": 172438,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9802413273001508,
+"spatialState": "zone"
+},
+{
+"t": 172725,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9825791855203619,
+"spatialState": "zone"
+},
+{
+"t": 173240,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9809954751131221,
+"spatialState": "zone"
+},
+{
+"t": 173805,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9834841628959275,
+"spatialState": "zone"
+},
+{
+"t": 174075,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9827300150829562,
+"spatialState": "zone"
+},
+{
+"t": 174671,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.977526395173454,
+"spatialState": "zone"
+},
+{
+"t": 175203,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9784313725490196,
+"spatialState": "zone"
+},
+{
+"t": 175492,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9778280542986425,
+"spatialState": "zone"
+},
+{
+"t": 175871,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9794117647058823,
+"spatialState": "zone"
+},
+{
+"t": 176239,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9506787330316742,
+"spatialState": "zone"
+},
+{
+"t": 176838,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 177791,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 178977,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 180788,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 182373,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 183905,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 186105,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 186206,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 188073,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 190489,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 190557,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 192423,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 192523,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 194324,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 195459,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 195557,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 197473,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 199390,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 200307,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 201023,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9767722473604826,
+"spatialState": "zone"
+},
+{
+"t": 201274,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9760180995475113,
+"spatialState": "zone"
+},
+{
+"t": 201556,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9767722473604826,
+"spatialState": "zone"
+},
+{
+"t": 201823,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9671945701357466,
+"spatialState": "zone"
+},
+{
+"t": 202107,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9208898944193062,
+"spatialState": "zone"
+},
+{
+"t": 202209,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 204193,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 205741,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 207374,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 208907,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 210408,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 211025,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9697586726998492,
+"spatialState": "zone"
+},
+{
+"t": 211308,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9740573152337858,
+"spatialState": "zone"
+},
+{
+"t": 211608,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9727752639517345,
+"spatialState": "zone"
+},
+{
+"t": 211908,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9748114630467571,
+"spatialState": "zone"
+},
+{
+"t": 212192,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9755656108597285,
+"spatialState": "zone"
+},
+{
+"t": 212474,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9726998491704374,
+"spatialState": "zone"
+},
+{
+"t": 212807,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9746606334841629,
+"spatialState": "zone"
+},
+{
+"t": 213074,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9737556561085973,
+"spatialState": "zone"
+},
+{
+"t": 213375,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9755656108597285,
+"spatialState": "zone"
+},
+{
+"t": 213674,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9754901960784313,
+"spatialState": "zone"
+},
+{
+"t": 214008,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9739064856711915,
+"spatialState": "zone"
+},
+{
+"t": 214309,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9698340874811463,
+"spatialState": "zone"
+},
+{
+"t": 214574,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9717194570135747,
+"spatialState": "zone"
+},
+{
+"t": 214826,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9621417797888386,
+"spatialState": "zone"
+},
+{
+"t": 215076,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9646304675716441,
+"spatialState": "zone"
+},
+{
+"t": 215408,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9515837104072398,
+"spatialState": "zone"
+},
+{
+"t": 215660,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.945550527903469,
+"spatialState": "zone"
+},
+{
+"t": 215940,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9307692307692308,
+"spatialState": "zone"
+},
+{
+"t": 216209,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 224005,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 225292,
+"quality": "observed",
+"zone": "staging",
+"confidence": 0.9784313725490196,
+"spatialState": "zone"
+},
+{
+"t": 225453,
+"quality": "observed",
+"zone": null,
+"confidence": 0.9782051282051282,
+"spatialState": "transit"
+},
+{
+"t": 225726,
+"quality": "observed",
+"zone": null,
+"confidence": 0.975867269984917,
+"spatialState": "transit"
+},
+{
+"t": 226095,
+"quality": "observed",
+"zone": null,
+"confidence": 0.9650829562594269,
+"spatialState": "transit"
+},
+{
+"t": 226358,
+"quality": "observed",
+"zone": null,
+"confidence": 0.9597285067873303,
+"spatialState": "transit"
+},
+{
+"t": 226625,
+"quality": "observed",
+"zone": null,
+"confidence": 0.9514328808446455,
+"spatialState": "transit"
+},
+{
+"t": 228327,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9183257918552036,
+"spatialState": "zone"
+},
+{
+"t": 228775,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.920739064856712,
+"spatialState": "zone"
+},
+{
+"t": 229376,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9201357466063348,
+"spatialState": "zone"
+},
+{
+"t": 229746,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9217194570135747,
+"spatialState": "zone"
+},
+{
+"t": 230130,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9202865761689292,
+"spatialState": "zone"
+},
+{
+"t": 230428,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9187028657616892,
+"spatialState": "zone"
+},
+{
+"t": 230726,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9257164404223228,
+"spatialState": "zone"
+},
+{
+"t": 231060,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9186274509803921,
+"spatialState": "zone"
+},
+{
+"t": 231328,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9156862745098039,
+"spatialState": "zone"
+},
+{
+"t": 231593,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9188536953242835,
+"spatialState": "zone"
+},
+{
+"t": 231894,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9181749622926093,
+"spatialState": "zone"
+},
+{
+"t": 232161,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.921870286576169,
+"spatialState": "zone"
+},
+{
+"t": 232448,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.919155354449472,
+"spatialState": "zone"
+},
+{
+"t": 232725,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9171945701357466,
+"spatialState": "zone"
+},
+{
+"t": 232992,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9131975867269985,
+"spatialState": "zone"
+},
+{
+"t": 233329,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9153092006033182,
+"spatialState": "zone"
+},
+{
+"t": 233726,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9147812971342383,
+"spatialState": "zone"
+},
+{
+"t": 234311,
+"quality": "observed",
+"zone": "base-target",
+"confidence": 0.9150829562594268,
+"spatialState": "zone"
+},
+{
+"t": 234426,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 235877,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 236343,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 237975,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 239909,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 240644,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 242610,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 242710,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 244583,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 245843,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 245909,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 247878,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 247943,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 248825,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 248896,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 249928,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 250014,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 251944,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 252012,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 255010,
+"quality": "missing",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+},
+{
+"t": 255461,
+"quality": "ambiguous",
+"zone": null,
+"confidence": null,
+"spatialState": "zone"
+}
+]
+}

@@ -81,30 +81,14 @@ Open **http://localhost:3000/teach**, paste the same `TEACH_ACCESS_TOKEN` value 
 
 **Practising an already approved lesson:** open **http://localhost:3000/practice**, choose a saved lesson and start the camera. Learners need no keys or creator code. Lessons are stored in this browser (IndexedDB) for this origin.
 
-**For best Practice results:** place the camera on something fixed, pointing at the table, with every approved object fully in view. Start with each object in its starting place, then work naturally. Close browser DevTools device emulation while practising.
-
 Health check: `curl -i http://localhost:3000/api/health` returns HTTP 200 with `{"status":"ok","application":"steplint"}`.
 
-## Screenshots
+## Tips for best results
 
-<!-- Pending: replace with real captures from the owner's run. Do not substitute test fixtures.
-![Teach workspace](docs/screenshots/teach-workspace.png)
-![Evidence review](docs/screenshots/evidence-review.png)
-![Approved lesson](docs/screenshots/approved-lesson.png)
-![Practice tracking](docs/screenshots/practice-tracking.png)
-![Verification result](docs/screenshots/verification-result.png)
--->
-
-_TODO (owner):_ capture `docs/screenshots/teach-workspace.png`, `evidence-review.png`, `approved-lesson.png`, `practice-tracking.png` and `verification-result.png` from a real run, then uncomment the block above.
-
-## Scope and limitations
-
-StepLint is a hackathon prototype. Teach, Felicity's audit and repair, human approval, and live Practice with deterministic verification are implemented and covered by automated tests. Physical-camera acceptance is recorded separately in the [acceptance report](docs/PHASE6_ACCEPTANCE.md). Passing unit tests, browser tests with generated camera input, or individual API smoke tests is not the same as acceptance on a real camera.
-
-- It works best with distinctive objects, a fixed camera and even lighting. Visually identical objects, heavy occlusion or very dark rooms reduce what can be verified; StepLint then reports uncertainty rather than guessing.
-- Feedback is fast but not a guaranteed real-time deadline. A step is confirmed once the object has settled (about 0.4 s) in its target position.
-- Object visibility cannot establish hidden properties such as torque, force or electrical state. No safety or certification claim is made.
-- Lessons are stored per browser and origin. There is no account system or shared lesson library.
+- Place the camera on something fixed, pointing at the table, with every approved object fully in view.
+- Start Practice with each object in its starting place, then work naturally; Gideon confirms each verified step.
+- Use distinctive objects and even lighting.
+- Run a production build (`npm run build && npm start`) and close browser DevTools device emulation while practising.
 
 ## Tests
 
@@ -132,7 +116,6 @@ Live model checks never run automatically. Each requires `--approved` and makes 
 
 - [Architecture](docs/ARCHITECTURE.md) and [decisions](docs/DECISIONS.md)
 - [Demo runbook](docs/DEMO.md)
-- [Acceptance report](docs/PHASE6_ACCEPTANCE.md)
 - [Development record](DEVELOPMENT_RECORD.md)
 - [Deployment](docs/DEPLOYMENT.md) · [Changelog](CHANGELOG.md)
 

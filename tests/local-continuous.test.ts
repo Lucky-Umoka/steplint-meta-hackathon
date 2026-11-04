@@ -322,3 +322,26 @@ it("owner export 2026-11-04 replay: the real Practice observation sequence (star
   expect(passes.filter((e) => e.decision !== "restoration")).toHaveLength(1);
   expect(passes.slice(1).every((e) => e.decision === "restoration")).toBe(true);
 });
+
+it("owner export 2026-11-04 17:10 replay: after the goal is verified, losing sight of the bowl on the mat never un-verifies it", async () => {
+  const { observations } = (await import("./fixtures/owner-2026-11-04-after-goal.json")).default as {
+    observations: { t: number; quality: "observed" | "missing" | "ambiguous"; zone: string | null; confidence: number | null; spatialState: "zone" | "transit" }[];
+  };
+  const verifier = createVerifier(procedure());
+  let result = verifier.push(observation(1, null, "missing"));
+  let passedAt: number | null = null;
+  for (const o of observations) {
+    const event = observation(o.t, o.zone, o.quality === "observed" ? "observed" : "missing");
+    if (event.type !== "observation") throw Error("fixture");
+    event.observation.quality = o.quality;
+    event.observation.confidence = o.confidence;
+    event.observation.spatialState = o.spatialState;
+    result = verifier.push(event);
+    if (passedAt === null && result.steps[0].status === "passed") passedAt = o.t;
+    if (passedAt !== null) expect(result.steps[0].status).toBe("passed");
+  }
+  expect(passedAt).toBe(228327);
+  // Before the fix the export ended "needs_verification" (27 s of losses).
+  expect(result.steps[0].status).toBe("passed");
+  expect(result.events.filter((e) => e.status === "failed")).toHaveLength(0);
+});

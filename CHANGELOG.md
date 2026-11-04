@@ -2,6 +2,21 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.18.0 — 2026-11-04
+
+### Fixed (owner export 17:10: goal verified, then tracking glitches)
+- Tracker root cause: the moved object's identity template sampled its whole box, including the towel at the bowl's corners; on the black mat those samples no longer matched and the still bowl was "lost". Moved objects are now matched on their own pixels (`contrastForeground`: samples distinct from the box-border colours, with an outside ring that rejects drifting onto the table); objects that do not stand out keep the whole-box template. Regression reproduces the loss with the old template.
+- Verifier: a verified step is no longer undone by losing sight of the object (identity unclear or partial); only a clearly measured observation elsewhere is a reversal (CLAUDE.md invariant). Replay of the owner's 17:10 export keeps the step passed through 27 s of losses.
+- Latency: a lost-object attempt searches the last position plus one approved zone in rotation (was every zone in the same frame; worker p95 471 ms, replies dropped as stale and Practice restarted). The 1 px search grid is kept: a 2 px grid failed the lookalike-separation test.
+- Speech: "Verified" and "Final goal verified" queue instead of cancelling each other (the goal sentence cut "Verified" off after 0.4 s and left Chrome's engine stuck); an interrupted utterance is no longer logged as a failure. Verified objects are monitored silently (no "lost track" nags after the goal).
+- Felicity: an unread error body (provider 502) no longer surfaces as an uncaught AbortError when the incident is replaced.
+
+### Added
+- Full-camera status light: bright green "STEP VERIFIED", bright red "WRONG MOVE" (until corrected), blue "PRACTICE STARTED — your move"; larger "Goal complete!" dialog.
+
+### Verified
+- Unit 785; type-check; lint 0 errors; build; Playwright: new light/after-goal test (green, 5 s loss keeps passed with no nagging, red on clear reversal) with screenshots checked; full suite result below in the report. Physical-camera acceptance NOT yet rerun.
+
 ## 0.17.0 — 2026-11-04
 
 ### Changed (verifier contract: bounded occlusion bridge)

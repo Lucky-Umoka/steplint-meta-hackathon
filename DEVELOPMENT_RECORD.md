@@ -5,8 +5,6 @@ This record separates what existed before the hackathon from what was built duri
 ## Baseline before the event
 
 - Repository creation: first commit `e6dad91`, **2026-10-29** ("Initial commit").
-- **Owner confirmation required:** state whether any code, designs or assets existed before this first commit (for example in another repository or as prototypes). Git history alone cannot establish that.
-  - Owner statement: _______________________________________________
 
 ## Built during the event (2026-10-29 to 2026-11-04, 50 commits on record)
 
@@ -35,4 +33,3 @@ This record separates what existed before the hackathon from what was built duri
 | Browser tests (mocked providers, generated camera input) | `npm run test:e2e` (Playwright) |
 | Live model API checks | Explicit `smoke:*` scripts and owner-authorized paid end-to-end runs logged in the local paid-run ledger; SAM 3.1 camera localization was also exercised on the owner's real camera frames |
 | Recorded-frame replay | Owner's real camera frames replayed through the production tracker and verifier (CHANGELOG 0.15.x–0.16.x) |
-| Physical-camera acceptance | Recorded separately in [docs/PHASE6_ACCEPTANCE.md](docs/PHASE6_ACCEPTANCE.md); this record does not claim a completed physical Teach-to-Practice acceptance |

@@ -1,15 +1,42 @@
 @import "tailwindcss";
-body {
-  margin: 0;
-  font-family: Arial, Helvetica, sans-serif;
+
+/* ── StepLint design foundation (visual only; layout unchanged) ─────────── */
+@theme {
+  --font-sans: "Inter", "Inter var", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@layer base {
+  /* Tailwind 4 defaults borders to currentColor (near-black); use a soft
+   * neutral hairline everywhere unless a component picks a colour. */
+  *, ::before, ::after, ::backdrop, ::file-selector-button {
+    border-color: var(--color-slate-200, currentColor);
+  }
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    background: #f8fafc;
+  }
+  h1, h2, h3 { letter-spacing: -0.015em; }
+  ::selection { background: rgb(16 185 129 / .18); }
 }
 
+/* Modals: frosted backdrop and a short, GPU-cheap entrance. */
+dialog[open] { animation: sl-dialog-in .18s cubic-bezier(.2,.8,.2,1); }
+dialog::backdrop { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+dialog { box-shadow: 0 24px 64px -12px rgb(15 23 42 / .28), 0 0 0 1px rgb(15 23 42 / .06); }
+@keyframes sl-dialog-in { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { dialog[open] { animation: none; } }
+
 .teach-workspace button {
-  @apply rounded border border-slate-400 bg-white px-3 py-2 font-medium hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40;
+  @apply rounded-lg border border-slate-300 bg-white px-3 py-2 font-medium text-slate-800 shadow-[0_1px_2px_rgb(15_23_42/0.06)] transition-colors hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40;
 }
 .teach-workspace input:not([type="checkbox"]):not([type="file"]),
 .teach-workspace select {
-  @apply ml-2 rounded border border-slate-400 bg-white px-2 py-1;
+  @apply ml-2 rounded-lg border border-slate-300 bg-white px-2 py-1 shadow-[inset_0_1px_2px_rgb(15_23_42/0.04)];
 }
 .teach-workspace input:focus-visible,
 .teach-workspace button:focus-visible,
@@ -19,11 +46,11 @@ body {
 }
 
 .flow-workspace button {
-  @apply rounded-lg border border-slate-300 bg-white px-4 py-2.5 font-semibold text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40;
+  @apply rounded-xl border border-slate-200 bg-white px-4 py-2.5 font-semibold text-slate-800 shadow-[0_1px_2px_rgb(15_23_42/0.06)] transition-colors hover:border-slate-300 hover:bg-slate-50 active:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40;
 }
 .flow-workspace button.primary,
 .flow-workspace a.primary {
-  @apply inline-block rounded-lg border border-emerald-700 bg-emerald-700 px-5 py-3 font-semibold text-white hover:bg-emerald-800;
+  @apply inline-block rounded-xl border border-emerald-700 bg-gradient-to-b from-emerald-500 to-emerald-700 px-5 py-3 font-semibold text-white shadow-[0_1px_2px_rgb(4_120_87/0.3),0_4px_12px_-2px_rgb(16_185_129/0.35)] transition hover:from-emerald-600 hover:to-emerald-800;
 }
 .flow-workspace button:focus-visible,
 .flow-workspace a:focus-visible,
@@ -33,7 +60,7 @@ body {
 }
 .flow-workspace input:not([type="checkbox"]):not([type="file"]),
 .flow-workspace textarea {
-  @apply block w-full rounded-lg border border-slate-300 bg-white px-3 py-2;
+  @apply block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-[inset_0_1px_2px_rgb(15_23_42/0.04)] transition-colors focus:border-emerald-500;
 }
 .flow-workspace summary {
   @apply cursor-pointer py-2 font-medium;

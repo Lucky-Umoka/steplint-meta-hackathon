@@ -419,3 +419,6 @@ No-cost diagnostic continuation of the original approved run-4 lesson made zero 
 ### 2026-11-04 — Bounded occlusion bridge replaces "unseen interval needs a fresh start"
 Owner physical-camera export: a hand-carried move hides the object, so the 2026-11-03 rule ("a genuine missing-identity interval still requires a fresh observed start") made every real carry unverifiable. The verifier (`src/procedure/verifier.ts`, `OCCLUSION_BRIDGE_MS` = 12 s) now accepts last-clear-at-start → only unclear/missing → clear at target within the bound as before/after evidence. Not bridged: longer gaps, target-only presence, a clear observation elsewhere in between, identity-only observations. Thresholds and identity reacquisition gates unchanged. Regression: owner export replay in `tests/local-continuous.test.ts`.
 
+### 2026-11-04 — Occlusion never undoes a verified step; moved objects match on their own pixels
+Verifier: after a step passes, unclear or partial identity is retained as passed ("no reversal inferred"); only a clearly measured observation outside the target is a reversal. Tracker: moved-object templates use a border-contrast foreground so a change of supporting surface does not lose identity; lost-object searches are limited to the last position plus one zone per attempt (1 px grid kept for lookalike separation).
+

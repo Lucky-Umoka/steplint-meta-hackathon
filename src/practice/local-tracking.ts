@@ -184,6 +184,8 @@ type Slot = {
   startBox?: Box;
   /** Candidate box being confirmed during recovery/acquisition. */
   candidateBox?: Box | null;
+  /** Round-robin index into the approved zones for identity searches. */
+  searchCursor?: number;
   fixed: boolean;
 };
 export type LocalTrackingState = {
@@ -816,13 +818,18 @@ export function trackLocal(
           box.left + box.right - slot.lastBox!.left - slot.lastBox!.right,
           box.top + box.bottom - slot.lastBox!.top - slot.lastBox!.bottom,
         );
+      // At most two exhaustive searches per attempt: the last position and
+      // ONE approved zone in rotation (nearest first). Searching every zone
+      // in the same frame pushed replies past the 600 ms freshness limit
+      // (owner export 2026-11-04: worker p95 471 ms, "arrived too late").
+      const zones = [...state.zones].sort((a, b) => distance(a) - distance(b));
+      const zone = zones.length
+        ? zones[(slot.searchCursor = ((slot.searchCursor ?? -1) + 1) % zones.length)]
+        : null;
       const regions =
         action === "confirm" && slot.candidateBox
           ? [slot.candidateBox]
-          : [
-              slot.lastBox,
-              ...[...state.zones].sort((a, b) => distance(a) - distance(b)),
-            ];
+          : [slot.lastBox, ...(zone ? [zone] : [])];
       // Two approved identities never silently share one live detection.
       let candidate: Box | null = null;
       for (const region of regions) {
@@ -1240,6 +1247,7 @@ export function bootstrapLocal(
         object.image,
         object.id,
         object.box,
+        object.fixed,
       );
     if (object.fixed) continue;
     const slot = state.slots[item.id];

@@ -115,12 +115,13 @@ it("partial identity permits continuous transit but cannot verify an endpoint or
   }
   for (let t = 1600; t <= 2000; t += 100) feedDetection(s, detection(0.8), t);
   expect(s.result.status).toBe("passed");
+  // Partial view of a verified object: retained, never a reversal
+  // (2026-11-04 contract: only a clear observation elsewhere undoes a step).
   feedDetection(s, partial, 2100);
-  expect(s.result.status).toBe("needs_verification");
+  expect(s.result.status).toBe("passed");
   expect(s.result.events.at(-1)?.decision).not.toBe("reversal");
   for (let t = 2200; t <= 2600; t += 100) feedDetection(s, detection(0.8), t);
   expect(s.result.status).toBe("passed");
-  expect(s.result.events.at(-1)?.decision).toBe("restoration");
   expect(s.result.steps[0].verifiedAtMs).toBe(1600);
 });
 it("automatically establishes the initial view before allowing progress, with automatic recovery from an early move", () => {
@@ -168,13 +169,16 @@ it("resumes with fresh current-state evidence, retaining completed actions and t
   s.stopped = true;
   resumeSession(s, s.bindings, 1000);
   expect(s.initialZones["component-1"]).toBe("destination");
-  expect(s.result.status).toBe("needs_verification");
+  // Resuming loses sight of nothing physical: the completed action is kept.
+  expect(s.result.status).toBe("passed");
   for (let t = 1100; t <= 1500; t += 100) feedDetection(s, detection(0.8), t);
   expect(s.result.status).toBe("passed");
   expect(s.result.steps[0].verifiedAtMs).toBe(500);
   expect(s.calibrations).toHaveLength(2);
   expect(s.events.length).toBeGreaterThan(priorEvents);
-  expect(s.result.events.at(-1)?.decision).toBe("restoration");
+  // A clear reversal after resume still fails.
+  for (let t = 1600; t <= 2200; t += 100) feedDetection(s, detection(0.2), t);
+  expect(s.result.steps[0].status).toBe("failed");
 });
 it("does not let resume infer an unfinished action from a target already present", () => {
   const s = session();
@@ -292,7 +296,10 @@ it("the shared browser/replay adapter uses the approved base point and fails clo
       },
     ],
   });
-  expect(s.result.status).toBe("needs_verification");
+  // Unavailable calibration is no evidence at all: nothing new is verified
+  // or reversed; the earlier verified action is retained.
+  expect(s.result.status).toBe("passed");
+  expect(s.result.events.at(-1)?.status).not.toBe("passed");
 });
 
 it("a clear reversal after temporary uncertainty still invalidates a maintained verified action", () => {
@@ -305,7 +312,7 @@ it("a clear reversal after temporary uncertainty still invalidates a maintained 
     { ...detection(0.8), quality: "missing", center: null, score: null },
     1100,
   );
-  expect(s.result.status).toBe("needs_verification");
+  expect(s.result.status).toBe("passed"); // uncertainty is not a reversal
   for (let t = 1200; t <= 1800; t += 100) feedDetection(s, detection(0.2), t);
   expect(s.result.steps[0].status).toBe("failed");
   expect(s.result.events.some((e) => e.decision === "reversal")).toBe(true);

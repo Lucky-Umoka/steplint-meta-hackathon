@@ -145,6 +145,8 @@ export function trackOverlay(
     multiscale: boolean;
     retainFraction?: number;
     exhaustiveTranslation?: boolean;
+    /** Grid step for exhaustive search (default 1 px). */
+    searchStep?: 1 | 2;
   },
 ): ObjectDetection {
   t.measurement = undefined;
@@ -285,7 +287,11 @@ export function trackOverlay(
     );
   };
   const candidates: { dx: number; dy: number; cost: number }[] = [];
-  const translationStep = options?.exhaustiveTranslation ? 1 : 4;
+  // Exhaustive search stays at 1 px by default: a 2 px grid can miss a
+  // near-identical twin and break the lookalike-separation gate.
+  const translationStep = options?.exhaustiveTranslation
+    ? (options.searchStep ?? 1)
+    : 4;
   for (let dy = -48; dy <= 48; dy += translationStep)
     for (let dx = -48; dx <= 48; dx += translationStep) {
       const x = Math.round(originDx + dx),
