@@ -170,6 +170,67 @@ describe("server batch pipeline (mock provider)", () => {
   });
 });
 
+describe("SAM outline guard with one bounded retry (paid run 11)", () => {
+  const wide = (frame: number) => `<${frame}f>1<|box;x1=0;y1=0;x2=600;y2=300;w=640;h=480;c=0.99|>` + "<|mask;x=0;y=0;c=0.99;data=27,60,~!!!!M!0c[0o91w?q1!pIH4pPRVp2B3'7`e.ioeAf6-k/#Xd8%dX9x(|>\n";
+  const marks = () => context.selections.map((s) => ({ ...s, mark: { kind: "point" as const, x: 30, y: 30, within: { left: 10, top: 10, right: 80, bottom: 60 } } }));
+  it.each([[true, 2], [false, 2]])("person-sized outline: retry with the box only; recovered=%s", async (recovers, samCalls) => {
+    const sam: string[] = [];
+    const transport: typeof fetch = async (url, options) => {
+      const req = new Request(url, options);
+      if (req.method === "DELETE") return Response.json({ id: "file-teach", deleted: true });
+      const body = (await req.json()) as { model: string; input: { content: { text?: string }[] }[] };
+      expect(body.model).toBe("sam-3.1");
+      sam.push(body.input[0].content[0].text ?? "");
+      const text = sam.length === 1 || !recovers ? wide(0) + wide(1) : geometry(0, 10) + geometry(1, 200);
+      return new Response(events(text).map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
+    };
+    vi.stubEnv("BASETEN_API_KEY", "mock-baseten-key");
+    const drafts: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url) === "data:,") return new Response("");
+      drafts.push(String(url));
+      return Response.json({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify(draftFor()) } }] });
+    }));
+    const client = new OpenAI({ apiKey: "mock-key", baseURL: "https://api.meta.ai/v1", fetch: transport, maxRetries: 0 });
+    const run = compileLesson(client, { fileId: "file-teach", lesson: context.lesson }, marks(), () => {}, new AbortController().signal);
+    if (recovers) {
+      expect((await run).draft.procedure.approval).toBeNull();
+      expect(drafts).toHaveLength(1);
+    } else {
+      await expect(run).rejects.toThrow(/did not track .*No lesson was drafted/);
+      expect(drafts).toHaveLength(0); // no drafting spend on a wrong object
+    }
+    expect(sam).toHaveLength(samCalls);
+    expect(sam[0]).toContain("<|point;");
+    expect(sam[1]).toContain("<|box;");
+    expect(sam[1]).not.toContain("<|point;");
+  });
+});
+
+describe("no measured movement stops before drafting (paid run 14)", () => {
+  it("names each object's reason and makes no Baseten drafting request", async () => {
+    const bytes = await readFile(new URL("./fixtures/teach-synthetic.mp4", import.meta.url));
+    const transport: typeof fetch = async (url, options) => {
+      const req = new Request(url, options);
+      if (req.method === "DELETE") return Response.json({ id: "file-teach", deleted: true });
+      // Static object: same place in every frame, so no movement window.
+      return new Response(events(geometry(0, 10) + geometry(1, 10)).map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
+    };
+    vi.stubEnv("BASETEN_API_KEY", "mock-baseten-key");
+    const baseten = vi.fn(async (url: RequestInfo | URL) => Response.json({ url: String(url) }));
+    const diagnostics: unknown[] = [];
+    vi.stubGlobal("fetch", baseten);
+    const client = new OpenAI({ apiKey: "mock-key", baseURL: "https://api.meta.ai/v1", fetch: transport, maxRetries: 0 });
+    await expect(
+      compileLesson(client, { fileId: "file-teach", lesson: context.lesson }, context.selections, () => {}, new AbortController().signal, { goal: "Move the base", videoBase64: `data:video/mp4;base64,${bytes.toString("base64")}` }, (value) => diagnostics.push(value)),
+    ).rejects.toThrow(/No object's movement could be measured.*deletion was confirmed/);
+    // The per-frame SAM evidence was reported before the failure (for diagnosis).
+    expect(diagnostics).toHaveLength(1);
+    expect(JSON.stringify(diagnostics[0])).toContain('"componentId":"component-1"');
+    expect(baseten.mock.calls.filter(([u]) => String(u) !== "data:,")).toHaveLength(0);
+  });
+});
+
 describe("Teach HTTP/security boundaries", () => {
   it("encrypts references and rejects tampering, wrong session, wrong stage and expiry", () => {
     const value = seal({ fileId: "file-private" }, "upload", "one", 1000);
@@ -245,8 +306,8 @@ describe("automatic lesson discovery and review suggestions", () => {
   });
   it("maps proposed timestamps to actual source frames and rejects malformed/out-of-bounds points", () => {
     const response = (data: unknown) => ({ status: "completed", output_text: JSON.stringify(data) });
-    expect(parseDiscovery(response(discovery), context.lesson)[0].mark).toEqual({ kind: "point", x: 32, y: 24 });
-    expect(parseDiscovery(response({ components: [{ ...discovery.components[0], box: { left: 998, top: 998, right: 1000, bottom: 1000 } }] }), context.lesson)[0].mark).toEqual({ kind: "point", x: 638, y: 479 });
+    expect(parseDiscovery(response(discovery), context.lesson)[0].mark).toMatchObject({ kind: "point", x: 32, y: 24 });
+    expect(parseDiscovery(response({ components: [{ ...discovery.components[0], box: { left: 998, top: 998, right: 1000, bottom: 1000 } }] }), context.lesson)[0].mark).toMatchObject({ kind: "point", x: 638, y: 479 });
     expect(parseDiscovery(response({ components: [{ ...discovery.components[0], timestampMs: 920 }] }), context.lesson)[0].frame).toBe(1);
     for (const data of [{ components: [] }, { components: [{ ...discovery.components[0], timestampMs: 20000 }] }, { components: [{ ...discovery.components[0], box: { left: 0, top: 0, right: 9999, bottom: 100 } }] }]) expect(() => parseDiscovery(response(data), context.lesson)).toThrow();
     expect(() => parseDiscovery(response({ components: [{ ...discovery.components[0], box: { left: 50, top: 0, right: 50, bottom: 100 } }] }), context.lesson)).toThrow("no area");

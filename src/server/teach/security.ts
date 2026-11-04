@@ -70,6 +70,14 @@ export class TeachStageError extends TeachError {
   constructor(stage: string, error: unknown) {
     const safe = safeError(error);
     super(safe.status, `${stage}: ${safe.message}`);
+    // Server log only (bounded, no request bodies): the generic client message
+    // must never hide the real cause from the operator.
+    if (error instanceof Error && !(error instanceof TeachError))
+      console.warn(
+        `[teach] ${stage} failed: ${error.name}: ${error.message
+          .replace(/(sk|key|token)[-_A-Za-z0-9]{8,}/gi, "[redacted]")
+          .slice(0, 400)}`,
+      );
     this.stage = stage;
     this.cause = error;
   }

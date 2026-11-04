@@ -40,6 +40,21 @@ export function groundNativePalette(
   objectId: string,
   box: Box,
 ): NativePalette | null {
+  // Paid run 17: a SAM box cropping the bottle's base by more than the 10%
+  // margin put the object's own base in its "surroundings", so a distinctive
+  // red bottle was refused colour tracking (and lost under every grasp). The
+  // surroundings are re-sampled once twice as far out; the distinctiveness
+  // limits are unchanged, so a colour common near the object still fails.
+  return (
+    groundAt(image, objectId, box, 0.1) ?? groundAt(image, objectId, box, 0.2)
+  );
+}
+function groundAt(
+  image: Pixels,
+  objectId: string,
+  box: Box,
+  margin: number,
+): NativePalette | null {
   const samples: Colour[] = [],
     ring: Colour[] = [];
   const x0 = Math.floor(box.left * image.width),
@@ -52,8 +67,8 @@ export function groundNativePalette(
   // that slightly crops the object (e.g. excludes a bottle's cap) must not
   // count the object's own pixels as background (browser root cause,
   // 2026-11-03). The distinctiveness limits below are unchanged.
-  const mx = Math.max(3, Math.round((x1 - x0) * 0.1)),
-    my = Math.max(3, Math.round((y1 - y0) * 0.1));
+  const mx = Math.max(3, Math.round((x1 - x0) * margin)),
+    my = Math.max(3, Math.round((y1 - y0) * margin));
   for (let i = 0; i < 24; i++)
     for (const [x, y] of [
       [x0 - mx, y0 + ((y1 - y0) * i) / 24],

@@ -1,5 +1,6 @@
 import type { ProcedureSpec } from "./schema";
 import type { ScenePredicate } from "./execution-v3";
+import { measuredPoint, objectPoint, type MeasuredPoint } from "./measured-point";
 
 /**
  * Final-goal completion gate (Phase 5). Deterministic and model-free.
@@ -52,6 +53,8 @@ export type GoalPolicy = {
   freshMs: number;
   minConfidence: number;
   holdMs: number;
+  /** Each object's approved measured point (same as its steps). */
+  points?: Record<string, MeasuredPoint>;
 };
 
 export function initialGoal(procedure: ProcedureSpec): GoalState {
@@ -83,12 +86,11 @@ export function goalPolicy(procedure: ProcedureSpec): GoalPolicy {
       0,
       ...goalSteps.map((s) => s.measurement?.stableForMs ?? 400),
     ),
+    points: Object.fromEntries(
+      procedure.components.map((c) => [c.id, objectPoint(procedure, c.id)]),
+    ),
   };
 }
-const centre = (b: Box) => ({
-  x: (b.left + b.right) / 2,
-  y: (b.top + b.bottom) / 2,
-});
 // Same strict-inside margin the Practice pipeline uses for zone membership.
 const inside = (r: Box, p: { x: number; y: number }) =>
   p.x > r.left + 0.01 &&
@@ -147,7 +149,10 @@ export function evaluatePredicate(
       return unknown(`approved zone ${predicate.zoneId} is not bound`);
     const r = reliable(predicate.objectId);
     if (!r.observation) return unknown(r.error);
-    const point = centre(r.observation.box!);
+    const point = measuredPoint(
+      r.observation.box!,
+      policy.points?.[predicate.objectId] ?? "center",
+    );
     const at = r.observation.timestampMs;
     if (inside(region, point))
       return {

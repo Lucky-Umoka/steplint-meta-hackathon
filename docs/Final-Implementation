@@ -49,3 +49,45 @@ Produce a checklist showing:
 Do not add new features during this phase unless necessary to fix a blocker.
 
 Do not commit, push, or deploy without approval.
+
+
+# STEPLINT — PHASE 5: GIDEON 3D VISUAL UPGRADE
+
+Upgrade Gideon's existing visual appearance using Three.js only if all Phase 1–4 acceptance tests pass.
+
+## Requirements
+
+1. Inspect the current React and Three.js compatibility.
+2. Use compatible Three.js and React Three Fiber versions.
+3. Create a lightweight procedural holographic face.
+4. Connect the face to Gideon's existing avatar states:
+   - Idle.
+   - Listening.
+   - Thinking.
+   - Warning.
+   - Uncertain.
+   - Speaking.
+   - Success.
+5. Add subtle facial animation when speaking.
+6. Use appropriate visual feedback for warnings and successful completion.
+7. Preserve the existing Gideon voice and behavior.
+8. Use lazy loading and a Suspense fallback.
+9. Keep the existing SVG avatar as a reliable fallback.
+10. Respect reduced-motion preferences and avoid unnecessary GPU usage.
+
+## Restrictions
+
+- Do not modify the deterministic verifier.
+- Do not modify camera tracking.
+- Do not modify procedure logic.
+- Do not replace the existing voice system.
+- Do not add Three.js if compatibility problems threaten the application.
+- Do not spend time on elaborate 3D assets.
+
+## Acceptance
+
+The application must remain functional with or without the 3D avatar.
+
+Test all Gideon states and confirm the fallback works.
+
+Do not commit, push, or deploy without approval.

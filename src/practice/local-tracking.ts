@@ -167,6 +167,8 @@ type Slot = {
   upgradeTick?: number;
   /** Last reliable live box, or the approved expected location if never seen. */
   lastBox: Box | null;
+  /** Approved start box in live coordinates (colour grounding while there). */
+  startBox?: Box;
   /** Candidate box being confirmed during recovery/acquisition. */
   candidateBox?: Box | null;
   fixed: boolean;
@@ -184,6 +186,8 @@ export type LocalTrackingState = {
   nested: Set<string>;
   /** When every camera reference became hidden (null while one is seen). */
   referenceHiddenSince?: number | null;
+  /** Fixed references a mover starts on (see startSupports). */
+  startSupports?: Set<string>;
 };
 const overlaps = (a: Box, b: Box) =>
   Math.max(a.left, b.left) < Math.min(a.right, b.right) &&
@@ -195,6 +199,27 @@ function intersection(a: Box, b: Box) {
     ? (Math.min(a.right, b.right) - Math.max(a.left, b.left)) *
         (Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top))
     : 0;
+}
+/**
+ * Fixed references a mover starts on (its starting box overlaps the
+ * reference). Their approved appearance includes that mover, so when the mover
+ * is lifted away the reference looks different although nothing moved (paid
+ * run 16: the empty blue lid after the bottle left). Removal by the procedure,
+ * like placement onto a reference, is not camera motion: such a reference is
+ * then uncertain, never proof that the camera moved. Other references, the
+ * table anchor and the 2 s no-reference guard still detect camera motion.
+ */
+function startSupports(state: LocalTrackingState): Set<string> {
+  return new Set(
+    Object.keys(state.fixed).filter((id) =>
+      Object.values(state.slots).some(
+        (slot) =>
+          !slot.fixed &&
+          !!slot.lastBox &&
+          intersection(slot.lastBox, state.fixed[id]) > 0,
+      ),
+    ),
+  );
 }
 /** A mover's last known box is over or next to this box (within 0.1). */
 function coveredByMover(state: LocalTrackingState, box: Box) {
@@ -261,6 +286,24 @@ function validBox(box: Box) {
  * profile at the live box and keep it only if it measures the object as
  * observed with the unchanged 0.9 score; otherwise keep the live profile.
  */
+/**
+ * Live colour profile for a mover: grounded at its tracked box, or, while it
+ * is still within 0.05 of its approved start, at the approved start box (a
+ * texture tracker's box can be offset enough to break colour grounding; paid
+ * run 17). The result must still pass preferApprovedPalette's 0.9 gate.
+ */
+function liveMoverPalette(image: Pixels, id: string, slot: Slot, box: Box) {
+  const atStart =
+    slot.startBox &&
+    Math.hypot(
+      (box.left + box.right - slot.startBox.left - slot.startBox.right) / 2,
+      (box.top + box.bottom - slot.startBox.top - slot.startBox.bottom) / 2,
+    ) <= 0.05;
+  return (
+    groundNativePalette(image, id, box) ??
+    (atStart ? groundNativePalette(image, id, slot.startBox!) : null)
+  );
+}
 function preferApprovedPalette(
   image: Pixels,
   frame: ReturnType<typeof prepareTrackingFrame>,
@@ -412,7 +455,7 @@ function buildState(
       fixed: profile.fixed,
     };
   });
-  return {
+  const state: LocalTrackingState = {
     objects: profiles,
     workspace,
     reference,
@@ -422,6 +465,8 @@ function buildState(
     nested,
     zones: [],
   };
+  state.startSupports = startSupports(state);
+  return state;
 }
 /** Explicit native-object feature calibration; no colour assumptions. */
 export function calibrateLocal(
@@ -511,7 +556,12 @@ export function trackLocal(
   const nowMs = context?.nowMs ?? 0;
   const events: IdentityEvent[] = [];
   const measured = new Map<string, ObjectDetection>();
-  for (const id of [...required, ...optional]) {
+  // Fixed references are camera evidence, measured whatever the step watch
+  // says (zone anchors are not watched objects; paid run 17).
+  const references = Object.keys(state.fixed).filter(
+    (id) => !required.includes(id) && !optional.includes(id),
+  );
+  for (const id of [...required, ...optional, ...references]) {
     const slot = state.slots[id];
     if (slot.identity.status === "dormant")
       slot.identity = activateIdentity(slot.identity);
@@ -563,7 +613,7 @@ export function trackLocal(
               image,
               frame,
               slot.profile,
-              groundNativePalette(image, id, detection.box),
+              liveMoverPalette(image, id, slot, detection.box),
               detection.box,
             ),
             slot.sourcePalette,
@@ -594,14 +644,23 @@ export function trackLocal(
     }
     measured.set(id, unknown(id));
   }
+  // A start-support reference (see startSupports) seen displaced may be its
+  // template following the departing mover; it proves motion only when no
+  // other reference confirms the camera is still on this frame.
+  let supportDisplaced = false;
   for (const [id, reference] of Object.entries(state.fixed)) {
     const observed = measured.get(id);
+    const covered = possiblyCovered(state, reference, measured);
+    const startSupport = !!state.startSupports?.has(id);
     if (!observed?.box || observed.quality !== "observed") {
-      if (!possiblyCovered(state, reference, measured))
+      // Unrecognised: covered by a mover, or uncovered by the mover that
+      // started on it. Never proof of camera motion by itself; the 2 s
+      // no-reference guard below still applies.
+      if (!covered && !startSupport)
         return fail(
           "A fixed destination or reference moved or became uncertain. Recalibrate the setup.",
         );
-      continue; // hidden by the procedure's own objects
+      continue;
     }
     const displaced =
       Math.max(
@@ -612,16 +671,21 @@ export function trackLocal(
       ) > 0.025;
     // An object being placed on (or a hand passing over) a stationary
     // reference changes how it looks: occlusion by the procedure, not motion.
-    if (displaced && !possiblyCovered(state, reference, measured))
+    if (displaced && !covered && !startSupport)
       return fail(
         "A fixed destination or reference moved. Recalibrate the setup.",
       );
     if (displaced) {
+      if (!covered) supportDisplaced = true;
       measured.set(id, unknown(id)); // never report a disturbed reference box
       continue;
     }
     referenceSeen = true;
   }
+  if (supportDisplaced && !referenceSeen)
+    return fail(
+      "A fixed destination or reference moved. Recalibrate the setup.",
+    );
   if (!referenceSeen) {
     state.referenceHiddenSince ??= nowMs;
     if (nowMs - state.referenceHiddenSince > 2000)
@@ -921,7 +985,12 @@ export function bootstrapLocal(
       ? { x: anchored.shifts[index].dx, y: anchored.shifts[index].dy }
       : { x: alignment.x, y: alignment.y };
   };
-  const found: { id: string; profile: NativeTrack; box: Box }[] = [];
+  const found: {
+    id: string;
+    profile: NativeTrack;
+    box: Box;
+    start: Box;
+  }[] = [];
   const pending: {
     id: string;
     fixed: boolean;
@@ -1018,7 +1087,12 @@ export function bootstrapLocal(
         );
     }
     if (observed) {
-      found.push({ id: object.id, profile, box: detection.box! });
+      found.push({
+        id: object.id,
+        profile,
+        box: detection.box!,
+        start: translateBox(expected, shift.x, shift.y),
+      });
       continue;
     }
     if (required && active)
@@ -1100,16 +1174,28 @@ export function bootstrapLocal(
       );
     if (object.fixed) continue;
     const slot = state.slots[item.id];
+    slot.startBox = item.start;
     slot.sourcePalette = groundNativePalette(
       object.image,
       object.id,
       object.box,
     );
     if (slot.profile && slot.lastBox) {
+      // The identity is confirmed at setup, so the live camera's own colour
+      // is tried first (paid run 17: Teach saw the bottle as dark red, live
+      // as bright red, so the approved colour never matched and the mover
+      // fell back to a texture tracker that loses it under every grasp).
+      // Either colour must still measure the object observed at the 0.9 gate.
       const chosen = preferApprovedPalette(
         image,
         frame,
-        slot.profile,
+        preferApprovedPalette(
+          image,
+          frame,
+          slot.profile,
+          liveMoverPalette(image, item.id, slot, slot.lastBox),
+          slot.lastBox,
+        ),
         slot.sourcePalette,
         slot.lastBox,
       );
@@ -1169,6 +1255,8 @@ export function bootstrapLocal(
       ? { x: anchored.shifts[best].dx, y: anchored.shifts[best].dy }
       : { x: alignment.x, y: alignment.y };
   });
+  // Movers set up later (pending) also start on their references.
+  state.startSupports = startSupports(state);
   state.zones = (source.zones ?? []).map((zone, index) => ({
     left: zone.left + zoneTranslations[index].x,
     right: zone.right + zoneTranslations[index].x,

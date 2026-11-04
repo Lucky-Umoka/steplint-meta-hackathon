@@ -330,3 +330,24 @@ it("returns reviewable issues without a third request after syntax correction", 
   expect(corrected.reviewIssue).toContain('Zone "origin"');
   expect(calls).toHaveLength(2);
 });
+
+it("a draft that is valid JSON but breaks the schema gets the one correction with the field issues (paid run 14)", async () => {
+  const { SparkError } = await import("../src/server/meta/spark");
+  const { draft, context } = teachV3Fixture();
+  const calls: { text: string }[] = [];
+  const outcome = await draftWithOneCorrection(
+    context,
+    { goal: "Transfer", videoBase64: undefined },
+    async (call: { text: string }) => {
+      calls.push(call);
+      if (calls.length === 1)
+        throw new SparkError("schema_validation_failed", "Spark JSON failed procedure schema validation.", 502, undefined, '{"procedure":{}}', ["procedure.steps: Required"]);
+      return { data: draft, diagnostic: { provider: "baseten", modelId: "m", outputTokens: 1, visualInput: "none" } } as never;
+    },
+    () => {},
+    () => {},
+  );
+  expect(outcome.corrected).toBe(true);
+  expect(calls).toHaveLength(2);
+  expect(JSON.parse(calls[1].text).validationIssues).toContain("procedure.steps: Required");
+});

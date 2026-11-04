@@ -35,7 +35,7 @@ it("budgets Baseten reasoning and JSON for every provider setting (Spark is Base
 });
 it("gives the model exact eligible source ranges instead of equating visible video frames with measurements", () => {
   const { context } = teachV3Fixture(true);
-  context.tracking[0].samples[1].confidence = 0.8769;
+  context.tracking[0].samples[1].confidence = 0.45; // below the steady-rest floor (0.5): never reliable
   expect(sourceEvidenceCatalog(context)[0]).toMatchObject({
     trustedFrames: [0, ...Array.from({ length: 15 }, (_, i) => i + 2)],
     inclusiveFrameRanges: [
@@ -63,7 +63,7 @@ it.each(["low-score", "missing", "wrong-timestamp"])(
   (kind) => {
     const { context, draft } = teachV3Fixture();
     if (kind === "low-score")
-      context.tracking[0].samples[1].confidence = 0.8769;
+      context.tracking[0].samples[1].confidence = 0.45;
     if (kind === "missing") context.tracking[0].samples.splice(1, 1);
     if (kind === "wrong-timestamp")
       context.tracking[0].samples[1].timestampMs = 101;
@@ -85,7 +85,7 @@ it.each(["low-score", "missing", "wrong-timestamp"])(
 );
 it("does not silently repair an invalid transition using neighbouring eligible identity frames", () => {
   const { context, draft } = teachV3Fixture();
-  context.tracking[0].samples[0].confidence = 0.8769;
+  context.tracking[0].samples[0].confidence = 0.45;
   draft.procedure.components[0].execution!.referenceFrames = [1, 2];
   expect(() => compilerWireSchema(true, false, context).parse(draft)).toThrow();
   expect(sourceEvidenceCatalog(context)[0].inclusiveFrameRanges).toEqual([
@@ -201,38 +201,31 @@ it("accepts an action spanning a short tracking gap between a settled start and 
     ),
   ).not.toThrow();
 });
-it("rejects an action spanning a tracking gap longer than 600 ms, at compile and approval", () => {
-  const { context, draft } = gapFixture(700);
-  expect(() =>
-    parseSparkDraft(
-      { status: "completed", output_text: JSON.stringify(draft) },
-      context,
-      { goal: "Transfer" },
-    ),
-  ).toThrow();
-  expect(() => localExecutionDraft(draft, "Transfer", context)).toThrow(
-    /Action window for transfer .*tracking is missing for more than 600 ms between frames 4 and 6/,
-  );
-  const accepted = teachV3Fixture();
+it("accepts a hidden carry (owner decision 2026-11-04: up to 4 s) but rejects a longer gap, at compile and approval", () => {
+  // 700 ms: previously rejected; now a valid hidden carry (settled start, settled landing).
+  const short = gapFixture(700);
   const parsed = parseSparkDraft(
-    { status: "completed", output_text: JSON.stringify(accepted.draft) },
-    accepted.context,
+    { status: "completed", output_text: JSON.stringify(short.draft) },
+    short.context,
     { goal: "Transfer" },
   );
-  const checks = suggestReviews(parsed, accepted.context);
+  expect(suggestReviews(parsed, short.context).transfer.evidenceStatus).toBe("supported");
+  // 4.5 s: longer than any carry may be hidden.
+  const { context, draft } = gapFixture(4500);
+  expect(() =>
+    parseSparkDraft({ status: "completed", output_text: JSON.stringify(draft) }, context, { goal: "Transfer" }),
+  ).toThrow();
+  expect(() => localExecutionDraft(draft, "Transfer", context)).toThrow(
+    /Action window for transfer .*longer than the 4000 ms a carry may be hidden/,
+  );
+  const checks = suggestReviews(parsed, short.context);
   expect(() =>
     validateReviewEvidence(
       parsed,
-      [
-        reviewStepInput("transfer", {
-          ...checks.transfer,
-          reviewed: true,
-          conditionConfirmed: true,
-        }),
-      ],
-      gapFixture(700).context,
+      [reviewStepInput("transfer", { ...checks.transfer, reviewed: true, conditionConfirmed: true })],
+      gapFixture(4500).context,
     ),
-  ).toThrow("tracking is missing for more than 600 ms");
+  ).toThrow("longer than the 4000 ms a carry may be hidden");
 });
 it("rejects a result frame where the object is still moving, so the after moment cannot show it mid-air (owner after-image report)", () => {
   const { context, draft } = teachV3Fixture(true);
@@ -271,8 +264,13 @@ it("builds windows from the settled start to the FIRST settled landing across a 
   expect(measuredDisplacementWindows(carry(7))).toEqual([
     { startFrame: 8, resultFrame: 22, displacement: 0.4 },
   ]);
-  // 10 missing frames (about 670 ms): no window may cross the gap.
-  expect(measuredDisplacementWindows(carry(10))).toEqual([]);
+  // 10 missing frames (about 670 ms): a hidden carry (owner decision
+  // 2026-11-04: up to 4 s) from the settled start to the settled landing.
+  expect(measuredDisplacementWindows(carry(10))).toEqual([
+    { startFrame: 8, resultFrame: 25, displacement: 0.4 },
+  ]);
+  // 70 missing frames (about 4.7 s): longer than any carry may be hidden.
+  expect(measuredDisplacementWindows(carry(70))).toEqual([]);
 });
 it("every draft the compiler accepts gets supported suggestions that pass approval-time evidence checks", () => {
   for (const twoActions of [false, true]) {
@@ -348,8 +346,10 @@ it("explains why an object has no measured movement window, from its own trackin
     gapped.context.tracking[0].samples.filter(
       (s) => s.frame < 3 || s.frame > 9,
     );
+  // The 800 ms gap may now be a hidden carry; what blocks it is the start:
+  // only 200 ms of rest before the object disappears.
   expect(sourceEvidenceCatalog(gapped.context)[0].movementDiagnosis).toMatch(
-    /missing for 800 ms \(frames 2-10\)/,
+    /never still for 400 ms/,
   );
   const restless = teachV3Fixture();
   restless.context.tracking[0].samples.forEach((s) => {
@@ -512,4 +512,78 @@ it("a final goal naming an intermediate place is rejected with an actionable rea
   expect(() =>
     parseSparkDraft({ status: "completed", output_text: JSON.stringify(draft) }, context, { goal: "Transfer" }),
   ).toThrow(new RegExp(`last measured action "${second.id}" ends in "${second.condition.toZone}"`));
+});
+
+it("a hidden carry needs a settled start, a settled landing and an observation between them", async () => {
+  const { measuredDisplacementWindows, actionWindowIssue } = await import("../src/teach/source-evidence");
+  const sample = (frame: number, timestampMs: number, x: number) => ({
+    frame, timestampMs, confidence: 0.98, maskPixels: 500,
+    box: { left: x, top: 0.3, right: x + 0.1, bottom: 0.5 },
+  });
+  // Still at 0.2 for 0.5 s, lifted (one observation at 0.25), hidden 2.4 s, then still at 0.6.
+  const good = [0, 100, 200, 300, 400, 500].map((t, i) => sample(i, t, 0.2)).concat([sample(6, 600, 0.25), sample(30, 3000, 0.6), sample(31, 3100, 0.6), sample(32, 3200, 0.6), sample(33, 3300, 0.6), sample(34, 3400, 0.6)]);
+  const windows = measuredDisplacementWindows(good);
+  expect(windows).toContainEqual(expect.objectContaining({ startFrame: 5, resultFrame: 30 }));
+  expect(actionWindowIssue(good, 5, 30)).toBeNull();
+  // Landing still moving afterwards: not a result.
+  const drifting = good.map((s) => (s.frame >= 31 ? { ...s, box: { ...s.box, left: s.box.left + 0.03 * (s.frame - 30), right: s.box.right + 0.03 * (s.frame - 30) } } : s));
+  expect(actionWindowIssue(drifting, 5, 30)).toMatch(/not where the object comes to rest/);
+  // No observation between start and landing (start is the last before the gap, landing the first after).
+  const bare = good.filter((s) => s.frame !== 6);
+  expect(measuredDisplacementWindows(bare).some((w) => w.startFrame === 5 && w.resultFrame === 30)).toBe(false);
+});
+
+it("steady rest scoring >= 0.5 counts as reliable evidence; moving or inconsistent low scores do not (owner decision 2026-11-04)", async () => {
+  const { trustedTrack } = await import("../src/teach/source-evidence");
+  const times = Array.from({ length: 12 }, (_, f) => f * 100);
+  const at = (frame: number, confidence: number, x: number, maskPixels = 1000) => ({
+    frame, timestampMs: times[frame], confidence, maskPixels,
+    box: { left: x, top: 0.3, right: x + 0.1, bottom: 0.5 },
+  });
+  // Frames 0-3: a resting object scored 0.6-0.8 (like the run-12 plate) -> reliable.
+  // Frames 4-6: moving at 0.7 -> not reliable. Frame 7: 0.95 -> reliable (unchanged rule).
+  // Frames 8-10: still but outline size jumps 3x -> not reliable.
+  const samples = [
+    at(0, 0.6, 0.2), at(1, 0.7, 0.2), at(2, 0.8, 0.2), at(3, 0.65, 0.2),
+    at(4, 0.7, 0.25), at(5, 0.7, 0.3), at(6, 0.7, 0.35),
+    at(7, 0.95, 0.4),
+    at(8, 0.6, 0.5, 1000), at(9, 0.6, 0.5, 3000), at(10, 0.6, 0.5, 1000),
+  ];
+  expect(trustedTrack(samples, times).map((s) => s.frame)).toEqual([0, 1, 2, 3, 7]);
+  // Below 0.5 never counts, even at rest.
+  expect(trustedTrack([at(0, 0.45, 0.2), at(1, 0.45, 0.2), at(2, 0.45, 0.2)], times)).toEqual([]);
+});
+
+it("a move whose start and landing score only 0.6 at rest compiles, is suggested, approves and gets a Practice setup (paid runs 12/15)", async () => {
+  const { approveDraft } = await import("../src/teach/schema");
+  const { automaticSetupPlan } = await import("../src/teach/automatic-setup");
+  const { context, draft } = teachV3Fixture();
+  // Rest frames (still before and after the move) score 0.6, as SAM scored the
+  // resting bottle; the moving frame keeps 0.99.
+  for (const s of context.tracking[0].samples) if (s.frame !== 5) s.confidence = 0.6;
+  const parsed = parseSparkDraft(
+    { status: "completed", output_text: JSON.stringify(draft) },
+    context,
+    { goal: "Transfer" },
+  );
+  const checks = suggestReviews(parsed, context);
+  expect(checks.transfer.evidenceStatus).toBe("supported");
+  const approved = approveDraft(
+    parsed,
+    {
+      reviewer: "Test",
+      confirmed: true,
+      goalConfirmed: true,
+      steps: [reviewStepInput("transfer", { ...checks.transfer, reviewed: true, conditionConfirmed: true })],
+    },
+    context,
+    1000,
+  );
+  const plan = automaticSetupPlan(approved.procedure, approved.review, context);
+  expect(plan.objects.find((o) => o.id === "component-1")).toBeDefined();
+  // At 0.45 the same rest is not evidence anywhere: compile rejects it.
+  for (const s of context.tracking[0].samples) if (s.frame !== 5) s.confidence = 0.45;
+  expect(() =>
+    parseSparkDraft({ status: "completed", output_text: JSON.stringify(draft) }, context, { goal: "Transfer" }),
+  ).toThrow();
 });

@@ -2,6 +2,67 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.11.0 — 2026-11-04
+
+### Fixed (paid run 17: Teach passed; Practice never armed)
+- Unmoved "irrelevant" objects that hold an approved zone (the plate) are set up as optional fixed references, and the tracker always measures its fixed references, so Practice is not left with only a table patch that hands cross.
+- Zones cover where the object was seen resting next to each end of the move (bounded 0.025 spread), with a radius of 0.2 x the object's height (min 0.04, max a quarter of the move): SAM and the live tracker disagree on a box edge by 15-18% of object height.
+- Colour tracking: surroundings re-sampled farther out when SAM's box crops the object's base; at setup the live camera's colour is tried at the tracked box or the approved start box (Teach saw dark red, live bright red), so the bottle keeps its identity under a grasp.
+- Paid-run harness archives each run's artifacts as `results-paidN` immediately.
+
+### Verified
+- Offline replay of run 17's real lesson (re-derived from its recorded SAM/Spark outputs): arms, keeps the bottle through the grasp, step passed and final goal verified after landing. Unit 758, lint 0 errors, build, browser suite 50 passed. Not yet verified live.
+
+## 0.10.0 — 2026-11-04
+
+### Fixed (paid run 16 root causes; Teach passed end to end, Practice never verified)
+- Practice no longer treats a reference the mover started on (the lid under the bottle) as camera motion when the mover is lifted off it; such a reference is uncertain, and seen displaced it proves motion only if no other reference confirms the camera is still.
+- V3 steps measure an object's base (`bottom_center`) by default, and steps, zone suggestions, approval and the final goal share one point per object. SAM and the local tracker disagree on a tall object's top, not its base; the centre missed the destination zone by 0.0023.
+
+### Verified
+- Offline replay of run 16's real approved artifact reproduced both failures; the lesson re-derived from run 16's recorded SAM/Spark outputs with the new rules approves, and Practice verifies the step and final goal 0.4 s / 0.8 s after landing. Unit tests (756) include both failures through the tracker and Teach-to-Practice paths, the old rules reproducing them, and controls (reference never stood on, camera motion, base outside the zone). Not yet verified live or on a physical camera.
+
+## 0.9.0 — 2026-11-04
+
+### Changed (owner decision)
+- Teach evidence: SAM observations scoring >= 0.5 count when they form a steady rest (3+ consecutive frames, box within the 0.01 rest drift, outline within ±50%); everything else still needs >= 0.9. On the bottle video SAM scores correct outlines 0.5–0.9 most of the time (run 12: the plate had 7 frames >= 0.9; paid run 15 failed on a 4.3 s reliability gap while the bottle stood on the lid). One rule (`trustedTrack`) now decides Teach source reliability everywhere: compile, model eligible frames, review suggestions and moment menus, approval, scene predicates and Practice setup reference frames. Regression: a move whose resting start/landing score 0.6 compiles, is suggested, approves and gets a setup plan; at 0.45 it is rejected.
+
+### Added
+- Creator-only `diagnostic` event in the compile stream with per-frame SAM evidence after each SAM call, so failed runs can be replayed offline (run 14/15 data was lost without it).
+
+## 0.8.0 — 2026-11-04
+
+### Changed (owner decision)
+- Teach accepts a hidden carry: a move may span one tracking gap of up to 4 s, only between a settled start and a settled landing at least 0.05 apart with a reliable observation between them (paid run 14: SAM dropped the bottle while carried). Gaps over 4 s are still rejected; Practice unchanged. Unit tests cover accepted carries, too-long gaps, unsettled landings and missing in-between observations.
+
+## 0.7.3 — 2026-11-04
+
+### Fixed
+- A draft that is valid JSON but breaks the schema now gets the single correction, with the exact field issues (previously it failed immediately; Baseten does not enforce the schema).
+- The schema is presented as something to satisfy, not to repeat: discovery echoed the schema itself in paid runs 13 and 14, wasting its one correction.
+
+## 0.7.2 — 2026-11-04
+
+- Drift gate now requires the box to grow beyond discovery's own box as well (paid run 13 false alarm: a lid grows its visible mask when the bottle is lifted off).
+- Teach stops before the drafting request when no object has a measured movement, naming each object's reason (paid run 14: the draft schema allowed no steps, so drafting could only fail).
+
+### Fixed
+- Felicity Teach audit and Practice advice always failed on Baseten: the model echoed the schema's "$schema" key and strict validation rejected it (paid run 12). The key is no longer sent and is ignored if echoed.
+- SAM is prompted with discovery's box together with its point; an implausibly large outline triggers one bounded box-only SAM retry, else Teach stops before any drafting request (paid run 11: the bottle point landed on the sleeve).
+- Harness: waits for Felicity's audit before approving; captures compile stream, audit and Felicity replies; waits for running before pressing Pause; video recording optional.
+
+- SAM tracks drifting to hands (paid run 12): a track whose outline exceeds 3× its early size on >15% of frames, or an object discovery did not report as moving whose outline wanders >25% of the view while changing size, is implausible → one bounded box-only SAM retry, else Teach stops before drafting. Checked on the captured run 11/12 tracks: flags exactly run 12's bottle (arm) and "lid" (hand), no correct track.
+- Discovery may give a moving object's resting view (box + point after it comes to rest); SAM receives it as a second prompt frame so it can re-anchor after a grasp. Invalid or earlier views are dropped.
+
+## 0.7.1 — 2026-11-03
+
+### Fixed
+- Teach failed at "SAM tracking: Lesson processing or validation failed" on phone videos with variable frame timing (video 5: 415 frames, 6.5–476 ms apart). Uploaded clips with irregular frame timing are now re-encoded to steady 10 fps before upload, like in-app recordings (verified in Chrome on video 5: 424 frames, 100 ms apart). Paid run 10 then passed SAM tracking where run 9 had failed.
+- SAM-stage validation errors are shown instead of the generic message, and every hidden stage error is logged on the server (bounded, redacted).
+
+### Known issue (paid run 10)
+- White bowl on white paper: SAM's bowl track did not follow the bowl while the paper track did, so the draft could not be approved. Not fixed.
+
 ## 0.7.0 — 2026-11-03
 
 ### Added

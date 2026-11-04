@@ -3,7 +3,7 @@ import type { ScenePredicate } from "../procedure/execution-v3";
 import {
   sampleDisplacement,
   TEACH_REST_MAX_DRIFT,
-  trustedSourceSample,
+  trustedTrack,
 } from "./source-evidence";
 
 /**
@@ -34,11 +34,11 @@ export function alignScenePredicateEvidence(
   if (first === undefined || last === undefined) return draft;
   const times = context.lesson.media.frameTimesMs;
   const sample = (objectId: string, frame: number) =>
-    context.tracking
-      .find((track) => track.componentId === objectId)
-      ?.samples.find(
-        (s) => s.frame === frame && trustedSourceSample(s, times),
-      );
+    trustedTrack(
+      context.tracking.find((track) => track.componentId === objectId)
+        ?.samples ?? [],
+      times,
+    ).find((s) => s.frame === frame);
   const objectsOf = (p: ScenePredicate) =>
     p.kind === "projected_separation"
       ? [p.objectId, p.otherObjectId]

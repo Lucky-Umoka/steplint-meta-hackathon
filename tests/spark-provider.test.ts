@@ -267,3 +267,11 @@ it("the Meta client (MODEL_API_KEY) refuses any Muse Spark model before the netw
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain("https://api.meta.ai/v1/responses");
 });
+
+it("a top-level $schema key echoed by the model is ignored, and $schema is not sent (live run 12: audit and Felicity failed)", async () => {
+  const transport = mock('{"$schema":"https://json-schema.org/draft/2020-12/schema","ok":true}');
+  const result = await sparkStructured({ ...args, schema: z.strictObject({ ok: z.boolean() }) });
+  expect(result.data).toEqual({ ok: true });
+  const call = transport.mock.calls.find(([url]) => String(url) !== "data:,")!;
+  expect(await new Request(call[0], call[1]).text()).not.toContain("$schema");
+});

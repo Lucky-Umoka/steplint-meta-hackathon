@@ -341,6 +341,7 @@ it("passes the exact bound video through the canonical compile handler and retur
     expect.any(Function),
     expect.any(AbortSignal),
     { goal: "Visible transfer", videoBase64: url },
+    expect.any(Function), // creator diagnostics (per-frame SAM evidence)
   );
   expect(fetch).not.toHaveBeenCalled();
 });

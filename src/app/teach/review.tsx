@@ -31,7 +31,7 @@ import {
   type Rehearsal,
 } from "@/teach/rehearsal";
 import { executableRevision } from "@/teach/revision";
-import { sourceEvidenceCatalog } from "@/teach/source-evidence";
+import { sourceEvidenceCatalog, trustedTrack } from "@/teach/source-evidence";
 import FeedbackPopup, { useFeedback } from "@/components/feedback";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -536,9 +536,10 @@ export default function Review({
         // selectable so the menu never blanks.
         const moments = keyFrames(
           context,
-          (track?.samples ?? [])
-            .filter((s) => (s.confidence ?? 0) >= 0.9)
-            .map((s) => s.frame),
+          trustedTrack(
+            track?.samples ?? [],
+            context.lesson.media.frameTimesMs,
+          ).map((s) => s.frame),
           [check.fromFrame, check.toFrame, check.changeFrame ?? -1],
         );
         const frameOptions = moments.map((frame) => (

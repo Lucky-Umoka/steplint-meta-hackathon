@@ -23,7 +23,10 @@ export function providerJsonSchema(schema: z.ZodType): Record<string, unknown> {
             ]),
           )
         : value;
-  return rename(z.toJSONSchema(schema)) as Record<string, unknown>;
+  const json = rename(z.toJSONSchema(schema)) as Record<string, unknown>;
+  // Metadata only; models copy it into answers when it is shown.
+  delete json["$schema"];
+  return json;
 }
 /** Provider's own rejection reason, bounded; never request bodies or keys. */
 function providerReason(error: unknown): string {
@@ -130,7 +133,7 @@ export async function sparkStructured<T>({
               messages: [
                 {
                   role: "system",
-                  content: `${instructions}\nReturn ONLY raw JSON, with no markdown or commentary, matching this schema: ${JSON.stringify(providerJsonSchema(schema))}`,
+                  content: `${instructions}\nReturn ONLY the JSON data object itself (no markdown or commentary): an instance that satisfies the JSON Schema below. Never return the schema, its "type"/"properties" keys or a description of it. JSON Schema: ${JSON.stringify(providerJsonSchema(schema))}`,
                 },
                 {
                   role: "user",
@@ -247,6 +250,11 @@ export async function sparkStructured<T>({
       output,
     );
   }
+  // The schema is sent as text on Baseten; models sometimes echo its
+  // top-level "$schema" metadata key (live runs 12: audit and Felicity both
+  // rejected). It carries no data, so it is removed before strict validation.
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && "$schema" in raw)
+    delete (raw as Record<string, unknown>)["$schema"];
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
     // Field paths and rule messages only (no model content), so a provider
