@@ -85,7 +85,10 @@ export const LocalWorkerInputSchema = z.discriminatedUnion("type", [
         )
         .min(1)
         .max(4),
-      workspace: BoxSchema,
+      /** Null: the fixed objects themselves are the camera references. */
+      workspace: BoxSchema.nullable(),
+      /** Approved zones in live coordinates (searched for lost objects). */
+      zones: z.array(BoxSchema).max(100).optional(),
     }),
   }),
   z.strictObject({

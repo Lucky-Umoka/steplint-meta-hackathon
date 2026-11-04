@@ -2,6 +2,35 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.15.4 — 2026-11-04
+
+### Fixed (owner console: "starting live setup" -> "calibration lost: The camera or workspace reference moved")
+- Live setup used a background texture patch as the camera reference; on the owner's frame it sat at the right edge where the owner's arm appears, so the arm "moved the camera". Reproduced exactly on the owner's real frame (arm over the right edge: lost at the first covered frame). Live setup now uses the approved fixed supports (towel, mat) as camera references, with the tracker's rules for objects resting on / lifted off them; the same arm test holds 90/90 frames, bowl observed 90/90, also under ±12 % exposure drift.
+- Measured: the same page test reaches 24 frames/s on a production build vs 10 frames/s on the dev server (owner saw 1 frame/s in dev mode with DevTools device emulation). Demo should run a production build.
+- Restored `vitest.config.ts` (keeps tests scoped and the no-live-call guard) and `vercel.json`, deleted in the working tree, with the owner's approval.
+
+### Verified
+- Unit 87 files / 772 tests; lint 0 errors; Playwright 52 / 1 skipped run had one load-related failure that passes 3/3 in isolation. Not yet verified on the owner's physical camera.
+
+## 0.15.3 — 2026-11-04
+
+### Fixed (owner: "nothing worked, not even the Gideon voice" after "starting live setup")
+- A live setup that failed to start (e.g. touching supports: overlapping zones or overlapping fixed objects) went through `halt()`, which cancelled Gideon's speech and stopped automatic setup, silently. Live setup failures are now logged (`[practice] live setup failed: …`) and retried; every tracker setup error is logged.
+- Overlapping support zones are split at the middle of the overlap; touching supports are allowed in calibration while their boxes stay distinct.
+- docs/FELICITY_NEXT.md lists the deferred Felicity and robustness work.
+
+### Verified
+- On the owner's real frame with real SAM boxes and the mat stretched to touch the towel: zones split, calibration valid, bowl observed. Unit 772; lint 0 errors; build; Playwright 52 passed / 1 skipped; live-setup page test 2/2 on the owner's dev server. Not yet verified on the owner's physical camera.
+
+## 0.15.2 — 2026-11-04
+
+### Fixed (root cause of "3/3 objects found; starting live setup" repeating with no tracking)
+- When live setup started, the page terminated the still-loading Teach-based setup worker; that worker's late load error ran its `onerror`, which called `halt()` and killed the NEW live worker. A replaced worker can no longer halt the current one, and terminated workers have their handlers detached.
+
+### Verified
+- Real SAM 3.1 locate call (3 image requests, Meta API) on the owner's real camera frame: bowl 0.96, towel 0.98, mat 0.89, one instance each, 2.0 s. With those real boxes and the owner's real pixels, the production tracker sets up, keeps the bowl in the start zone, tracks it across the table and into the goal zone, calibration valid throughout (recorded frame with the bowl moved digitally, not a live camera).
+- Moved-camera page test: 3/3 on the production build (was 0/3), 2/2 on the owner's dev server. Unit 771; lint 0 errors; Playwright 52 passed / 1 skipped. Not yet verified on the owner's physical camera.
+
 ## 0.15.1 — 2026-11-04
 
 ### Fixed (owner screenshots: "Tracking live … Waiting for the starting position"; bowl "found, not yet in its starting place")

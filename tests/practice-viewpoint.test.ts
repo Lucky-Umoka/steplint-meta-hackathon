@@ -92,3 +92,25 @@ it("the locate route is same-site, bounded per session and makes one SAM image r
   for (const [k, v] of Object.entries({ left: 0.1, top: 0.2, right: 0.3, bottom: 0.5 }))
     expect(found[0].box![k as "left"]).toBeCloseTo(v, 2); // parser: far edge inclusive
 });
+
+it("supports placed edge to edge: overlapping support zones are split, so setup validation passes", async () => {
+  const { liveSetup } = await import("../src/practice/viewpoint");
+  const towel = { left: 0.1, top: 0.5, right: 0.52, bottom: 0.75 },
+    mat = { left: 0.48, top: 0.5, right: 0.9, bottom: 0.75 }; // overlaps the towel by 0.04
+  const setup = liveSetup({
+    objects: [
+      { id: "bowl", teach: { left: 0.2, top: 0.4, right: 0.3, bottom: 0.55 }, fixed: false },
+      { id: "towel", teach: { left: 0.1, top: 0.45, right: 0.4, bottom: 0.6 }, fixed: true },
+      { id: "mat", teach: { left: 0.55, top: 0.45, right: 0.85, bottom: 0.6 }, fixed: true },
+    ],
+    live: { bowl: { left: 0.25, top: 0.42, right: 0.38, bottom: 0.6 }, towel, mat },
+    zones: [
+      { zoneId: "start", region: { left: 0.22, top: 0.5, right: 0.28, bottom: 0.56 } },
+      { zoneId: "goal", region: { left: 0.67, top: 0.5, right: 0.73, bottom: 0.56 } },
+    ],
+  })!;
+  const a = setup.zones.start, b = setup.zones.goal;
+  expect(a.right).toBeLessThan(b.left);
+  expect(a.left).toBeCloseTo(towel.left, 6);
+  expect(b.right).toBeCloseTo(mat.right, 6);
+});

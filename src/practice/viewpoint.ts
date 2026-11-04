@@ -176,11 +176,42 @@ export function liveSetup(input: {
       bottom: Math.min(1, box.bottom),
     };
   }
+  // Supports placed close together (towel next to mat) can overlap; zones
+  // must not, so overlapping zones are split at the middle of the overlap.
+  const ids = Object.keys(zones);
+  for (let i = 0; i < ids.length; i++)
+    for (let j = i + 1; j < ids.length; j++) {
+      const a = zones[ids[i]],
+        b = zones[ids[j]];
+      const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left),
+        oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+      if (ox <= 0 || oy <= 0) continue;
+      const acx = (a.left + a.right) / 2,
+        bcx = (b.left + b.right) / 2,
+        acy = (a.top + a.bottom) / 2,
+        bcy = (b.top + b.bottom) / 2;
+      if (Math.abs(acx - bcx) >= Math.abs(acy - bcy)) {
+        const mid = (Math.max(a.left, b.left) + Math.min(a.right, b.right)) / 2;
+        if (acx < bcx) { a.right = Math.min(a.right, mid - 0.005); b.left = Math.max(b.left, mid + 0.005); }
+        else { b.right = Math.min(b.right, mid - 0.005); a.left = Math.max(a.left, mid + 0.005); }
+      } else {
+        const mid = (Math.max(a.top, b.top) + Math.min(a.bottom, b.bottom)) / 2;
+        if (acy < bcy) { a.bottom = Math.min(a.bottom, mid - 0.005); b.top = Math.max(b.top, mid + 0.005); }
+        else { b.bottom = Math.min(b.bottom, mid - 0.005); a.top = Math.max(a.top, mid + 0.005); }
+      }
+    }
+  if (ids.some((id) => zones[id].right <= zones[id].left || zones[id].bottom <= zones[id].top))
+    return null;
   return { objects: objects.map(({ id, box, fixed }) => ({ id, box: box!, fixed })), zones };
 }
 
 /** Most textured patch not overlapping any object: the camera-motion anchor. */
 export function chooseWorkspace(image: Pixels, avoid: Box[]): Box | null {
+  // Prefer the band above the objects and away from the side edges, where
+  // the learner's arms and body enter (owner camera: arm at the right edge).
+  const topOfObjects = avoid.length ? Math.min(...avoid.map((a) => a.top)) : 1;
+  const preferred = (box: Box) =>
+    box.bottom <= topOfObjects - 0.02 && box.left >= 0.18 && box.right <= 0.82;
   let best: { box: Box; score: number } | null = null;
   const size = 0.14;
   for (let top = 0.02; top + size <= 0.98; top += 0.04)
@@ -200,7 +231,9 @@ export function chooseWorkspace(image: Pixels, avoid: Box[]): Box | null {
           sq += v * v;
         }
       const sd = Math.sqrt(Math.max(0, sq / n - (sum / n) ** 2));
-      if (!best || sd > best.score) best = { box, score: sd };
+      // Preferred placement wins whenever it has usable texture.
+      const score = sd + (preferred(box) && sd >= 8 ? 1000 : 0);
+      if (!best || score > best.score) best = { box, score };
     }
-  return best && best.score >= 8 ? best.box : null;
+  return best && best.score % 1000 >= 8 ? best.box : null;
 }

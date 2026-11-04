@@ -146,7 +146,10 @@ function measureNative(
 
 export type LocalCalibration = {
   objects: { id: string; box: Box; fixed?: boolean }[];
-  workspace: Box;
+  /** Null: the fixed objects themselves are the camera references. */
+  workspace: Box | null;
+  /** Approved zones in live coordinates (searched for lost objects). */
+  zones?: Box[];
 };
 /** Watch set the host submits with each frame (see watch-set.ts). */
 export type TrackingWatch = { required: string[]; optional: string[] };
@@ -473,18 +476,29 @@ export function calibrateLocal(
   image: Pixels,
   calibration: LocalCalibration,
 ): LocalTrackingState {
+  const zones = calibration.zones ?? [];
   // Same rule as automatic setup: a mover resting on a fixed object (bowl on
   // its towel) is an approved nested pair; boxes must stay distinguishable.
   const nested = new Set<string>();
   for (const mover of calibration.objects.filter((o) => !o.fixed))
     for (const other of calibration.objects.filter((o) => o.fixed))
       if (overlaps(mover.box, other.box)) nested.add(pairKey(mover.id, other.id));
-  return buildState(
+  // Two supports placed edge to edge (towel touching mat) may overlap a
+  // little; they stay separate identities while their boxes are distinct.
+  const fixed = calibration.objects.filter((o) => o.fixed);
+  for (let i = 0; i < fixed.length; i++)
+    for (const other of fixed.slice(i + 1))
+      if (overlaps(fixed[i].box, other.box)) nested.add(pairKey(fixed[i].id, other.id));
+  const state = buildState(
     image,
     calibration.objects,
     calibration.workspace,
     nested,
   );
+  // Lost objects are also searched for in the approved zones (live setup
+  // passes them), e.g. the goal zone where the bowl was put down.
+  state.zones = zones.map((z) => ({ ...z }));
+  return state;
 }
 export function trackLocal(
   image: Pixels,
@@ -538,9 +552,12 @@ export function trackLocal(
     const anchor = measureNative(image, frame, state.workspace),
       ref = state.reference;
     if (!anchor.box || anchor.quality !== "observed") {
-      // Not found and nothing of the procedure near it: the camera or the
-      // reference moved (the original safety rule). Near a mover: occlusion.
-      if (!coveredByMover(state, ref))
+      // As the ONLY camera reference, an unrecognised workspace means the
+      // camera or the reference moved (the original safety rule; near a
+      // mover it is occlusion). With approved fixed objects as further
+      // references, it is only "not seen" this frame (an arm passing over
+      // it): those references and the 2 s no-reference guard decide.
+      if (!Object.keys(state.fixed).length && !coveredByMover(state, ref))
         return fail(
           "The camera or workspace reference moved. Recalibrate before continuing.",
         );
@@ -852,19 +869,25 @@ export function trackLocal(
 }
 
 export function trackingMeasurements(state: LocalTrackingState) {
+  // Diagnostics only; a non-finite value (no competing candidate gives an
+  // Infinity gap) is reported as unknown instead of failing the reply schema
+  // (owner console: "alternativeGap … received Infinity").
+  const finite = (v: number | null) => (v !== null && Number.isFinite(v) ? v : null);
   return state.objects.map((profile) => ({
     objectId: profile.objectId,
     method: profile.method,
-    error:
+    error: finite(
       profile.method === "dense_rgb"
         ? (profile.track.measurement?.cost ?? null)
         : profile.method === "native_palette"
           ? (profile.track.measurement?.error ?? null)
           : null,
-    alternativeGap:
+    ),
+    alternativeGap: finite(
       profile.method === "dense_rgb"
         ? (profile.track.measurement?.alternativeGap ?? null)
         : null,
+    ),
     pixels:
       profile.method === "native_palette"
         ? (profile.track.measurement?.pixels ?? null)

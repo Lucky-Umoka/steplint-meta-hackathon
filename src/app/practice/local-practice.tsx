@@ -106,7 +106,8 @@ import {
 type LiveSetup = {
   objects: { id: string; box: Region; fixed: boolean }[];
   zones: Record<string, Region>;
-  workspace: Region;
+  /** Null: the fixed supports (towel, mat) are the camera references. */
+  workspace: Region | null;
 };
 import {
   RehearsalSchema,
@@ -1381,13 +1382,19 @@ export default function LocalPractice() {
             region: b.region,
           })),
         });
+        // Camera references are the approved fixed objects themselves (with
+        // the tracker's rules for objects resting on / lifted off them). A
+        // background patch is used only when the lesson has no fixed object:
+        // on real cameras it "moved" with exposure and arms (owner console).
+        // Plus one background reference above the objects, away from where
+        // arms come in; occluding it is uncertainty, never "camera moved".
         const workspace = setup
           ? chooseWorkspace(frame, setup.objects.map((o) => o.box))
           : null;
         console.info(
-          `[practice] camera locate: ${found}/${objects.length} objects found; ${setup && workspace ? "starting live setup from this camera view" : "live setup not possible (missing object or no stable background)"}`,
+          `[practice] camera locate: ${found}/${objects.length} objects found; ${setup && (workspace || setup.objects.some((o) => o.fixed)) ? "starting live setup from this camera view" : "live setup not possible (an object was not found)"}`,
         );
-        if (!setup || !workspace) return;
+        if (!setup || (!workspace && !setup.objects.some((o) => o.fixed))) return;
         if (worker.current && session.current?.armed) return; // already tracking
         if (worker.current) {
           worker.current.onerror = null;
@@ -1609,6 +1616,8 @@ export default function LocalPractice() {
             trackingMeasurements.current = reply.measurements;
             autoFailures.current = 0;
           }
+          if (reply.type === "error")
+            console.error(`[practice] ${live ? "live " : ""}setup error from tracker: ${reply.message}`);
           if (
             reply.type === "error" &&
             (automatic || live) &&
@@ -1801,10 +1810,11 @@ export default function LocalPractice() {
             (event) => event.status === "needs_user_view",
           );
           if (unseen) {
-            const name =
+            const description =
               active.procedure.components.find(
                 (component) => component.id === unseen.objectId,
               )?.description ?? unseen.objectId;
+            const name = `the ${shortNoun(description) || "object"}`;
             setNotice(`${name}: ${unseen.reason}`);
             handlers.current.show(
               "needs_verification",
@@ -2048,6 +2058,7 @@ export default function LocalPractice() {
                 calibration: {
                   objects,
                   workspace: live ? live.workspace : marks.workspace,
+                  ...(live ? { zones: Object.values(live.zones) } : {}),
                 },
               }),
           generation: gen,
@@ -2060,7 +2071,22 @@ export default function LocalPractice() {
         [copy.buffer],
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not start tracking.");
+      const message = e instanceof Error ? e.message : "Could not start tracking.";
+      if (live) {
+        // A live setup that cannot start is retried, never a silent halt
+        // (halt cancels Gideon's speech and stops automatic setup).
+        console.error(`[practice] live setup failed: ${message}`);
+        worker.current?.terminate();
+        worker.current = null;
+        busy.current = false;
+        setStarting(false);
+        automaticWanted.current = true;
+        automaticAttemptAt.current = -Infinity;
+        setNotice("Almost ready: I'm re-checking where your objects are…");
+        return;
+      }
+      console.error(`[practice] setup failed: ${message}`);
+      setError(message);
       if (session.current) setResult(session.current.result);
       halt();
     }
