@@ -170,7 +170,7 @@ it("a hidden later object neither blocks startup nor counts as missing; it is re
       .some((e) => e.stepId === "transfer-again"),
   ).toBe(false);
 });
-it("after activation the later object needs an observed start before its transfer, and reappearing at the target after an unseen interval verifies nothing (scenarios 5, 12)", () => {
+it("after activation the later object needs an observed start before its transfer, and reappearing at the target after an unseen interval longer than the occlusion bridge verifies nothing (scenarios 5, 12)", () => {
   const { draft } = laterObjectLesson();
   const session = createSession(approved(draft.procedure), bindings);
   hold(session, { "component-1": X.origin });
@@ -181,9 +181,10 @@ it("after activation the later object needs an observed start before its transfe
   // First seen already at the target: presence is not a transfer.
   hold(session, { "component-1": X.middle, "component-2": X.destination });
   expect(status(session, "transfer-again")).not.toBe("passed");
-  // Seen at its start, then unseen, then at the target: still not a transfer.
+  // Seen at its start, then unseen longer than the bounded occlusion bridge
+  // (12 s at 100 ms frames), then at the target: still not a transfer.
   hold(session, { "component-1": X.middle, "component-2": X.middle });
-  hold(session, { "component-1": X.middle, "component-2": null }, 4);
+  hold(session, { "component-1": X.middle, "component-2": null }, 125);
   hold(session, { "component-1": X.middle, "component-2": X.destination });
   expect(status(session, "transfer-again")).not.toBe("passed");
   // A fresh, continuously observed transfer from its start does verify.
@@ -289,4 +290,12 @@ it("automatic setup excludes irrelevant objects and still requires every require
   expect(() =>
     automaticSetupPlan(reviewed.procedure, reviewed.review, context),
   ).toThrow("reliable source");
+});
+it("owner export 2026-11-04: through the live pipeline, a carry hidden by the hand for under the bridge verifies the transfer", () => {
+  const { draft } = laterObjectLesson();
+  const session = createSession(approved(draft.procedure), bindings);
+  hold(session, { "component-1": X.origin });
+  hold(session, { "component-1": null }, 30); // 3 s hidden in the hand
+  hold(session, { "component-1": X.middle });
+  expect(status(session, "transfer")).toBe("passed");
 });

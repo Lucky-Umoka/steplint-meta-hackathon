@@ -2,6 +2,26 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.17.0 — 2026-11-04
+
+### Changed (verifier contract: bounded occlusion bridge)
+- Owner export 18:20 root cause: Practice armed correctly (bowl on towel), the learner's hand hid the bowl for ~4 s while carrying it, then the bowl sat clearly on the mat for 50 s, yet the step stayed `needs_verification` ("No clear before/after target-zone transition"). Any unclear frame replaced the bowl's last state, so a hand-carried move could never verify; no green/red light or goal could ever appear and Gideon repeated "I can't see the white bowl".
+- The verifier now bridges a bounded unseen interval (`OCCLUSION_BRIDGE_MS` = 12 s): last clear observation at the start zone, nothing clear elsewhere since, then a clear geometry-measured observation at the target. Both endpoints are measured; identity gates and thresholds are unchanged. Longer gaps, target-only presence and a last clear observation outside the start still verify nothing.
+- Gideon after start: no "can't see"/"lost track" speech during the first 4 s of a carry; a bowl clearly on the target whose departure was not seen gets "I did not see it leave … Put it back there and do the step again"; short object names; the post-start instruction banner is blue (started, your turn) instead of warning amber.
+
+### Verified
+- Unit 781 incl. a replay of the owner's 188 exported observations (fails before the fix, passes at the first clear frame on the mat, 127 024 ms) and bridge bounds; Playwright 46 Practice/workflow + 7 other specs pass; new browser test (moved camera, object hidden 3 s mid-carry → step passed, green, no "can't see" speech) passes 3/3. Physical-camera acceptance NOT yet run.
+
+## 0.16.5 — 2026-11-04
+
+### Fixed (owner export 18:00: bowl visible but "I can't see the bowl"; Practice armed at the goal)
+- Root cause: live setup attached BOTH approved zones to the black mat (Teach-box geometry put the towel zone's centre inside the mat's Teach box), then split the mat's box in half to separate them (log: towel x0.72-0.86, mat x0.57-0.71, identical y). The bowl on the real towel was outside every zone, so it was reported ambiguous ("can't see"); the bowl on the real mat was inside the fake towel zone, so the goal state passed as the starting position (export: 30+ observations "zone-blue-towel" at x≈0.65).
+- Zones now bind first to the support their approved id/description names ("zone-blue-towel" -> "blue towel"); two zones on one physical support are refused with a logged reason instead of being invented by splitting.
+- Before Practice starts, a clearly measured object outside its start zone gets "I can see the white bowl, but it is not at its starting position yet. Put it at: …" instead of "I can't see it".
+
+### Verified
+- Unit 776 (3 new regressions from the owner's export geometry); type-check; lint 0 errors; build. Not yet verified on the owner's physical camera.
+
 ## 0.16.4 — 2026-11-04
 
 ### Fixed (owner export 15:38: zones again bowl-sized strips)

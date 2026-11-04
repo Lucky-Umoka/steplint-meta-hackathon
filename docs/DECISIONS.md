@@ -415,3 +415,7 @@ No-cost diagnostic continuation of the original approved run-4 lesson made zero 
 
 ## 2026-11-04 — Practice calibrates on the live camera from SAM boxes
 - Root cause of repeated physical-camera failures: setup depended on the Teach recording's pixels/positions/aspect. Practice now calibrates on the learner's live frame from SAM 3.1 boxes (one bounded locate, re-run at most every 20 s), moving each approved zone with its object. Tracking, gates and the deterministic verifier are unchanged and local.
+
+### 2026-11-04 — Bounded occlusion bridge replaces "unseen interval needs a fresh start"
+Owner physical-camera export: a hand-carried move hides the object, so the 2026-11-03 rule ("a genuine missing-identity interval still requires a fresh observed start") made every real carry unverifiable. The verifier (`src/procedure/verifier.ts`, `OCCLUSION_BRIDGE_MS` = 12 s) now accepts last-clear-at-start → only unclear/missing → clear at target within the bound as before/after evidence. Not bridged: longer gaps, target-only presence, a clear observation elsewhere in between, identity-only observations. Thresholds and identity reacquisition gates unchanged. Regression: owner export replay in `tests/local-continuous.test.ts`.
+

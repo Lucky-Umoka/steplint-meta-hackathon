@@ -106,6 +106,25 @@ export class FelicityGate {
 }
 
 /**
+ * Before Practice starts: the object IS measured, but outside its approved
+ * starting zone. Says where it must go; never "I can't see it".
+ */
+export function startPositionRequest(name: string, startZone: string): string {
+  const object = /^the\b/i.test(name) ? name : `the ${name}`;
+  const zone = startZone.trim().replace(/[.\s]+$/, "");
+  return `I can see ${object}, but it is not at its starting position yet. Put it at: ${zone}.`;
+}
+/** True when the box centre lies inside the region (normalized coordinates). */
+export function boxCentreIn(
+  box: { left: number; top: number; right: number; bottom: number },
+  region: { left: number; top: number; right: number; bottom: number },
+): boolean {
+  const x = (box.left + box.right) / 2,
+    y = (box.top + box.bottom) / 2;
+  return x >= region.left && x <= region.right && y >= region.top && y <= region.bottom;
+}
+
+/**
  * Gideon's immediate, local visibility request (no model call). Missing
  * visibility is uncertainty, never a procedural violation.
  */

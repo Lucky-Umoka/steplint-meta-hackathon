@@ -49,6 +49,8 @@ import {
   FelicityGate,
   incidentStillRelevant,
   visibilityRequest,
+  startPositionRequest,
+  boxCentreIn,
   type FelicityIncident,
   type FelicityKind,
 } from "@/practice/felicity";
@@ -503,6 +505,7 @@ export default function LocalPractice() {
   }
   /** Unseen this long (beyond tracking gaps) before Gideon asks to see it. */
   const VISIBILITY_TIMEOUT_MS = 1500;
+  const CARRY_PATIENCE_MS = 4000;
   /** Snapshot used to decide whether delayed Felicity advice is still current. */
   function felicitySnapshot(incident: FelicityIncident) {
     const active = session.current;
@@ -679,10 +682,17 @@ export default function LocalPractice() {
       lostSince.current.set(detection.objectId, since);
       // Gideon, locally and at once: unavailable past the visibility timeout
       // means "show me", never a violation (once per unseen episode).
-      if (now - since >= VISIBILITY_TIMEOUT_MS) {
-        const name =
+      // Once Practice has started, a hand carrying the object hides it for a
+      // few seconds by design (the verifier bridges that, bounded): Gideon
+      // waits longer before asking, instead of "I can't see it" mid-carry.
+      if (
+        now - since >=
+        (active.armed ? CARRY_PATIENCE_MS : VISIBILITY_TIMEOUT_MS)
+      ) {
+        const name = shortNoun(
           active.procedure.components.find((c) => c.id === detection.objectId)
-            ?.description ?? detection.objectId;
+            ?.description ?? detection.objectId,
+        );
         show(
           "needs_verification",
           visibilityRequest(
@@ -1389,14 +1399,21 @@ export default function LocalPractice() {
         const found = objects.filter((o) => live[o.id]).length;
         // Primary: calibrate on THIS live frame from SAM's boxes (any camera
         // position, aspect ratio or object arrangement).
-        const setup = liveSetup({
-          objects,
-          live,
-          zones: lesson.zoneBindings.map((b) => ({
-            zoneId: b.zoneId,
-            region: b.region,
-          })),
-        });
+        let setupIssue = "";
+        const setup = liveSetup(
+          {
+            objects: objects.map((o) => ({ ...o, name: o.noun })),
+            live,
+            zones: lesson.zoneBindings.map((b) => ({
+              zoneId: b.zoneId,
+              region: b.region,
+              description:
+                lesson.procedure.zones.find((z) => z.id === b.zoneId)
+                  ?.description ?? "",
+            })),
+          },
+          (issue) => (setupIssue = issue),
+        );
         // Camera references are the approved fixed objects themselves (with
         // the tracker's rules for objects resting on / lifted off them). A
         // background patch is used only when the lesson has no fixed object:
@@ -1407,7 +1424,7 @@ export default function LocalPractice() {
           ? chooseWorkspace(frame, setup.objects.map((o) => o.box))
           : null;
         console.info(
-          `[practice] camera locate: ${found}/${objects.length} objects found; ${setup && (workspace || setup.objects.some((o) => o.fixed)) ? "starting live setup from this camera view" : "live setup not possible (an object was not found)"}`,
+          `[practice] camera locate: ${found}/${objects.length} objects found; ${setup && (workspace || setup.objects.some((o) => o.fixed)) ? "starting live setup from this camera view" : `live setup not possible (${setupIssue || "no camera reference"})`}`,
         );
         if (setup)
           console.info(
@@ -1862,7 +1879,13 @@ export default function LocalPractice() {
           const unseen = reply.identityEvents.find(
             (event) => event.status === "needs_user_view",
           );
-          if (unseen) {
+          // After start, a hand hiding the object mid-carry is expected:
+          // the same carry patience as the visibility timer applies here.
+          const unseenFor = unseen
+            ? performance.now() -
+              (lostSince.current.get(unseen.objectId) ?? performance.now())
+            : 0;
+          if (unseen && (!active.armed || unseenFor >= CARRY_PATIENCE_MS)) {
             const description =
               active.procedure.components.find(
                 (component) => component.id === unseen.objectId,
@@ -1969,25 +1992,69 @@ export default function LocalPractice() {
                 (s) => s.id === decision.stepId,
               );
               const objectId = step?.condition.componentId;
-              const objectName =
+              const objectName = shortNoun(
                 active.procedure.components.find((c) => c.id === objectId)
                   ?.description ??
-                objectId ??
-                "object";
+                  objectId ??
+                  "object",
+              );
+              const raw = reply.detections.find((d) => d.objectId === objectId);
+              // After start, momentary loss of view is handled by the
+              // patience timer above, not spoken on every unclear frame.
+              if (
+                decision.status === "needs_verification" &&
+                active.armed &&
+                raw?.quality !== "observed"
+              )
+                continue;
+              // Clearly seen at the target, but its departure from the start
+              // was never measured (e.g. hidden longer than the bridge):
+              // honest, actionable recovery instead of "I can't see it".
+              const unprovenArrival =
+                decision.status === "needs_verification" &&
+                active.armed &&
+                raw?.quality === "observed" &&
+                !!raw.box &&
+                !!step &&
+                active.bindings.some(
+                  (b) =>
+                    b.zoneId === step.condition.toZone &&
+                    boxCentreIn(raw.box!, b.region),
+                );
+              // Before Practice starts, a clearly measured object outside its
+              // approved start zone is not "unseen" (owner screenshot: bowl
+              // visible on the mat, Gideon said "I can't see the bowl").
+              const startZoneId = objectId
+                ? (active.initialZones[objectId] ?? step?.condition.fromZone)
+                : undefined;
+              const startRegion = active.bindings.find(
+                (b) => b.zoneId === startZoneId,
+              )?.region;
+              const awayFromStart =
+                !active.armed &&
+                raw?.quality === "observed" &&
+                !!raw.box &&
+                !!startRegion &&
+                !boxCentreIn(raw.box, startRegion);
               const text =
                 decision.status === "passed"
                   ? `${step?.description ?? "Step"} Verified.`
                   : decision.status === "failed"
                     ? `Stop. ${decision.recovery?.instruction ?? decision.reason}`
-                    : // Missing visibility is uncertainty, not a violation:
-                      // Gideon asks for a clearer view, naming the object.
-                      visibilityRequest(
-                        objectName,
-                        reply.detections.find((d) => d.objectId === objectId)
-                          ?.quality === "obstructed"
-                          ? "obstructed"
-                          : "unclear",
-                      );
+                    : unprovenArrival
+                      ? `I can see the ${objectName}, but I did not see it leave ${active.procedure.zones.find((z) => z.id === step!.condition.fromZone)?.description.replace(/[.\s]+$/, "") ?? "its start"}. Put it back there and do the step again.`
+                      : awayFromStart
+                      ? startPositionRequest(
+                          objectName,
+                          active.procedure.zones.find((z) => z.id === startZoneId)
+                            ?.description ?? startZoneId!,
+                        )
+                      : // Missing visibility is uncertainty, not a violation:
+                        // Gideon asks for a clearer view, naming the object.
+                        visibilityRequest(
+                          objectName,
+                          raw?.quality === "obstructed" ? "obstructed" : "unclear",
+                        );
               const last = index === decisions.length - 1;
               if (
                 handlers.current.show(
@@ -2771,7 +2838,7 @@ export default function LocalPractice() {
                     role={alert.kind === "failed" ? "alert" : "status"}
                     aria-live="polite"
                     title={alert.text}
-                    className={`line-clamp-2 rounded-xl border-2 px-2 py-1 text-sm font-bold ${alert.kind === "failed" ? "border-red-600 bg-red-50 text-red-800 practice-correction-pulse" : alert.kind === "passed" ? "border-green-600 bg-green-50 text-green-800" : "border-amber-600 bg-amber-50 text-amber-800"}`}
+                    className={`line-clamp-2 rounded-xl border-2 px-2 py-1 text-sm font-bold ${alert.kind === "failed" ? "border-red-600 bg-red-50 text-red-800 practice-correction-pulse" : alert.kind === "passed" ? "border-green-600 bg-green-50 text-green-800" : alert.kind === "instruction" ? "border-sky-600 bg-sky-50 text-sky-900" : "border-amber-600 bg-amber-50 text-amber-800"}`}
                   >
                     {alert.text}
                   </div>

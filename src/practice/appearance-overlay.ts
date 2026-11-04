@@ -31,9 +31,13 @@ export function groundOverlay(
   p: Pixels,
   objectId: string,
   box: Box,
-  foreground?: Foreground,
+  foreground?: Foreground | ((x: number, y: number) => boolean),
 ): OverlayTrack {
-  const inside = foreground ? foregroundPixels(foreground) : null;
+  const inside = !foreground
+    ? null
+    : typeof foreground === "function"
+      ? foreground
+      : foregroundPixels(foreground);
   const samples: Sample[] = [];
   for (let y = 0; y < 8; y++)
     for (let x = 0; x < 8; x++) {
@@ -86,6 +90,53 @@ export function groundOverlay(
     last: center,
     palette,
   };
+}
+/**
+ * Object-only sample mask for a MOVED object (owner export 2026-11-04): the
+ * box of a round white bowl also contains the towel at its corners, so the
+ * template stopped matching as soon as the bowl stood on the black mat and
+ * the bowl was "lost" while sitting still. Samples whose colour is close to
+ * the colours along the box border are background; the rest are the object.
+ * Returns null (use the whole box, as before) when fewer than 12 of the 64
+ * samples stand out, e.g. an object the same colour as its surroundings.
+ */
+export function contrastForeground(
+  p: Pixels,
+  box: Box,
+): ((x: number, y: number) => boolean) | null {
+  const border: number[][] = [];
+  const inset = 0.03;
+  for (let i = 0; i < 12; i++) {
+    const f = (i + 0.5) / 12;
+    for (const [x, y] of [
+      [box.left + (box.right - box.left) * f, box.top + (box.bottom - box.top) * inset],
+      [box.left + (box.right - box.left) * f, box.bottom - (box.bottom - box.top) * inset],
+      [box.left + (box.right - box.left) * inset, box.top + (box.bottom - box.top) * f],
+      [box.right - (box.right - box.left) * inset, box.top + (box.bottom - box.top) * f],
+    ])
+      border.push(rgb(p, Math.min(p.width - 1, x * p.width), Math.min(p.height - 1, y * p.height)));
+  }
+  const distinct = (x: number, y: number) => {
+    const c = rgb(p, Math.min(p.width - 1, x * p.width), Math.min(p.height - 1, y * p.height));
+    let nearest = 255;
+    for (const b of border)
+      nearest = Math.min(
+        nearest,
+        Math.max(Math.abs(b[0] - c[0]), Math.abs(b[1] - c[1]), Math.abs(b[2] - c[2])),
+      );
+    return nearest > 40;
+  };
+  let count = 0;
+  for (let y = 0; y < 8; y++)
+    for (let x = 0; x < 8; x++)
+      if (
+        distinct(
+          box.left + ((box.right - box.left) * (x + 0.5)) / 8,
+          box.top + ((box.bottom - box.top) * (y + 0.5)) / 8,
+        )
+      )
+        count++;
+  return count >= 12 ? distinct : null;
 }
 export function trackOverlay(
   p: Pixels,

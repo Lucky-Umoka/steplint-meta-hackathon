@@ -2,7 +2,7 @@ import { feedbackEvents } from "../src/practice/feedback";
 import { expect, it } from "vitest";
 import { demoProcedure } from "../src/procedure/demo";
 import { ProcedureSpecSchema, type InputEvent } from "../src/procedure/schema";
-import { createVerifier, verifyEvents } from "../src/procedure/verifier";
+import { createVerifier, OCCLUSION_BRIDGE_MS, verifyEvents } from "../src/procedure/verifier";
 
 function procedure() {
   const value = structuredClone(demoProcedure);
@@ -84,12 +84,44 @@ it("warns on measured reversal, preserves original pass and restores with fresh 
   expect(restored.events.at(-1)?.decision).toBe("restoration");
   expect(restored.events.filter((e) => e.status === "passed")).toHaveLength(2);
 });
-it("missing identity is uncertainty and cannot turn target presence into a completed transfer", () => {
+it("missing identity is uncertainty; target presence alone never completes a transfer", () => {
+  const verifier = createVerifier(procedure());
+  expect(verifier.push(observation(1, null, "missing")).steps[0].status).toBe(
+    "needs_verification",
+  );
+  // Never seen at its start: presence at the target is not a transfer.
+  expect(
+    verifier.push(observation(1000, "base-target")).steps[0].status,
+  ).not.toBe("passed");
+});
+it("owner export 2026-11-04: a hand hiding the object during the carry still verifies from the two measured endpoints", () => {
   const verifier = createVerifier(procedure());
   verifier.push(observation(1, "staging"));
   expect(verifier.push(observation(500, null, "missing")).steps[0].status).toBe(
     "needs_verification",
   );
+  verifier.push(observation(2500, null, "missing"));
+  const result = verifier.push(observation(4000, "base-target"));
+  expect(result.steps[0].status).toBe("passed");
+  expect(result.events.at(-1)!.reason).toMatch(/brief occlusion/);
+  // Duplicate target evidence never advances it twice.
+  const again = verifier.push(observation(4500, "base-target"));
+  expect(again.events.filter((e) => e.status === "passed")).toHaveLength(1);
+});
+it("the occlusion bridge is bounded: an unseen interval longer than OCCLUSION_BRIDGE_MS verifies nothing", () => {
+  const verifier = createVerifier(procedure());
+  verifier.push(observation(1, "staging"));
+  verifier.push(observation(500, null, "missing"));
+  expect(
+    verifier.push(observation(2 + OCCLUSION_BRIDGE_MS, "base-target")).steps[0]
+      .status,
+  ).not.toBe("passed");
+});
+it("no bridge when the last clear observation was not the start zone", () => {
+  const verifier = createVerifier(procedure());
+  verifier.push(observation(1, "base-target"));
+  verifier.push(observation(500, null, "missing"));
+  // Last clear observation was at the TARGET, not the start: no bridge.
   expect(
     verifier.push(observation(1000, "base-target")).steps[0].status,
   ).not.toBe("passed");
@@ -264,4 +296,29 @@ it("keeps a known wrong-order correction active until recovery, including unrela
   expect(feedbackEvents(recovered, recovered.events.slice(-1))[0].status).toBe(
     "passed",
   );
+});
+
+it("owner export 2026-11-04 replay: the real Practice observation sequence (start on towel, hidden ~4 s in the hand, 50 s on the mat) now verifies the goal", async () => {
+  const { observations } = (await import("./fixtures/owner-2026-11-04-carry.json")).default as {
+    observations: { t: number; quality: "observed" | "missing" | "ambiguous"; zone: string | null; confidence: number | null; spatialState: "zone" | "transit" }[];
+  };
+  const verifier = createVerifier(procedure());
+  let result = verifier.push(observation(1, null, "missing"));
+  let passedAt: number | null = null;
+  for (const o of observations) {
+    const event = observation(o.t, o.zone, o.quality === "observed" ? "observed" : "missing");
+    if (event.type !== "observation") throw Error("fixture");
+    event.observation.quality = o.quality;
+    event.observation.confidence = o.confidence;
+    event.observation.spatialState = o.spatialState;
+    result = verifier.push(event);
+    if (passedAt === null && result.steps[0].status === "passed") passedAt = o.t;
+  }
+  // Before the fix this stayed needs_verification for all 188 observations.
+  expect(passedAt).toBe(127024); // the first clear frame on the mat
+  // One completed action; later passes are restorations after brief losses
+  // of view while the bowl sits on the mat (never a second advance).
+  const passes = result.events.filter((e) => e.status === "passed");
+  expect(passes.filter((e) => e.decision !== "restoration")).toHaveLength(1);
+  expect(passes.slice(1).every((e) => e.decision === "restoration")).toBe(true);
 });

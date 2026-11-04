@@ -1,6 +1,6 @@
 {
   "name": "steplint",
-  "version": "0.16.4",
+  "version": "0.17.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -29,6 +29,7 @@
     "@mediapipe/tasks-vision": "^1.2.0",
     "@meta-sam/parser": "0.1.0",
     "@next/env": "16.4.3",
+    "@react-three/fiber": "9.8.2",
     "mediabunny": "^1.63.0",
     "next": "16.4.3",
     "openai": "7.45.1",
@@ -36,6 +37,7 @@
     "react-dom": "^19.2.0",
     "server-only": "0.0.1",
     "sharp": "0.35.5",
+    "three": "0.186.1",
     "zod": "^4.0.0"
   },
   "devDependencies": {
@@ -44,6 +46,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "@types/three": "0.186.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "16.4.3",
     "prettier": "^3.6.2",

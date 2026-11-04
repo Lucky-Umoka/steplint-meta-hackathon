@@ -965,3 +965,47 @@ test("camera placed differently from Teach: SAM locate (mocked) starts live trac
   }
   await expect(page.getByRole("region", { name: "Steps", exact: true })).toContainText("passed", { timeout: 20000 });
 });
+
+test("owner 2026-11-04: the hand hides the object for 3 s mid-carry on a moved camera; the step still verifies green and Gideon never says he can't see it", async ({ page }) => {
+  const lines: string[] = [];
+  page.on("console", (m) => lines.push(m.text()));
+  const cam = { s: 0.7, dx: 70, dy: 30 };
+  await page.route("**/api/practice/locate", async (route) => {
+    const box = {
+      left: (48 * cam.s + cam.dx) / 320,
+      top: (72 * cam.s + cam.dy) / 240,
+      right: ((48 + 64) * cam.s + cam.dx) / 320,
+      bottom: ((72 + 84) * cam.s + cam.dy) / 240,
+    };
+    await route.fulfill({ json: { objects: [{ id: "component-1", box, confidence: 0.95, instances: 1 }], provenance: { model: "sam-3.1", provider: "Meta API", requests: 1, ms: 900 } } });
+  });
+  await camera(page);
+  const { artifact } = fixture();
+  await page.addInitScript(({ raw, cam }) => {
+    const image = (window as unknown as { localReferenceImage: string }).localReferenceImage;
+    const approved = JSON.parse(raw);
+    approved.automaticSetup = { sceneFrame: 0, objects: [{ id: "component-1", frame: 0, box: { left: 0.15, top: 0.3, right: 0.35, bottom: 0.65 }, fixed: false }], frames: [{ frame: 0, image }] };
+    sessionStorage.setItem("steplint-approved-handoff", JSON.stringify(approved));
+    (window as unknown as { localScene: { cam: unknown } }).localScene.cam = cam;
+  }, { raw: JSON.stringify(artifact), cam });
+  await page.goto("/practice");
+  await expect(page.locator("#local-practice-status")).toContainText("Automatic tracking active", { timeout: 30000 });
+  await page.waitForTimeout(800);
+  const spokenBefore = await page.evaluate(() => (window as unknown as { localSpoken: string[] }).localSpoken.length);
+  // Picked up: hidden by the hand, carried, put down at the destination.
+  await page.evaluate(() => { (window as unknown as { localScene: { hidden: boolean } }).localScene.hidden = true; });
+  await page.waitForTimeout(3000);
+  const spokenDuringCarry = await page.evaluate((n) => (window as unknown as { localSpoken: string[] }).localSpoken.slice(n), spokenBefore);
+  await page.evaluate(() => {
+    const s = (window as unknown as { localScene: { hidden: boolean; x: number } }).localScene;
+    s.x = 208;
+    s.hidden = false;
+  });
+  await expect(page.getByRole("region", { name: "Steps", exact: true })).toContainText("passed", { timeout: 15000 });
+  // Green confirmation, not amber "can't see".
+  await expect(page.locator(".border-green-600").first()).toBeVisible();
+  const spoken = await page.evaluate(() => (window as unknown as { localSpoken: string[] }).localSpoken);
+  expect(spokenDuringCarry.filter((t) => /can't see|lost track/i.test(t))).toEqual([]);
+  expect(spoken.filter((t) => /can't see/i.test(t))).toEqual([]);
+  expect(spoken.some((t) => /Verified|goal/i.test(t))).toBe(true);
+});

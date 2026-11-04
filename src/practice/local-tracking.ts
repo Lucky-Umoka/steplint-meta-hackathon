@@ -19,6 +19,7 @@ import {
 } from "./native-palette";
 import type { Pixels } from "./tracker";
 import {
+  contrastForeground,
   groundOverlay,
   trackOverlay,
   type OverlayTrack,
@@ -57,7 +58,14 @@ function groundNative(
         track: palette,
       };
   }
-  const dense = groundOverlay(image, id, box);
+  // A moved object is matched on its own pixels, not the surface it
+  // currently stands on (see contrastForeground).
+  const dense = groundOverlay(
+    image,
+    id,
+    box,
+    (!fixed && contrastForeground(image, box)) || undefined,
+  );
   if (
     trackOverlay(image, dense, {
       multiscale: false,
@@ -352,9 +360,14 @@ function fromSource(profile: NativeTrack): NativeTrack {
   return profile;
 }
 /** Approved appearance template, or null when the source view has too little detail. */
-function identityTemplate(image: Pixels, id: string, box: Box) {
+function identityTemplate(image: Pixels, id: string, box: Box, fixed = false) {
   try {
-    const template = groundOverlay(image, id, box);
+    const template = groundOverlay(
+      image,
+      id,
+      box,
+      (!fixed && contrastForeground(image, box)) || undefined,
+    );
     template.illumination = true;
     return trackOverlay(image, structuredClone(template), {
       multiscale: false,
@@ -462,7 +475,12 @@ function buildState(
     slots[profile.objectId] = {
       identity: trackedIdentity(),
       profile,
-      template: identityTemplate(image, profile.objectId, objects[index].box),
+      template: identityTemplate(
+        image,
+        profile.objectId,
+        objects[index].box,
+        profile.fixed,
+      ),
       lastBox: { ...objects[index].box },
       fixed: profile.fixed,
     };
