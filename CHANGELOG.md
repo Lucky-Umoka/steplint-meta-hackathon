@@ -2,6 +2,49 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.15.1 — 2026-11-04
+
+### Fixed (owner screenshots: "Tracking live … Waiting for the starting position"; bowl "found, not yet in its starting place")
+- Live setup mapped small Teach-relative zone patches into the support object's box; with a different camera angle they landed on the wrong part of the towel, so Practice never armed although the bowl was tracked. A zone that belongs to a supporting object is now that object's whole live box ("on the towel", "on the mat").
+- Calibration losses and identity losses are logged with their exact reason; the page respects the server's 20 s locate interval (no more 429 loops).
+
+### Verified
+- Owner's real camera frame: bowl in the start zone (whole towel) at setup, tracked across the table, in the goal zone (whole mat), calibration valid throughout. Moved-camera page test passes on the owner's dev server. Unit 771; lint 0 errors; build; Playwright suite (see report). Not yet verified on the owner's physical camera.
+
+## 0.15.0 — 2026-11-04
+
+### Fixed / added
+- Owner console: live setup started, then "Tracking evidence keeps arriving too late" stopped Practice for good. Tracking costs 18-31 ms per frame on the owner's real frame; replies were late because every reply re-rendered the whole Practice page (slow in dev mode). Screen-only updates are now capped at 10/s; every reply is still verified (the 600 ms evidence rule is unchanged).
+- Felicity supervisor: when evidence keeps arriving late or the tracker crashes, Practice no longer stays stopped; it re-locates the objects with SAM and restarts live setup (at most 4 times per 5 minutes), Gideon says so, and the console logs `[felicity] supervisor: …`. It never marks anything passed.
+- `docs/EXTERNAL_REPO_ARCHITECTURE_RESEARCH.md`: read-only study of ten public repositories (no code copied).
+
+### Verified
+- Unit 87 files / 771 tests; lint 0 errors; build; Playwright 52 passed / 1 skipped (production build). The moved-camera live-setup page test also passes against the owner's dev server (16 s). Not yet verified on the owner's physical camera.
+
+## 0.14.0 — 2026-11-04
+
+### Fixed (root cause: automatic Practice never started on the owner's real camera)
+- Practice setup was built from the Teach recording's pixels and positions. It could not work when the learner's camera differs in position, perspective, lighting, aspect ratio (laptop 16:9 vs Teach 4:3: `sameSize` skipped every reference) or object arrangement. The owner's console proved SAM found all 3 objects ("3/3 objects found") but the old design only used them for a global camera correction.
+- New primary setup: when SAM 3.1 locates every approved object in the live frame, Practice calibrates on THAT frame (existing calibration path): objects from SAM boxes, appearance learned from the live camera, each zone moved with the object it belongs to in Teach (or the nearest object), and a textured background patch as the camera-motion reference. Works for any lesson's objects; no object names are hard-coded. The Teach-pixel setup only runs until SAM answers. Re-locates at most every 20 s per session.
+- A mover resting on a fixed object (bowl on towel) is an approved nested pair in calibration too (same rule as automatic setup).
+- Visible provenance for real model calls: console lines `[practice] sam-3.1 (Meta API): N requests in X ms` and `[felicity] Muse Spark Open (Baseten): …`; Network tab shows `/api/practice/locate` with a `provenance` field (no keys).
+- Worker crashes now log their real message.
+
+### Verified
+- On the owner's real camera frame (cropped from the 12:36 screenshot, 16:9), with the towel and mat swapped relative to the Teach layout: live setup calibrates, the bowl is tracked in its start zone, moved across the table and observed in the goal zone, calibration valid throughout (recorded-frame check, not a live camera run).
+- Browser test through the real page: camera placed differently from Teach (70 % scale, shifted), SAM mocked -> live setup -> step passed. Unit 87 files / 771 tests; lint 0 errors; build; Playwright 52 passed / 1 skipped (locate disabled; no paid calls).
+- Not yet verified: a physical camera session in the owner's browser.
+
+## 0.13.1 — 2026-11-04
+
+### Fixed
+- The camera locate step never ran in the real app: the page's handler effect re-assigned `automaticStart` on every render without it (only the initial ref value called it), so no SAM request or console line ever appeared. Now wired in the effect; every locate outcome is logged (`[practice] camera locate …`). Regression: a browser test asserts the real page reaches the locate step.
+- Setup message names objects plainly ("Looking for the blue towel, the black mat in your camera view…") instead of long reviewed descriptions.
+
+### Verified
+- Unit 87 files / 771 tests; lint 0 errors; build; Playwright 51 passed / 1 skipped (locate disabled, no paid calls). Not yet verified with a real SAM call or physical camera.
+- Known limit: the camera mapping assumes the same object arrangement as the Teach recording; swapping objects (towel and mat) is not supported yet.
+
 ## 0.13.0 — 2026-11-04
 
 ### Fixed (root cause: automatic Practice tracking never started on the owner's real camera)

@@ -113,3 +113,94 @@ export function shortNoun(description: string): string {
     .trim();
   return (cut || description).split(" ").slice(0, 5).join(" ").slice(0, 60).trim();
 }
+
+/**
+ * Live setup from SAM boxes (owner physical-camera root cause, 2026-11-04):
+ * Practice must calibrate on what is in front of the learner's camera now,
+ * not on the Teach recording's pixels. Objects take SAM's live boxes; every
+ * approved zone moves with the object it belongs to in Teach (the fixed
+ * object whose Teach box contains the zone centre, else the one it overlaps
+ * most, else the mover that starts in it), keeping its relative position and
+ * size inside that object's box. Returns null when any object is missing.
+ */
+export function liveSetup(input: {
+  objects: { id: string; teach: Box; fixed: boolean }[];
+  live: Record<string, Box | null | undefined>;
+  zones: { zoneId: string; region: Box }[];
+}): { objects: { id: string; box: Box; fixed: boolean }[]; zones: Record<string, Box> } | null {
+  const objects = input.objects.map((o) => ({ ...o, box: input.live[o.id] ?? null }));
+  if (objects.some((o) => !o.box)) return null;
+  const inside = (b: Box, x: number, y: number) =>
+    x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
+  const overlap = (a: Box, b: Box) =>
+    Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) *
+    Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+  const zones: Record<string, Box> = {};
+  for (const { zoneId, region } of input.zones) {
+    const cx = (region.left + region.right) / 2,
+      cy = (region.top + region.bottom) / 2;
+    const fixed = objects.filter((o) => o.fixed);
+    const anchor =
+      fixed.find((o) => inside(o.teach, cx, cy)) ??
+      [...fixed].sort((a, b) => overlap(b.teach, region) - overlap(a.teach, region))
+        .find((o) => overlap(o.teach, region) > 0) ??
+      objects.find((o) => !o.fixed && inside(o.teach, cx, cy)) ??
+      // A zone on no object follows the nearest one (same offset and scale).
+      [...objects].sort(
+        (a, b) =>
+          Math.hypot((a.teach.left + a.teach.right) / 2 - cx, (a.teach.top + a.teach.bottom) / 2 - cy) -
+          Math.hypot((b.teach.left + b.teach.right) / 2 - cx, (b.teach.top + b.teach.bottom) / 2 - cy),
+      )[0];
+    if (!anchor) return null;
+    // A zone on a supporting object ("on the towel", "on the mat") is that
+    // object's whole live box: the camera's angle differs from Teach, so a
+    // small Teach-relative patch lands on the wrong part of the surface.
+    if (anchor.fixed) {
+      zones[zoneId] = { ...anchor.box! };
+      continue;
+    }
+    const t = anchor.teach,
+      l = anchor.box!;
+    const sx = (l.right - l.left) / (t.right - t.left),
+      sy = (l.bottom - l.top) / (t.bottom - t.top);
+    const box = {
+      left: l.left + (region.left - t.left) * sx,
+      top: l.top + (region.top - t.top) * sy,
+      right: l.left + (region.right - t.left) * sx,
+      bottom: l.top + (region.bottom - t.top) * sy,
+    };
+    zones[zoneId] = {
+      left: Math.max(0, box.left),
+      top: Math.max(0, box.top),
+      right: Math.min(1, box.right),
+      bottom: Math.min(1, box.bottom),
+    };
+  }
+  return { objects: objects.map(({ id, box, fixed }) => ({ id, box: box!, fixed })), zones };
+}
+
+/** Most textured patch not overlapping any object: the camera-motion anchor. */
+export function chooseWorkspace(image: Pixels, avoid: Box[]): Box | null {
+  let best: { box: Box; score: number } | null = null;
+  const size = 0.14;
+  for (let top = 0.02; top + size <= 0.98; top += 0.04)
+    for (let left = 0.02; left + size <= 0.98; left += 0.04) {
+      const box = { left, top, right: left + size, bottom: top + size };
+      if (avoid.some((a) => !(box.right < a.left - 0.03 || box.left > a.right + 0.03 || box.bottom < a.top - 0.03 || box.top > a.bottom + 0.03)))
+        continue;
+      let n = 0,
+        sum = 0,
+        sq = 0;
+      for (let y = Math.floor(top * image.height); y < (top + size) * image.height; y += 2)
+        for (let x = Math.floor(left * image.width); x < (left + size) * image.width; x += 2) {
+          const i = (y * image.width + x) * 4;
+          const v = (image.data[i] + image.data[i + 1] + image.data[i + 2]) / 3;
+          n++;
+          sum += v;
+          sq += v * v;
+        }
+      const sd = Math.sqrt(Math.max(0, sq / n - (sum / n) ** 2));
+      if (!best || sd > best.score) best = { box, score: sd };
+    }
+  return best && best.score >= 8 ? best.box : null;
+}

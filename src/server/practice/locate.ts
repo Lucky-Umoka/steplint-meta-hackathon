@@ -40,7 +40,7 @@ export type Located = {
   instances: number;
 };
 export const LOCATE_TIMEOUT_MS = 20_000;
-/** One locate per camera session per 2 minutes; 30 per hour per server. */
+/** One locate per camera session per 20 s; an hourly server limit. */
 const sessions = new Map<string, number>();
 let hour: { start: number; count: number } = { start: 0, count: 0 };
 export function resetLocateLimits() {
@@ -51,10 +51,10 @@ export function admitLocate(input: LocateRequest, now = Date.now()) {
   if (process.env.PRACTICE_LOCATE_ENABLED === "0")
     throw new TeachError(503, "Camera locate is disabled.");
   const last = sessions.get(input.sessionId);
-  if (last !== undefined && now - last < 120_000)
+  if (last !== undefined && now - last < 20_000)
     throw new TeachError(429, "Camera locate already ran for this session.");
   if (now - hour.start > 3_600_000) hour = { start: now, count: 0 };
-  if (hour.count >= Number(process.env.PRACTICE_LOCATE_MAX_PER_HOUR ?? 30))
+  if (hour.count >= Number(process.env.PRACTICE_LOCATE_MAX_PER_HOUR ?? 60))
     throw new TeachError(429, "Camera locate hourly limit reached.");
   sessions.set(input.sessionId, now);
   hour.count++;

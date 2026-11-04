@@ -96,7 +96,18 @@ import {
 } from "@/practice/lifecycle";
 import type { ActionOutcome } from "@/voice/use-voice-control";
 import { isProcedureComplete, type GoalState } from "@/procedure/goal";
-import { shortNoun, toLive, viewFromBoxes, type View } from "@/practice/viewpoint";
+import {
+  chooseWorkspace,
+  liveSetup,
+  shortNoun,
+  toLive,
+  type View,
+} from "@/practice/viewpoint";
+type LiveSetup = {
+  objects: { id: string; box: Region; fixed: boolean }[];
+  zones: Record<string, Region>;
+  workspace: Region;
+};
 import {
   RehearsalSchema,
   RevisionSchema,
@@ -139,6 +150,12 @@ export default function LocalPractice() {
   // mapping when the learner's camera is not where Teach was recorded.
   const cameraView = useRef<View | null>(null);
   const locateState = useRef<"idle" | "pending" | "done">("idle");
+  const locateAt = useRef(-Infinity);
+  /** Calibrated from SAM boxes on the live frame (no Teach-pixel setup). */
+  const liveMode = useRef(false);
+  const uiPaintAt = useRef(0);
+  /** Felicity's supervised recoveries (bounded): timestamps of attempts. */
+  const supervised = useRef<number[]>([]);
   const [manualSetupOpen, setManualSetupOpen] = useState(false);
   const [references, setReferences] = useState<ProcedureReferences | null>(
     null,
@@ -534,6 +551,9 @@ export default function LocalPractice() {
     } catch {
       evidenceImage = undefined;
     }
+    console.info(
+      `[felicity] Muse Spark Open (Baseten): advice request for "${kind}"${evidenceImage ? " with the current camera frame" : ""}`,
+    );
     void fetch("/api/practice/recovery", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -849,8 +869,12 @@ export default function LocalPractice() {
     requestFelicity,
     automaticStart: (image: Pixels) => {
       locateCamera(image);
-      start({ image, source: automaticSource.current! });
+      // Live setup is primary; the Teach-pixel setup only until SAM answers.
+      if (!liveMode.current)
+        start({ image, source: automaticSource.current! });
     },
+    liveStart: (image: Pixels, live: LiveSetup) => start(undefined, { image, ...live }),
+    supervise,
     workerTimeout,
   });
   useEffect(() => {
@@ -859,8 +883,14 @@ export default function LocalPractice() {
       show,
       felicityTick,
       requestFelicity,
-      automaticStart: (image: Pixels) =>
-        start({ image, source: automaticSource.current! }),
+      automaticStart: (image: Pixels) => {
+        locateCamera(image);
+        // Live setup is primary; the Teach-pixel setup only until SAM answers.
+        if (!liveMode.current)
+          start({ image, source: automaticSource.current! });
+      },
+      liveStart: (image: Pixels, live: LiveSetup) => start(undefined, { image, ...live }),
+    supervise,
       workerTimeout,
     };
   });
@@ -1087,6 +1117,8 @@ export default function LocalPractice() {
       );
       cameraView.current = null;
       locateState.current = "idle";
+      locateAt.current = -Infinity;
+      liveMode.current = false;
       if (validated.automaticSetup) {
         automaticWanted.current = true;
         automaticAttemptAt.current = -Infinity;
@@ -1275,52 +1307,91 @@ export default function LocalPractice() {
    */
   function locateCamera(image: Pixels) {
     const source = automaticSource.current;
-    if (locateState.current !== "idle" || !source || !lesson) return;
-    locateState.current = "pending";
-    const objects = source.objects
-      .map((object) => ({
-        id: object.id,
-        noun: shortNoun(
-          lesson.procedure.components.find((c) => c.id === object.id)
-            ?.description ?? "",
-        ),
-        teach: object.box,
-      }))
-      .filter((object) => object.noun.length >= 2);
-    if (objects.length < 2) {
-      locateState.current = "done";
+    if (locateState.current === "pending") return;
+    // Re-locate (objects may have moved) at most every 20 s per session.
+    if (performance.now() - locateAt.current < 20_000) return;
+    if (!source || !lesson) {
+      console.info("[practice] camera locate skipped: lesson has no automatic setup");
       return;
     }
+    const objects = source.objects.map((object) => ({
+      id: object.id,
+      fixed: object.fixed,
+      noun: shortNoun(
+        lesson.procedure.components.find((c) => c.id === object.id)
+          ?.description ?? "",
+      ),
+      teach: object.box,
+    }));
+    if (objects.some((object) => object.noun.length < 2)) {
+      console.info("[practice] camera locate skipped: an approved object has no usable name");
+      return;
+    }
+    locateState.current = "pending";
+    locateAt.current = performance.now();
+    console.info(
+      `[practice] SAM 3.1 camera locate: asking for ${objects.map((o) => `"${o.noun}"`).join(", ")}`,
+    );
     if (!felicitySessionId.current)
       felicitySessionId.current = `practice-${crypto.randomUUID()}`;
+    const frame = {
+      width: image.width,
+      height: image.height,
+      data: new Uint8ClampedArray(image.data),
+    };
     void fetch("/api/practice/locate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionId: felicitySessionId.current,
-        image: imageUrl(image),
-        width: image.width,
-        height: image.height,
+        image: imageUrl(frame),
+        width: frame.width,
+        height: frame.height,
         objects: objects.map(({ id, noun }) => ({ id, noun })),
       }),
     })
       .then(async (response) => {
-        if (!response.ok) return;
+        if (!response.ok) {
+          // Respect the server's per-session interval before asking again.
+          if (response.status === 429) locateAt.current = performance.now();
+          console.warn(
+            `[practice] camera locate unavailable (HTTP ${response.status}); setup continues without it`,
+          );
+          return;
+        }
         const body = (await response.json()) as {
           objects?: { id: string; box: Region | null }[];
+          provenance?: { model: string; provider: string; requests: number; ms: number };
         };
-        const pairs = objects.flatMap((object) => {
-          const found = body.objects?.find((o) => o.id === object.id)?.box;
-          return found ? [{ teach: object.teach, live: found }] : [];
-        });
-        const view = viewFromBoxes(pairs);
-        console.info(
-          `[practice] camera locate: ${pairs.length}/${objects.length} objects found; mapping ${view ? JSON.stringify(view) : "none (same viewpoint or no agreement)"}`,
+        if (body.provenance)
+          console.info(
+            `[practice] ${body.provenance.model} (${body.provenance.provider}): ${body.provenance.requests} requests in ${body.provenance.ms} ms`,
+          );
+        const live = Object.fromEntries(
+          (body.objects ?? []).map((o) => [o.id, o.box]),
         );
-        if (!view) return;
-        cameraView.current = view;
-        // A setup that started in the wrong viewpoint cannot arm: restart it.
-        if (worker.current && !session.current?.armed) {
+        const found = objects.filter((o) => live[o.id]).length;
+        // Primary: calibrate on THIS live frame from SAM's boxes (any camera
+        // position, aspect ratio or object arrangement).
+        const setup = liveSetup({
+          objects,
+          live,
+          zones: lesson.zoneBindings.map((b) => ({
+            zoneId: b.zoneId,
+            region: b.region,
+          })),
+        });
+        const workspace = setup
+          ? chooseWorkspace(frame, setup.objects.map((o) => o.box))
+          : null;
+        console.info(
+          `[practice] camera locate: ${found}/${objects.length} objects found; ${setup && workspace ? "starting live setup from this camera view" : "live setup not possible (missing object or no stable background)"}`,
+        );
+        if (!setup || !workspace) return;
+        if (worker.current && session.current?.armed) return; // already tracking
+        if (worker.current) {
+          worker.current.onerror = null;
+          worker.current.onmessage = null;
           worker.current.terminate();
           worker.current = null;
           busy.current = false;
@@ -1328,16 +1399,47 @@ export default function LocalPractice() {
           setRunning(false);
           setStarting(false);
           setDetections([]);
-          automaticWanted.current = true;
-          automaticAttemptAt.current = -Infinity;
         }
+        liveMode.current = true;
+        handlers.current.liveStart(frame, { ...setup, workspace });
       })
-      .catch(() => {
-        /* Locate is an aid; the unchanged setup keeps retrying. */
+      .catch((error) => {
+        // Locate is an aid; the unchanged setup keeps retrying.
+        console.warn(
+          `[practice] camera locate failed: ${error instanceof Error ? error.message : "network error"}`,
+        );
       })
       .finally(() => {
         locateState.current = "done";
       });
+  }
+  /**
+   * Felicity supervisor (bounded repair loop): when tracking stops because
+   * evidence arrives too late, the tracker crashes or calibration is lost,
+   * Practice does not stay stopped. It re-locates the approved objects with
+   * SAM and restarts live setup, at most 4 times per 5 minutes; Felicity's
+   * advice request explains the incident. Never marks anything passed.
+   */
+  function supervise(reason: string) {
+    if (!lesson?.automaticSetup || !cameraActive) return;
+    const now = performance.now();
+    supervised.current = supervised.current.filter((at) => now - at < 300_000);
+    if (supervised.current.length >= 4) {
+      console.warn(`[felicity] supervisor: stopping after 4 recoveries in 5 min (${reason})`);
+      setNotice("I keep losing the objects. Check the light and keep them in view, then say “Guide, resume practice”.");
+      return;
+    }
+    supervised.current.push(now);
+    console.info(
+      `[felicity] supervisor: ${reason} -> re-locating objects with SAM and restarting live setup (attempt ${supervised.current.length}/4)`,
+    );
+    setNotice("Give me a moment, I'm finding your objects again…");
+    speak("Give me a moment, I'm finding your objects again.");
+    // Re-locate as soon as the server's 20 s per-session interval allows.
+    window.setTimeout(() => {
+      automaticWanted.current = true;
+      automaticAttemptAt.current = -Infinity;
+    }, 1500);
   }
   function prepareSetup(resume = false) {
     if (!latest.current || !cameraActive) {
@@ -1368,15 +1470,18 @@ export default function LocalPractice() {
     );
     return true;
   }
-  function start(automatic?: {
-    image: Pixels;
-    source: NonNullable<typeof automaticSource.current>;
-  }) {
-    const setupImage = automatic?.image ?? still?.image;
+  function start(
+    automatic?: {
+      image: Pixels;
+      source: NonNullable<typeof automaticSource.current>;
+    },
+    live?: LiveSetup & { image: Pixels },
+  ) {
+    const setupImage = automatic?.image ?? live?.image ?? still?.image;
     if (
       !lesson ||
       !setupImage ||
-      (!automatic && !calibrationConsent) ||
+      (!automatic && !live && !calibrationConsent) ||
       !cameraActive ||
       worker.current
     )
@@ -1394,7 +1499,11 @@ export default function LocalPractice() {
     try {
       const bindings: ZoneBinding[] = lesson.zoneBindings.map((b) => ({
         zoneId: b.zoneId,
-        region: automatic ? b.region : marks[`zone:${b.zoneId}`],
+        region: automatic
+          ? b.region
+          : live
+            ? live.zones[b.zoneId]
+            : marks[`zone:${b.zoneId}`],
       }));
       const resuming =
         resumeRequested &&
@@ -1402,7 +1511,9 @@ export default function LocalPractice() {
         session.current?.procedure.version === lesson.procedure.version;
       const objects = automatic
         ? automatic.source.objects
-        : lesson.procedure.components.map((c) => ({
+        : live
+          ? live.objects
+          : lesson.procedure.components.map((c) => ({
             id: c.id,
             fixed: !lesson.procedure.steps.some(
               (s) => s.condition.componentId === c.id,
@@ -1410,7 +1521,7 @@ export default function LocalPractice() {
             box: marks[`object:${c.id}`],
           }));
       if (
-        (!automatic && !marks.workspace) ||
+        (!automatic && !live && !marks.workspace) ||
         objects.some((o) => !o.box) ||
         bindings.some((b) => !b.region)
       )
@@ -1432,7 +1543,7 @@ export default function LocalPractice() {
         setPracticeStartedAt(null);
         setCelebration(null);
       }
-      if (automatic && !resuming) {
+      if ((automatic || live) && !resuming) {
         next.calibrations[0].humanConfirmed = false;
         next.calibrations[0].method = "source_alignment";
       }
@@ -1449,13 +1560,13 @@ export default function LocalPractice() {
       setAlert(null);
       setDetections([]);
       setStartingVerified(false);
-      if (!resuming && !automatic) archiveSession();
+      if (!resuming && !automatic && !live) archiveSession();
       session.current = next;
       setResult(next.result);
       // Announce only learner-initiated starts: automatic retries must stay
       // silent, or repeated setup failures would stutter speech and suppress
       // voice commands while the engine is always speaking.
-      if (!automatic) {
+      if (!automatic && !live) {
         const firstPending = next.procedure.steps.find(
           (step) =>
             next.result.steps.find((state) => state.stepId === step.id)
@@ -1498,7 +1609,11 @@ export default function LocalPractice() {
             trackingMeasurements.current = reply.measurements;
             autoFailures.current = 0;
           }
-          if (reply.type === "error" && automatic && automaticWanted.current) {
+          if (
+            reply.type === "error" &&
+            (automatic || live) &&
+            automaticWanted.current
+          ) {
             localWorker.terminate();
             worker.current = null;
             busy.current = false;
@@ -1526,13 +1641,20 @@ export default function LocalPractice() {
                 "Automatic setup keeps failing. Adjust the view, or capture the setup for manual calibration.",
               );
             } else {
-              // Name the object as reviewed in Teach, not by its internal ID.
+              // Name objects plainly ("blue towel"), never by internal ID or
+              // the long reviewed description; keep the learner message short.
+              const named = (lesson?.procedure.components ?? []).reduce(
+                (text, component) =>
+                  text.replaceAll(
+                    component.id,
+                    `the ${shortNoun(component.description) || "object"}`,
+                  ),
+                reply.message,
+              );
               setNotice(
-                (lesson?.procedure.components ?? []).reduce(
-                  (text, component) =>
-                    text.replaceAll(component.id, component.description),
-                  reply.message,
-                ),
+                /^Finding the work area/i.test(named)
+                  ? `Looking for ${named.replace(/^Finding the work area[^:]*:\s*show\s*/i, "").replace(/\s+clearly in the demonstrated position\..*$/i, "")} in your camera view…`
+                  : named,
               );
             }
             return;
@@ -1605,12 +1727,14 @@ export default function LocalPractice() {
           ) {
             trackingCounters.current.droppedStale++;
             staleSince.current ??= replyAt;
-            if (replyAt - staleSince.current > 3000)
+            if (replyAt - staleSince.current > 3000) {
               handlers.current.halt(
                 "Tracking evidence keeps arriving too late on this device. Verification stopped; close other tabs or apps, then resume.",
                 true,
                 "failure",
               );
+              handlers.current.supervise("tracking evidence arrived too late");
+            }
             return;
           }
           staleSince.current = null;
@@ -1620,12 +1744,19 @@ export default function LocalPractice() {
             reply.watchRevision !== watchRevision.current
           )
             return;
-          setDetections(
-            reply.detections.map((d) => ({
-              ...d,
-              box: d.box && toLive(d.box, cameraView.current),
-            })),
-          );
+          // Screen-only updates at most 10/s: every reply is still verified,
+          // but re-rendering the whole page per reply made replies arrive
+          // after the 600 ms evidence limit on slower (dev-mode) browsers.
+          const paint = performance.now() - uiPaintAt.current >= 100;
+          if (paint) {
+            uiPaintAt.current = performance.now();
+            setDetections(
+              reply.detections.map((d) => ({
+                ...d,
+                box: d.box && toLive(d.box, cameraView.current),
+              })),
+            );
+          }
           const wasArmed = active.armed;
           const frame = feedTrackingFrame(active, {
             ...reply,
@@ -1637,6 +1768,7 @@ export default function LocalPractice() {
             ...replyTimes.current.filter((at) => repliedAt - at < 1000),
             repliedAt,
           ];
+          if (paint || active.armed !== wasArmed)
           setLiveTracking({
             rows: readinessRows(active, reply.detections),
             calibrationValid: reply.calibrationValid,
@@ -1701,6 +1833,11 @@ export default function LocalPractice() {
             )
               evidence.current.commit(outcome.evidenceFrames ?? []);
           }
+          if (!reply.calibrationValid)
+            console.warn(`[practice] calibration lost: ${reply.reason ?? "unknown"}`);
+          for (const event of reply.identityEvents)
+            if (event.status !== "tracked")
+              console.info(`[practice] ${event.objectId}: ${event.status} (${event.reason})`);
           if (
             !reply.calibrationValid &&
             lesson.automaticSetup &&
@@ -1862,12 +1999,21 @@ export default function LocalPractice() {
           );
         }
       };
-      localWorker.onerror = () =>
+      localWorker.onerror = (event) => {
+        // A worker that was already replaced (e.g. the Teach-based setup
+        // worker terminated when live setup starts) must never halt the
+        // current one: its late load error used to kill the live tracker.
+        if (worker.current !== localWorker) return;
+        console.error(
+          `[practice] local tracker crashed: ${event.message || "unknown error"}${event.filename ? ` (${event.filename}:${event.lineno})` : ""}`,
+        );
         handlers.current.halt(
           "The local tracker stopped. Recalibrate before continuing.",
           true,
           "failure",
         );
+        handlers.current.supervise("the local tracker crashed");
+      };
       const copy = new Uint8ClampedArray(setupImage.data);
       const startWatch = watchSet(next.procedure, next.result);
       localWorker.postMessage(
@@ -1899,7 +2045,10 @@ export default function LocalPractice() {
               }
             : {
                 type: "calibrate",
-                calibration: { objects, workspace: marks.workspace },
+                calibration: {
+                  objects,
+                  workspace: live ? live.workspace : marks.workspace,
+                },
               }),
           generation: gen,
           image: {

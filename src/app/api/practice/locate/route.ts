@@ -13,7 +13,7 @@ export const maxDuration = 30;
 /**
  * Practice camera locate: one bounded SAM 3.1 step at Practice start (one
  * concept request per approved object, in parallel). Same-site pages only,
- * one per camera session per 2 minutes and an hourly server limit.
+ * one per camera session per 20 s and an hourly server limit.
  */
 export async function POST(request: Request) {
   try {
@@ -32,7 +32,19 @@ export async function POST(request: Request) {
       request.signal,
       AbortSignal.timeout(LOCATE_TIMEOUT_MS),
     ]);
-    return Response.json({ objects: await locateObjects(parsed.data, signal) });
+    const started = Date.now();
+    const objects = await locateObjects(parsed.data, signal);
+    // Provenance for judges/devtools: which real model calls were made (no
+    // keys or private configuration).
+    return Response.json({
+      objects,
+      provenance: {
+        model: "sam-3.1",
+        provider: "Meta API",
+        requests: parsed.data.objects.length,
+        ms: Date.now() - started,
+      },
+    });
   } catch (error) {
     return responseError(error);
   }

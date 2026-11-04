@@ -473,11 +473,17 @@ export function calibrateLocal(
   image: Pixels,
   calibration: LocalCalibration,
 ): LocalTrackingState {
+  // Same rule as automatic setup: a mover resting on a fixed object (bowl on
+  // its towel) is an approved nested pair; boxes must stay distinguishable.
+  const nested = new Set<string>();
+  for (const mover of calibration.objects.filter((o) => !o.fixed))
+    for (const other of calibration.objects.filter((o) => o.fixed))
+      if (overlaps(mover.box, other.box)) nested.add(pairKey(mover.id, other.id));
   return buildState(
     image,
     calibration.objects,
     calibration.workspace,
-    new Set(),
+    nested,
   );
 }
 export function trackLocal(
