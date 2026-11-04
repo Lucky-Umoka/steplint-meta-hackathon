@@ -89,6 +89,8 @@ export const LocalWorkerInputSchema = z.discriminatedUnion("type", [
       workspace: BoxSchema.nullable(),
       /** Approved zones in live coordinates (searched for lost objects). */
       zones: z.array(BoxSchema).max(100).optional(),
+      /** Live setup from SAM boxes: camera motion needs reference consensus. */
+      consensus: z.boolean().optional(),
     }),
   }),
   z.strictObject({

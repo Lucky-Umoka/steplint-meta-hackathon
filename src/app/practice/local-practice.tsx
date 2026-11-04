@@ -2058,7 +2058,9 @@ export default function LocalPractice() {
                 calibration: {
                   objects,
                   workspace: live ? live.workspace : marks.workspace,
-                  ...(live ? { zones: Object.values(live.zones) } : {}),
+                  ...(live
+                    ? { zones: Object.values(live.zones), consensus: true }
+                    : {}),
                 },
               }),
           generation: gen,

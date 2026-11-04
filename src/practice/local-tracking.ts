@@ -150,6 +150,8 @@ export type LocalCalibration = {
   workspace: Box | null;
   /** Approved zones in live coordinates (searched for lost objects). */
   zones?: Box[];
+  /** Live setup from SAM boxes: camera motion needs reference consensus. */
+  consensus?: boolean;
 };
 /** Watch set the host submits with each frame (see watch-set.ts). */
 export type TrackingWatch = { required: string[]; optional: string[] };
@@ -191,6 +193,13 @@ export type LocalTrackingState = {
   referenceHiddenSince?: number | null;
   /** Fixed references a mover starts on (see startSupports). */
   startSupports?: Set<string>;
+  /**
+   * Live setup (calibrated on the learner's camera from SAM boxes): camera
+   * motion needs consensus — at least two references seen displaced — since a
+   * real camera move shifts every reference, while hands and arms disturb one
+   * at a time. References hidden by the learner may stay unseen up to 6 s.
+   */
+  consensus?: boolean;
 };
 const overlaps = (a: Box, b: Box) =>
   Math.max(a.left, b.left) < Math.min(a.right, b.right) &&
@@ -498,6 +507,7 @@ export function calibrateLocal(
   // Lost objects are also searched for in the approved zones (live setup
   // passes them), e.g. the goal zone where the bowl was put down.
   state.zones = zones.map((z) => ({ ...z }));
+  state.consensus = calibration.consensus === true;
   return state;
 }
 export function trackLocal(
@@ -547,6 +557,7 @@ export function trackLocal(
   // reliably displaced means the camera or a reference moved. A reference that
   // is merely hidden (a hand passing) is uncertainty, not motion.
   let referenceSeen = false;
+  let workspaceDisplaced = false;
   if (state.workspace && state.reference) {
     state.workspace.lost = false; // stationary: re-measure every frame
     const anchor = measureNative(image, frame, state.workspace),
@@ -569,10 +580,13 @@ export function trackLocal(
           Math.abs(anchor.box.right - ref.right),
           Math.abs(anchor.box.bottom - ref.bottom),
         ) > 0.015;
-      if (displaced && !coveredByMover(state, ref))
-        return fail(
-          "The camera or workspace reference moved. Recalibrate before continuing.",
-        );
+      if (displaced && !coveredByMover(state, ref)) {
+        if (!state.consensus)
+          return fail(
+            "The camera or workspace reference moved. Recalibrate before continuing.",
+          );
+        workspaceDisplaced = true;
+      }
       if (!displaced) referenceSeen = true;
     }
   }
@@ -671,6 +685,7 @@ export function trackLocal(
   // template following the departing mover; it proves motion only when no
   // other reference confirms the camera is still on this frame.
   let supportDisplaced = false;
+  let displacedCount = 0;
   for (const [id, reference] of Object.entries(state.fixed)) {
     const observed = measured.get(id);
     const covered = possiblyCovered(state, reference, measured);
@@ -679,7 +694,7 @@ export function trackLocal(
       // Unrecognised: covered by a mover, or uncovered by the mover that
       // started on it. Never proof of camera motion by itself; the 2 s
       // no-reference guard below still applies.
-      if (!covered && !startSupport)
+      if (!covered && !startSupport && !state.consensus)
         return fail(
           "A fixed destination or reference moved or became uncertain. Recalibrate the setup.",
         );
@@ -694,24 +709,31 @@ export function trackLocal(
       ) > 0.025;
     // An object being placed on (or a hand passing over) a stationary
     // reference changes how it looks: occlusion by the procedure, not motion.
-    if (displaced && !covered && !startSupport)
+    if (displaced && !covered && !startSupport && !state.consensus)
       return fail(
         "A fixed destination or reference moved. Recalibrate the setup.",
       );
     if (displaced) {
-      if (!covered) supportDisplaced = true;
+      if (!covered) {
+        supportDisplaced = true;
+        displacedCount++;
+      }
       measured.set(id, unknown(id)); // never report a disturbed reference box
       continue;
     }
     referenceSeen = true;
   }
-  if (supportDisplaced && !referenceSeen)
+  if (state.consensus) {
+    // Camera motion = two or more references seen displaced together.
+    if (displacedCount + (workspaceDisplaced ? 1 : 0) >= 2)
+      return fail("The camera moved. Recalibrate before continuing.");
+  } else if (supportDisplaced && !referenceSeen)
     return fail(
       "A fixed destination or reference moved. Recalibrate the setup.",
     );
   if (!referenceSeen) {
     state.referenceHiddenSince ??= nowMs;
-    if (nowMs - state.referenceHiddenSince > 2000)
+    if (nowMs - state.referenceHiddenSince > (state.consensus ? 6000 : 2000))
       return fail(
         "No stationary reference has been visible for 2 seconds, so camera movement cannot be told apart from object movement. Show the stationary reference.",
       );

@@ -2,6 +2,26 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.16.1 — 2026-11-04
+
+### Fixed (owner: bowl on the mat but Practice "Waiting for the starting position")
+- During the move, a single disturbed reference (hand/arm over it, camera noise) declared "camera moved", Practice re-set, re-located with the bowl already on the mat and waited again for the start position, so the move could never pass. In live setup, camera motion now needs consensus (two or more references seen displaced together); a hidden or single disturbed reference is uncertainty; references may stay hidden by the learner up to 6 s. Non-live setups keep the strict rules (all existing safety tests pass).
+
+### Verified (owner's real frame + real SAM boxes, noise, exposure drift, hand over bowl and mat)
+- Correct move: armed, step passed, goal verified. Reversal: step failed, goal invalidated. Wrong move (bowl on the bare table): never passes. Camera shifted 18 px: detected on the first frame. Unit 772; lint 0 errors; build; Practice browser tests on the final build. Not yet verified on the owner's physical camera.
+
+## 0.16.0 — 2026-11-04
+
+### Fixed (owner physical test: tracking started but no step, goal or correction)
+- Lost objects were searched only where last seen: live calibration never set the approved zones, so a bowl carried to the mat was never found there. Live setup now passes its zones (goal zone included) to the tracker's bounded search.
+- Worker crash: a diagnostic `alternativeGap` of Infinity failed the reply schema; non-finite diagnostics are reported as unknown.
+- Camera references: one background reference is chosen above the objects and away from the side edges (where arms enter), in addition to the fixed supports. With fixed supports present, an unrecognised background patch is "not seen" rather than "camera moved"; as the ONLY reference the original strict rule stays (safety test kept).
+- Gideon names objects plainly ("the white bowl").
+
+### Verified
+- Owner's real frame + real SAM 3.1 boxes, production tracker and deterministic verifier: arm and hand grasp/carry the bowl from the towel onto the mat -> armed, step passed, final goal verified; moving it back -> step failed, goal invalidated; calibration valid throughout. An 18 px camera shift is detected on the first shifted frame. Arm over the right edge: 90/90 frames valid.
+- Unit 87 / 772; lint 0 errors; build; Practice browser tests 23/23 on the final build (full suite 52/1 skipped on the previous build); live-setup page test on the owner's dev server. Not yet verified on the owner's physical camera.
+
 ## 0.15.4 — 2026-11-04
 
 ### Fixed (owner console: "starting live setup" -> "calibration lost: The camera or workspace reference moved")
