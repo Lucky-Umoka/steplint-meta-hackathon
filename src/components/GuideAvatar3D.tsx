@@ -274,7 +274,7 @@ function Face({
  * ~24 frames/s (on demand) so the face never competes with the tracking
  * worker for CPU/GPU, and stop entirely while the tab is hidden.
  */
-const FPS = 24;
+const FPS = 12;
 function FrameBudget() {
   const invalidate = useThree((state) => state.invalidate);
   useEffect(() => {

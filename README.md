@@ -51,7 +51,9 @@ Captured from the owner's own camera and real objects on 2026-11-04 (task: move 
 | ![Goal complete: step verified](docs/screenshots/practice-goal-complete.png) | ![Goal complete again after correcting the wrong move](docs/screenshots/practice-goal-complete-timed.png) |
 | **Goal verified.** The deterministic verifier passes the step; Gideon turns green and the goal is celebrated with the time taken. | **Corrected and verified.** After the wrong move, the learner returns the bowl and redoes the step; the goal is verified again, with total time and personal best. |
 
-![StepLint home page](docs/screenshots/home.png)
+![StepLint home page with Gideon, the 3D holographic guide](docs/screenshots/home.png)
+
+**Home page.** The workflow at a glance, with Gideon, the 3D holographic guide who coaches the learner during Practice.
 
 ## Meta models and keys
 

@@ -422,3 +422,6 @@ Owner physical-camera export: a hand-carried move hides the object, so the 2026-
 ### 2026-11-04 — Occlusion never undoes a verified step; moved objects match on their own pixels
 Verifier: after a step passes, unclear or partial identity is retained as passed ("no reversal inferred"); only a clearly measured observation outside the target is a reversal. Tracker: moved-object templates use a border-contrast foreground so a change of supporting surface does not lose identity; lost-object searches are limited to the last position plus one zone per attempt (1 px grid kept for lookalike separation).
 
+### 2026-11-04 — Colour palettes must work in the live search window
+A native colour palette is accepted only if a live-mode measurement (the wider frame-to-frame window) also observes the object; the best-margin candidate is kept. Root cause of multi-second Practice decisions: a cream bowl's hue matched the table outside the grounding ring, so the bowl flapped lost/reacquired. A tracking grace period was rejected because it bypassed the three-match identity reacquisition rule.
+

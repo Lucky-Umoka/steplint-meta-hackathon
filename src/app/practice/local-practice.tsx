@@ -176,6 +176,9 @@ export default function LocalPractice() {
     new Map<string, { key: string; since: number }>(),
   );
   const lostSince = useRef(new Map<string, number>());
+  /** Capture time of the newest camera frame and of the last one tracked. */
+  const latestAt = useRef(-Infinity),
+    lastSubmittedAt = useRef(-Infinity);
   const latestDetections = useRef<ObjectDetection[]>([]);
   const cameraActiveRef = useRef(false);
   const setupSince = useRef<number | null>(null);
@@ -914,7 +917,22 @@ export default function LocalPractice() {
         automaticAttemptAt.current = now;
         handlers.current.automaticStart(image);
       }
+      latestAt.current = now;
+      submitFrame(image, now);
+    },
+    (reason) => halt(reason, true, "camera"),
+    { width: 320, height: 240, intervalMs: 33 },
+  );
+  /**
+   * Send one camera frame to the tracker (latest-frame semantics). Called on
+   * each camera tick and, for low latency, as soon as the tracker replies
+   * when a newer frame is already waiting (owner request 2026-11-04: before,
+   * every reply idled until the next camera tick).
+   */
+  function submitFrame(image: Pixels, now: number) {
+    {
       if (!worker.current || !session.current) return;
+      if (now <= lastSubmittedAt.current) return; // never the same frame twice
       if (busy.current) {
         trackingCounters.current.droppedBusy++;
         const limit =
@@ -950,10 +968,9 @@ export default function LocalPractice() {
         },
         [copy.buffer],
       );
-    },
-    (reason) => halt(reason, true, "camera"),
-    { width: 320, height: 240, intervalMs: 33 },
-  );
+      lastSubmittedAt.current = now;
+    }
+  }
   const handlers = useRef({
     halt,
     show,
@@ -968,6 +985,7 @@ export default function LocalPractice() {
     liveStart: (image: Pixels, live: LiveSetup) => start(undefined, { image, ...live }),
     supervise,
     workerTimeout,
+    submitFrame,
   });
   useEffect(() => {
     handlers.current = {
@@ -984,6 +1002,7 @@ export default function LocalPractice() {
       liveStart: (image: Pixels, live: LiveSetup) => start(undefined, { image, ...live }),
     supervise,
       workerTimeout,
+      submitFrame,
     };
   });
   useEffect(
@@ -1430,6 +1449,7 @@ export default function LocalPractice() {
     }
     locateState.current = "pending";
     locateAt.current = performance.now();
+    const sentAt = locateAt.current;
     console.info(
       `[practice] SAM 3.1 camera locate: asking for ${objects.map((o) => `"${o.noun}"`).join(", ")}`,
     );
@@ -1552,7 +1572,10 @@ export default function LocalPractice() {
           console.warn(
             `[practice] scene changed while SAM was answering (difference ${(diff / n).toFixed(1)}); locating again`,
           );
-          locateAt.current = performance.now() - 6_000;
+          // Retry exactly when the server's 8 s per-session interval allows
+          // (it counts from this request's admission): an earlier retry only
+          // earned an HTTP 429 and another full 8 s wait (owner consoles).
+          locateAt.current = sentAt + 250;
           return;
         }
         handlers.current.liveStart(
@@ -1763,6 +1786,13 @@ export default function LocalPractice() {
           if (reply.generation !== generation.current) return;
           busy.current = false;
           awaiting.current = null;
+          // The tracker is free: hand it the newest waiting frame right after
+          // this reply is applied, instead of idling until the next tick.
+          queueMicrotask(() => {
+            const waiting = latest.current;
+            if (waiting && latestAt.current > lastSubmittedAt.current)
+              handlers.current.submitFrame(waiting, latestAt.current);
+          });
           if (reply.type !== "error") {
             trackingMeasurements.current = reply.measurements;
             autoFailures.current = 0;

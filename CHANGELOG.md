@@ -2,6 +2,29 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.19.2 — 2026-11-04
+
+### Fixed (owner: "the AI keeps taking long to confirm" a right or wrong move)
+- Root cause from the owner's exports: confirmation itself was fast (~0.4 s from the bowl landing to the verifier's decision), but the bowl kept being LOST while it sat still, so no decision could be made until it was found again (identity audit: occluded -> reacquired after three matches -> occluded, every ~0.5 s; 10–20 s ambiguous stretches). The colour-palette tracker was accepted when the bowl's colour differed from the thin ring around its box (the blue towel), but live tracking searches a wider window where the light table matched the bowl's hue, so every live frame was ambiguous.
+- A palette is now accepted only if it also measures the object in the live search window, and the candidate with the most margin over the 0.9 gate is kept; otherwise the object-only dense template tracks it. No gate or threshold was changed.
+- Tried and removed: a 0.4 s re-measure grace after a failed frame broke the identity-safety tests (silent reacquisition, lookalike rejection).
+
+### Verified
+- New end-to-end latency tests through the real tracker and real pipeline/verifier (bowl/towel/mat scene, ~15 frames/s): hand-carried move with 0.5 s occlusion and blurred frames verified 726 ms after landing; hand over the bowl while placing, verified 792 ms after it is visible again; a wrong move (bowl taken off the mat) flagged on the first clear frame off the mat. Before the fix the same scene never armed (bowl lost every frame).
+- Tracker bench: bowl at rest median 19 -> 6 ms per frame (no more flapping searches). Unit 792; type-check; build; Practice browser specs 32/33, the failing one ("…green, red and spoken correction", pause/resume step) is flaky with and without this change (2/5 vs 1/5 failures on repeat runs). Not yet measured on the owner's physical camera.
+
+## 0.19.1 — 2026-11-04
+
+### Changed (latency; owner request "low latency for everything")
+- Tracker hot path (`trackOverlay` candidate scoring) rewritten without changing a single decision: per-scale sample positions computed once (same float expression, so rounding is bit-identical), flat template colours, constant palette distances precomputed, one pixel read per sample. Benchmark `scripts/bench/tracking-bench.ts` (bowl/towel/mat scene, 320x180): still median 47 -> 19 ms, carry 26 -> 12 ms (p95 65 -> 30 ms), lost-object search p95 128 -> 48 ms; decisions checksum identical (962558481).
+- The tracker gets the newest waiting camera frame immediately when it replies (was: idle until the next camera tick); a frame is never tracked twice.
+- Camera capture no longer resizes (clears) its canvas every frame.
+- SAM camera-locate retry after "scene changed" waits exactly for the server's 8 s interval instead of retrying early into an HTTP 429 and a further 8 s wait.
+- Gideon's 3D face renders at 12 instead of 24 frames/s so it competes less with live tracking. Measured in a GPU-less test browser (moved-camera page test, page's own latency export): avatar at 24 fps 8 frames/s, median 153 ms frame-to-feedback; at 12 fps 11 frames/s, 133 ms; without WebGL 20 frames/s, 68 ms. Tracker time ~20 ms in all cases.
+
+### Verified
+- Unit 789; type-check; eslint 0 errors; production build; Practice browser specs 33/33 on the final build. Confirmation timing rules (fresh frames, stable time) unchanged. Not yet measured on the owner's physical camera.
+
 ## 0.19.0 — 2026-11-04
 
 ### Added (Gideon 3D upgrade and UI polish; owner request)
