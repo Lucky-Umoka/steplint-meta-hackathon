@@ -33,3 +33,4 @@ This record separates what existed before the hackathon from what was built duri
 | Browser tests (mocked providers, generated camera input) | `npm run test:e2e` (Playwright) |
 | Live model API checks | Explicit `smoke:*` scripts and owner-authorized paid end-to-end runs logged in the local paid-run ledger; SAM 3.1 camera localization was also exercised on the owner's real camera frames |
 | Recorded-frame replay | Owner's real camera frames replayed through the production tracker and verifier (CHANGELOG 0.15.x–0.16.x) |
+| Physical-camera end-to-end run | **2026-11-04, owner-confirmed:** full Teach → Felicity audit → Approve → Practice live tracking → Gideon coaching → Goal verified on the owner's own camera and real objects (commit `77b3852`, "final test for practice successful") |

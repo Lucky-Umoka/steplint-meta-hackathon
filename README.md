@@ -21,6 +21,8 @@ A written checklist can describe a step, but it cannot tell whether the step act
    - **Deterministic verification:** a TypeScript verifier decides whether each step and the final goal were achieved, from measured positions, order and prerequisites. A completed step that is undone is invalidated and must be corrected.
 5. **Gideon coaches.** Gideon is the learner-facing guide. He speaks the current instruction, warns, confirms verified steps and asks for a clearer view when evidence is uncertain.
 
+**End-to-end result:** on 2026-11-04 the full workflow (record, Felicity checks and corrects, approve, Practice tracks, Gideon coaches, goal verified) ran successfully on the owner's own camera with real objects.
+
 **Design rule:** models perceive and propose; deterministic code verifies. A model never decides that a physical step passed. Missing or ambiguous evidence means `needs_verification`, never an invented success or failure.
 
 ```mermaid
@@ -37,6 +39,19 @@ flowchart LR
   I --> J[Deterministic TypeScript verifier]
   J --> K[Gideon guidance<br/>steps, warnings, goal]
 ```
+
+## Screenshots
+
+Captured from the owner's own camera and real objects on 2026-11-04 (task: move the white bowl from the blue towel to the black mat).
+
+| | |
+| --- | --- |
+| ![Practice ready: Gideon listening, approved lesson loaded](docs/screenshots/practice-ready.png) | ![Wrong move: red frame, Gideon warns and says how to correct it](docs/screenshots/practice-wrong-move.png) |
+| **Practice ready.** The approved lesson is loaded with its before/after references; Gideon is listening. | **Wrong move detected.** The tracker sees the bowl in the wrong place; the frame turns red and Gideon tells the learner exactly how to correct it. |
+| ![Goal complete: step verified](docs/screenshots/practice-goal-complete.png) | ![Goal complete again after correcting the wrong move](docs/screenshots/practice-goal-complete-timed.png) |
+| **Goal verified.** The deterministic verifier passes the step; Gideon turns green and the goal is celebrated with the time taken. | **Corrected and verified.** After the wrong move, the learner returns the bowl and redoes the step; the goal is verified again, with total time and personal best. |
+
+![StepLint home page](docs/screenshots/home.png)
 
 ## Meta models and keys
 
