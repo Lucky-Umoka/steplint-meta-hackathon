@@ -21,7 +21,7 @@ Phase 6, 2026-11-02. This is a runbook, not a recording of physical acceptance. 
 | 1:35–2:05 | A clearly observable wrong-order action or unauthorized reversal, then correction | Show the measured evidence and rule behind the correction. Do not invent a violation from an obscured object. |
 | 2:05–2:30 | Restore the allowed state and perform the required transition | Recovery must be verified from fresh evidence; do not skip dependencies. |
 | 2:30–2:45 | Brief occlusion/uncertainty | Unknown is not success and is not an invented failure. |
-| 2:45–3:00 | Architecture and limits | Meta is used for Teach; deterministic TypeScript decides Practice. No safety or arbitrary-task/latency guarantee. |
+| 2:45–3:00 | Architecture and limits | Meta models draft and perceive (Teach, plus SAM 3.1 camera localization when Practice starts); deterministic TypeScript decides Practice. No safety or arbitrary-task/latency guarantee. |
 
 ## If the physical run fails
 

@@ -21,6 +21,18 @@ function clearObservation(observation: Observation, minimum: number): boolean {
   );
 }
 
+/**
+ * Bounded occlusion bridge (owner physical-camera report, 2026-11-04): a
+ * learner's hand hides the object while carrying it. When the last CLEAR
+ * observation of the object was at the step's start zone, nothing clear
+ * was observed anywhere else since, and the object is now clearly measured
+ * at the target within this bound, the two measured endpoints are the
+ * before/after evidence. Nothing is inferred across the unseen interval
+ * except that the same tracked identity changed zones; identity
+ * reacquisition gates are unchanged and no threshold is lowered.
+ */
+export const OCCLUSION_BRIDGE_MS = 12_000;
+
 function matches(
   condition: VisualCondition,
   before: Observation | undefined,
@@ -58,6 +70,8 @@ export function createVerifier(procedureInput: unknown) {
   const seenEvents = new Map<string, string>();
   const seenObservations = new Map<string, string>();
   const previous = new Map<string, Observation>();
+  /** Last clear (zone-measured) observation per object, for the bridge. */
+  const lastClear = new Map<string, Observation>();
   let lastTimestamp = -1;
   let consumed = 0;
   const reversed = new Set<number>();
@@ -75,7 +89,7 @@ export function createVerifier(procedureInput: unknown) {
         : "pending";
     });
   };
-  const invalidateFrom = (index: number) => {
+  const invalidateFrom = (index: number, ownVisibilityOnly = false) => {
     for (let i = index; i < steps.length; i++) {
       if (steps[i].status === "passed") {
         if (procedure.execution) revalidate.add(i);
@@ -84,6 +98,14 @@ export function createVerifier(procedureInput: unknown) {
       steps[i].verifiedAtMs = null;
       // Downstream transitions must be observed anew after prerequisite loss.
       previous.delete(procedure.steps[i].condition.componentId);
+      // The object's own loss of view keeps its last clear origin for the
+      // bounded bridge; any other invalidation needs a fresh start.
+      const component = procedure.steps[i].condition.componentId;
+      if (
+        !ownVisibilityOnly ||
+        component !== procedure.steps[index].condition.componentId
+      )
+        lastClear.delete(component);
       pendingTransitions.delete(i);
       released.delete(i);
     }
@@ -161,6 +183,7 @@ export function createVerifier(procedureInput: unknown) {
           s.verifiedAtMs = null;
         });
         previous.clear();
+        lastClear.clear();
         reversed.clear();
         released.clear();
         revalidate.clear();
@@ -268,10 +291,6 @@ export function createVerifier(procedureInput: unknown) {
         observation.zone !== step.condition.toZone
       )
         pendingTransitions.delete(index);
-      const before = previous.get(observation.objectId);
-      const evidence = before
-        ? [before.evidence, observation.evidence]
-        : [observation.evidence];
       const minimum = Math.max(
         step.condition.minimumConfidence,
         ...procedure.steps.flatMap((s) =>
@@ -280,6 +299,27 @@ export function createVerifier(procedureInput: unknown) {
             .map((r) => r.condition.minimumConfidence),
         ),
       );
+      const immediate = previous.get(observation.objectId);
+      const origin = lastClear.get(observation.objectId);
+      // Bridge only from an unclear immediate predecessor to a clear,
+      // geometry-measured current observation (see OCCLUSION_BRIDGE_MS).
+      const bridged =
+        !!procedure.execution &&
+        !!immediate &&
+        !clearObservation(immediate, minimum) &&
+        clearObservation(observation, minimum) &&
+        !observation.identityOnly &&
+        !!origin &&
+        origin.zone !== observation.zone &&
+        observation.timestampMs - origin.timestampMs <= OCCLUSION_BRIDGE_MS
+          ? origin
+          : undefined;
+      const before = bridged ?? immediate;
+      if (clearObservation(observation, minimum) && !observation.identityOnly)
+        lastClear.set(observation.objectId, observation);
+      const evidence = before
+        ? [before.evidence, observation.evidence]
+        : [observation.evidence];
       const clearIdentity =
         observation.quality === "observed" &&
         observation.confidence !== null &&
@@ -288,6 +328,24 @@ export function createVerifier(procedureInput: unknown) {
         !!procedure.execution &&
         clearIdentity &&
         observation.spatialState === "transit";
+      // A verified step is not undone by losing sight of the object (hand,
+      // jitter, tracker re-search): only a CLEAR observation elsewhere is a
+      // reversal (CLAUDE.md; owner export 2026-11-04: goal verified, then the
+      // bowl was briefly lost on the mat and the step fell back).
+      if (
+        procedure.execution &&
+        state.status === "passed" &&
+        (observation.identityOnly || !clearIdentity)
+      ) {
+        record(
+          "ignored",
+          "Verified state retained: the object is temporarily not clearly visible; no reversal inferred.",
+          step,
+          [],
+          evidence,
+        );
+        continue;
+      }
       if (
         procedure.execution &&
         observation.identityOnly &&
@@ -306,7 +364,7 @@ export function createVerifier(procedureInput: unknown) {
         continue;
       }
       if (!clearObservation(observation, minimum) && !inTransit) {
-        invalidateFrom(index);
+        invalidateFrom(index, true);
         state.status = "needs_verification";
         previous.set(observation.objectId, observation);
         refreshBlocked();
@@ -577,7 +635,9 @@ export function createVerifier(procedureInput: unknown) {
       refreshBlocked();
       record(
         "passed",
-        "Observed target-zone transition with earlier steps verified.",
+        bridged
+          ? "Observed target-zone transition with earlier steps verified (start and target clearly measured; brief occlusion between them)."
+          : "Observed target-zone transition with earlier steps verified.",
         step,
         [],
         evidence,

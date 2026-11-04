@@ -2,6 +2,68 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.18.0 — 2026-11-04
+
+### Fixed (owner export 17:10: goal verified, then tracking glitches)
+- Tracker root cause: the moved object's identity template sampled its whole box, including the towel at the bowl's corners; on the black mat those samples no longer matched and the still bowl was "lost". Moved objects are now matched on their own pixels (`contrastForeground`: samples distinct from the box-border colours, with an outside ring that rejects drifting onto the table); objects that do not stand out keep the whole-box template. Regression reproduces the loss with the old template.
+- Verifier: a verified step is no longer undone by losing sight of the object (identity unclear or partial); only a clearly measured observation elsewhere is a reversal (CLAUDE.md invariant). Replay of the owner's 17:10 export keeps the step passed through 27 s of losses.
+- Latency: a lost-object attempt searches the last position plus one approved zone in rotation (was every zone in the same frame; worker p95 471 ms, replies dropped as stale and Practice restarted). The 1 px search grid is kept: a 2 px grid failed the lookalike-separation test.
+- Speech: "Verified" and "Final goal verified" queue instead of cancelling each other (the goal sentence cut "Verified" off after 0.4 s and left Chrome's engine stuck); an interrupted utterance is no longer logged as a failure. Verified objects are monitored silently (no "lost track" nags after the goal).
+- Felicity: an unread error body (provider 502) no longer surfaces as an uncaught AbortError when the incident is replaced.
+
+### Added
+- Full-camera status light: bright green "STEP VERIFIED", bright red "WRONG MOVE" (until corrected), blue "PRACTICE STARTED — your move"; larger "Goal complete!" dialog.
+
+### Verified
+- Unit 785; type-check; lint 0 errors; build; Playwright: new light/after-goal test (green, 5 s loss keeps passed with no nagging, red on clear reversal) with screenshots checked; full suite result below in the report. Physical-camera acceptance NOT yet rerun.
+
+## 0.17.0 — 2026-11-04
+
+### Changed (verifier contract: bounded occlusion bridge)
+- Owner export 18:20 root cause: Practice armed correctly (bowl on towel), the learner's hand hid the bowl for ~4 s while carrying it, then the bowl sat clearly on the mat for 50 s, yet the step stayed `needs_verification` ("No clear before/after target-zone transition"). Any unclear frame replaced the bowl's last state, so a hand-carried move could never verify; no green/red light or goal could ever appear and Gideon repeated "I can't see the white bowl".
+- The verifier now bridges a bounded unseen interval (`OCCLUSION_BRIDGE_MS` = 12 s): last clear observation at the start zone, nothing clear elsewhere since, then a clear geometry-measured observation at the target. Both endpoints are measured; identity gates and thresholds are unchanged. Longer gaps, target-only presence and a last clear observation outside the start still verify nothing.
+- Gideon after start: no "can't see"/"lost track" speech during the first 4 s of a carry; a bowl clearly on the target whose departure was not seen gets "I did not see it leave … Put it back there and do the step again"; short object names; the post-start instruction banner is blue (started, your turn) instead of warning amber.
+
+### Verified
+- Unit 781 incl. a replay of the owner's 188 exported observations (fails before the fix, passes at the first clear frame on the mat, 127 024 ms) and bridge bounds; Playwright 46 Practice/workflow + 7 other specs pass; new browser test (moved camera, object hidden 3 s mid-carry → step passed, green, no "can't see" speech) passes 3/3. Physical-camera acceptance NOT yet run.
+
+## 0.16.5 — 2026-11-04
+
+### Fixed (owner export 18:00: bowl visible but "I can't see the bowl"; Practice armed at the goal)
+- Root cause: live setup attached BOTH approved zones to the black mat (Teach-box geometry put the towel zone's centre inside the mat's Teach box), then split the mat's box in half to separate them (log: towel x0.72-0.86, mat x0.57-0.71, identical y). The bowl on the real towel was outside every zone, so it was reported ambiguous ("can't see"); the bowl on the real mat was inside the fake towel zone, so the goal state passed as the starting position (export: 30+ observations "zone-blue-towel" at x≈0.65).
+- Zones now bind first to the support their approved id/description names ("zone-blue-towel" -> "blue towel"); two zones on one physical support are refused with a logged reason instead of being invented by splitting.
+- Before Practice starts, a clearly measured object outside its start zone gets "I can see the white bowl, but it is not at its starting position yet. Put it at: …" instead of "I can't see it".
+
+### Verified
+- Unit 776 (3 new regressions from the owner's export geometry); type-check; lint 0 errors; build. Not yet verified on the owner's physical camera.
+
+## 0.16.4 — 2026-11-04
+
+### Fixed (owner export 15:38: zones again bowl-sized strips)
+- Live setup took each object's support role from the saved setup flag; in the owner's lesson the towel and mat were not flagged fixed, so zones were again placed relative to the bowl. A support is now exactly an object no approved step moves (from the lesson's steps). The console logs each object's role and the zones live setup uses.
+- Export evidence: the camera was aimed too high (objects cut off at the bottom edge, the learner's body filling the right half).
+
+### Verified
+- Unit 773; lint 0 errors; build; Practice browser tests. Not yet verified on the owner's physical camera.
+
+## 0.16.3 — 2026-11-04
+
+### Fixed (owner exports 1-2 and report "Practice started at the final goal")
+- Live setup anchored a zone to the BOWL when the Teach zone was not inside a support's Teach box, so the start zone was drawn around wherever the bowl was (on the mat -> "Practice started" at the goal; export 2: both zones the same height, bowl-relative). Zones now attach only to supports (containing, overlapping or nearest); the mover is never an anchor when supports exist. Regression test added.
+- Live setup calibrated on the frame sent to SAM (1-3 s old); the bowl's learned appearance could be stale and never matched (export 2: bowl never measured, 61 ambiguous observations). It now calibrates on the current frame when the scene inside the objects' boxes is unchanged, otherwise re-locates.
+- Evidence in export 2 also shows the camera facing the learner (shirt, face) at the end of the session: table not in view.
+
+### Verified
+- Unit 773; lint 0 errors; build; Practice + voice browser tests 26/26. Not yet verified on the owner's physical camera.
+
+## 0.16.2 — 2026-11-04
+
+### Fixed (owner diagnostics export: session set up by the Teach-video path with wrong zones)
+- The Teach-video setup kept retrying every second while SAM was answering and could "succeed" first on wrong geometry (export: method `source_alignment`, zones towel x 0.66-0.79 / mat x 0.52-0.65 while the evidence frames show the towel at ~0.08-0.45), arming on wrong zones with a Teach colour profile that flickered (tracked/occluded 13 times in 18 s). While the locate service works, live setup from SAM boxes is now the ONLY automatic setup; the Teach-video setup is a fallback when locate is disabled or unreachable. Re-locate every 8 s (was 20 s).
+
+### Verified
+- Unit 772; lint 0 errors; build; Practice + voice browser tests 26/26 (locate disabled on the test server, exercising the fallback). Real-frame scenarios from 0.16.1 unchanged. Not yet verified on the owner's physical camera.
+
 ## 0.16.1 — 2026-11-04
 
 ### Fixed (owner: bowl on the mat but Practice "Waiting for the starting position")

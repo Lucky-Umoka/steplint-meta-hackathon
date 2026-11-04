@@ -123,13 +123,22 @@ export function shortNoun(description: string): string {
  * most, else the mover that starts in it), keeping its relative position and
  * size inside that object's box. Returns null when any object is missing.
  */
-export function liveSetup(input: {
-  objects: { id: string; teach: Box; fixed: boolean }[];
-  live: Record<string, Box | null | undefined>;
-  zones: { zoneId: string; region: Box }[];
-}): { objects: { id: string; box: Box; fixed: boolean }[]; zones: Record<string, Box> } | null {
+export function liveSetup(
+  input: {
+    /** `name`: the approved component's short noun ("blue towel"). */
+    objects: { id: string; teach: Box; fixed: boolean; name?: string }[];
+    live: Record<string, Box | null | undefined>;
+    /** `description`: the approved zone text ("Area covering blue towel"). */
+    zones: { zoneId: string; region: Box; description?: string }[];
+  },
+  onIssue: (issue: string) => void = () => {},
+): { objects: { id: string; box: Box; fixed: boolean }[]; zones: Record<string, Box> } | null {
   const objects = input.objects.map((o) => ({ ...o, box: input.live[o.id] ?? null }));
-  if (objects.some((o) => !o.box)) return null;
+  if (objects.some((o) => !o.box)) {
+    onIssue("an approved object was not found in the camera view");
+    return null;
+  }
+  const anchors = new Map<string, string>();
   const inside = (b: Box, x: number, y: number) =>
     x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
   const overlap = (a: Box, b: Box) =>
@@ -140,18 +149,45 @@ export function liveSetup(input: {
     const cx = (region.left + region.right) / 2,
       cy = (region.top + region.bottom) / 2;
     const fixed = objects.filter((o) => o.fixed);
-    const anchor =
-      fixed.find((o) => inside(o.teach, cx, cy)) ??
-      [...fixed].sort((a, b) => overlap(b.teach, region) - overlap(a.teach, region))
-        .find((o) => overlap(o.teach, region) > 0) ??
-      objects.find((o) => !o.fixed && inside(o.teach, cx, cy)) ??
-      // A zone on no object follows the nearest one (same offset and scale).
-      [...objects].sort(
-        (a, b) =>
-          Math.hypot((a.teach.left + a.teach.right) / 2 - cx, (a.teach.top + a.teach.bottom) / 2 - cy) -
-          Math.hypot((b.teach.left + b.teach.right) / 2 - cx, (b.teach.top + b.teach.bottom) / 2 - cy),
-      )[0];
-    if (!anchor) return null;
+    const centreDistance = (o: { teach: Box }) =>
+      Math.hypot(
+        (o.teach.left + o.teach.right) / 2 - cx,
+        (o.teach.top + o.teach.bottom) / 2 - cy,
+      );
+    // The mover is never an anchor when the lesson has supports: anchoring a
+    // zone to the bowl places the START zone wherever the bowl is now (owner:
+    // "Practice started at the final goal"). Zones belong to the support that
+    // contains them, else overlaps them most, else the nearest support.
+    // Explicit approved binding first (owner physical-camera root cause,
+    // 2026-11-04): "zone-blue-towel / Area covering blue towel" belongs to
+    // the support named "blue towel". Teach-box geometry alone attached BOTH
+    // zones to the black mat, so the bowl on the real towel was outside every
+    // zone ("I can't see the bowl") and the bowl on the mat counted as the
+    // starting position.
+    const named = namedSupport(fixed, `${zoneId} ${input.zones.find((z) => z.zoneId === zoneId)?.description ?? ""}`);
+    const anchor = fixed.length
+      ? (named ??
+        fixed.find((o) => inside(o.teach, cx, cy)) ??
+        [...fixed]
+          .filter((o) => overlap(o.teach, region) > 0)
+          .sort((a, b) => overlap(b.teach, region) - overlap(a.teach, region))[0] ??
+        [...fixed].sort((a, b) => centreDistance(a) - centreDistance(b))[0])
+      : // No supports at all: relative to the nearest object (best effort).
+        [...objects].sort((a, b) => centreDistance(a) - centreDistance(b))[0];
+    if (!anchor) {
+      onIssue(`zone ${zoneId} has no object to attach to`);
+      return null;
+    }
+    // Two approved zones on ONE physical support would have to be invented
+    // by cutting its box in two; that is not evidence. Refuse the setup.
+    const shared = anchor.fixed
+      ? [...anchors].find(([, id]) => id === anchor.id)?.[0]
+      : undefined;
+    if (shared) {
+      onIssue(`zones ${shared} and ${zoneId} both attach to ${anchor.name ?? anchor.id}; refusing to split one object into two zones`);
+      return null;
+    }
+    anchors.set(zoneId, anchor.id);
     // A zone on a supporting object ("on the towel", "on the mat") is that
     // object's whole live box: the camera's angle differs from Teach, so a
     // small Teach-relative patch lands on the wrong part of the surface.
@@ -200,9 +236,29 @@ export function liveSetup(input: {
         else { b.bottom = Math.min(b.bottom, mid - 0.005); a.top = Math.max(a.top, mid + 0.005); }
       }
     }
-  if (ids.some((id) => zones[id].right <= zones[id].left || zones[id].bottom <= zones[id].top))
+  if (ids.some((id) => zones[id].right <= zones[id].left || zones[id].bottom <= zones[id].top)) {
+    onIssue("two supports overlap so much that their zones cannot be separated");
     return null;
+  }
   return { objects: objects.map(({ id, box, fixed }) => ({ id, box: box!, fixed })), zones };
+}
+
+const words = (text: string) =>
+  new Set(text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3));
+/**
+ * The one support whose approved name appears in the zone's id/description
+ * (every word of the name), or null when none or several do.
+ */
+export function namedSupport<T extends { name?: string }>(
+  supports: T[],
+  zoneText: string,
+): T | null {
+  const zone = words(zoneText);
+  const hits = supports.filter((o) => {
+    const name = [...words(o.name ?? "")];
+    return name.length > 0 && name.every((w) => zone.has(w));
+  });
+  return hits.length === 1 ? hits[0] : null;
 }
 
 /** Most textured patch not overlapping any object: the camera-motion anchor. */

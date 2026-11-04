@@ -114,3 +114,87 @@ it("supports placed edge to edge: overlapping support zones are split, so setup 
   expect(a.left).toBeCloseTo(towel.left, 6);
   expect(b.right).toBeCloseTo(mat.right, 6);
 });
+
+it("zones attach to the nearest support, never to the mover: Practice cannot 'start' at the goal (owner report)", async () => {
+  const { liveSetup } = await import("../src/practice/viewpoint");
+  // Teach zones sit on the bowl's base point just OUTSIDE the supports' Teach boxes.
+  const input = {
+    objects: [
+      { id: "bowl", teach: { left: 0.2, top: 0.3, right: 0.3, bottom: 0.5 }, fixed: false },
+      { id: "towel", teach: { left: 0.1, top: 0.52, right: 0.4, bottom: 0.7 }, fixed: true },
+      { id: "mat", teach: { left: 0.55, top: 0.52, right: 0.85, bottom: 0.7 }, fixed: true },
+    ],
+    zones: [
+      { zoneId: "start", region: { left: 0.22, top: 0.47, right: 0.28, bottom: 0.51 } },
+      { zoneId: "goal", region: { left: 0.67, top: 0.47, right: 0.73, bottom: 0.51 } },
+    ],
+  };
+  const towel = { left: 0.05, top: 0.6, right: 0.4, bottom: 0.8 }, mat = { left: 0.55, top: 0.6, right: 0.9, bottom: 0.8 };
+  // SAM finds the bowl ON THE MAT (the learner already completed the move).
+  const setup = liveSetup({ ...input, live: { bowl: { left: 0.65, top: 0.45, right: 0.78, bottom: 0.66 }, towel, mat } })!;
+  expect(setup.zones.start).toEqual(towel); // still the towel, not around the bowl
+  expect(setup.zones.goal).toEqual(mat);
+});
+
+it("owner export 2026-11-04: zones bind to the support they name, not to whichever Teach box contains them", async () => {
+  const { liveSetup } = await import("../src/practice/viewpoint");
+  // Teach geometry places BOTH zone centres inside the mat's Teach box (the
+  // failure seen live: towel zone x0.72-0.86, mat zone x0.57-0.71).
+  const objects = [
+    { id: "bowl", name: "white bowl", teach: { left: 0.6, top: 0.4, right: 0.7, bottom: 0.55 }, fixed: false },
+    { id: "towel", name: "blue towel", teach: { left: 0.1, top: 0.5, right: 0.3, bottom: 0.7 }, fixed: true },
+    { id: "mat", name: "black mat", teach: { left: 0.3, top: 0.45, right: 0.9, bottom: 0.75 }, fixed: true },
+  ];
+  const zones = [
+    { zoneId: "zone-blue-towel", description: "Area covering blue towel on left side of table", region: { left: 0.4, top: 0.5, right: 0.5, bottom: 0.6 } },
+    { zoneId: "zone-black-mat", description: "Area covering black mat on right side of table", region: { left: 0.65, top: 0.5, right: 0.75, bottom: 0.6 } },
+  ];
+  const towel = { left: 0.06, top: 0.45, right: 0.48, bottom: 0.73 },
+    mat = { left: 0.54, top: 0.45, right: 0.83, bottom: 0.73 };
+  const setup = liveSetup({ objects, zones, live: { bowl: { left: 0.59, top: 0.4, right: 0.75, bottom: 0.6 }, towel, mat } })!;
+  expect(setup.zones["zone-blue-towel"]).toEqual(towel);
+  expect(setup.zones["zone-black-mat"]).toEqual(mat);
+  // The bowl sitting on the real mat (owner screenshot, centre x≈0.65) is in
+  // the goal zone, never the start zone; on the real towel (x≈0.31) it is in
+  // the start zone instead of outside every zone.
+  const inside = (b: { left: number; right: number }, x: number) => x >= b.left && x <= b.right;
+  expect(inside(setup.zones["zone-blue-towel"], 0.65)).toBe(false);
+  expect(inside(setup.zones["zone-black-mat"], 0.65)).toBe(true);
+  expect(inside(setup.zones["zone-blue-towel"], 0.31)).toBe(true);
+});
+
+it("refuses (never splits) when two zones would attach to one physical support", async () => {
+  const { liveSetup } = await import("../src/practice/viewpoint");
+  const issues: string[] = [];
+  const setup = liveSetup(
+    {
+      objects: [
+        { id: "bowl", teach: { left: 0.6, top: 0.4, right: 0.7, bottom: 0.55 }, fixed: false },
+        { id: "towel", teach: { left: 0.1, top: 0.5, right: 0.3, bottom: 0.7 }, fixed: true },
+        { id: "mat", teach: { left: 0.3, top: 0.45, right: 0.9, bottom: 0.75 }, fixed: true },
+      ],
+      zones: [
+        { zoneId: "start", region: { left: 0.4, top: 0.5, right: 0.5, bottom: 0.6 } },
+        { zoneId: "goal", region: { left: 0.65, top: 0.5, right: 0.75, bottom: 0.6 } },
+      ],
+      live: {
+        bowl: { left: 0.59, top: 0.4, right: 0.75, bottom: 0.6 },
+        towel: { left: 0.06, top: 0.45, right: 0.48, bottom: 0.73 },
+        mat: { left: 0.54, top: 0.45, right: 0.83, bottom: 0.73 },
+      },
+    },
+    (issue) => issues.push(issue),
+  );
+  expect(setup).toBeNull();
+  expect(issues[0]).toMatch(/both attach to mat/);
+});
+
+it("start-position wording: a visible object away from its start is not 'unseen'", async () => {
+  const { startPositionRequest, boxCentreIn } = await import("../src/practice/felicity");
+  expect(startPositionRequest("white bowl", "Area covering blue towel on left side of table.")).toBe(
+    "I can see the white bowl, but it is not at its starting position yet. Put it at: Area covering blue towel on left side of table.",
+  );
+  const towel = { left: 0.06, top: 0.45, right: 0.48, bottom: 0.73 };
+  expect(boxCentreIn({ left: 0.59, top: 0.4, right: 0.75, bottom: 0.6 }, towel)).toBe(false);
+  expect(boxCentreIn({ left: 0.25, top: 0.45, right: 0.37, bottom: 0.6 }, towel)).toBe(true);
+});
