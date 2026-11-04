@@ -2,6 +2,17 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.19.2 — 2026-11-04
+
+### Fixed (owner: "the AI keeps taking long to confirm" a right or wrong move)
+- Root cause from the owner's exports: confirmation itself was fast (~0.4 s from the bowl landing to the verifier's decision), but the bowl kept being LOST while it sat still, so no decision could be made until it was found again (identity audit: occluded -> reacquired after three matches -> occluded, every ~0.5 s; 10–20 s ambiguous stretches). The colour-palette tracker was accepted when the bowl's colour differed from the thin ring around its box (the blue towel), but live tracking searches a wider window where the light table matched the bowl's hue, so every live frame was ambiguous.
+- A palette is now accepted only if it also measures the object in the live search window, and the candidate with the most margin over the 0.9 gate is kept; otherwise the object-only dense template tracks it. No gate or threshold was changed.
+- Tried and removed: a 0.4 s re-measure grace after a failed frame broke the identity-safety tests (silent reacquisition, lookalike rejection).
+
+### Verified
+- New end-to-end latency tests through the real tracker and real pipeline/verifier (bowl/towel/mat scene, ~15 frames/s): hand-carried move with 0.5 s occlusion and blurred frames verified 726 ms after landing; hand over the bowl while placing, verified 792 ms after it is visible again; a wrong move (bowl taken off the mat) flagged on the first clear frame off the mat. Before the fix the same scene never armed (bowl lost every frame).
+- Tracker bench: bowl at rest median 19 -> 6 ms per frame (no more flapping searches). Unit 792; type-check; build; Practice browser specs 32/33, the failing one ("…green, red and spoken correction", pause/resume step) is flaky with and without this change (2/5 vs 1/5 failures on repeat runs). Not yet measured on the owner's physical camera.
+
 ## 0.19.1 — 2026-11-04
 
 ### Changed (latency; owner request "low latency for everything")

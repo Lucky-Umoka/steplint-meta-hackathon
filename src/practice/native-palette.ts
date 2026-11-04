@@ -91,6 +91,7 @@ function groundAt(
     bins.set(key, bin);
   }
   const candidates = [...bins.values()].sort((a, b) => b.count - a.count);
+  let best: { profile: NativePalette; score: number } | null = null;
   for (const candidate of candidates.slice(0, 8)) {
     const colour = candidate.sum.map((v) => v / candidate.count) as Colour;
     const positives =
@@ -116,10 +117,22 @@ function groundAt(
         image.width *
         (result.box.bottom - result.box.top) *
         image.height;
-      return profile;
+      // The palette must also work the way it is used live: frame-to-frame
+      // tracking searches a wider window than the grounding ring. Owner
+      // exports 2026-11-04: a cream bowl on a blue towel passed the ring
+      // test, but the light table matched its hue inside the live window,
+      // so every frame was ambiguous and the bowl flapped lost/reacquired
+      // (decisions took seconds). Such a palette is refused; the dense
+      // object-only template tracks the object instead.
+      const live = measureNativePalette(image, { ...profile, lost: false });
+      if (live.quality !== "observed" || live.score === null) continue;
+      // Keep the candidate with the most margin over the 0.9 gate (a
+      // borderline palette flips to "lost" with small lighting changes).
+      if (!best || live.score > best.score)
+        best = { profile, score: live.score };
     }
   }
-  return null;
+  return best?.profile ?? null;
 }
 export function measureNativePalette(
   image: Pixels,
