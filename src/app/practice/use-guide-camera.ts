@@ -194,8 +194,12 @@ export function useGuideCamera(
           (limits.current?.width ?? 640) / v.videoWidth,
           (limits.current?.height ?? 480) / v.videoHeight,
         );
-        c.width = Math.max(1, Math.round(v.videoWidth * scale));
-        c.height = Math.max(1, Math.round(v.videoHeight * scale));
+        // Assigning width/height (even the same value) clears and
+        // reallocates the canvas every frame; only resize on a real change.
+        const w = Math.max(1, Math.round(v.videoWidth * scale)),
+          h = Math.max(1, Math.round(v.videoHeight * scale));
+        if (c.width !== w) c.width = w;
+        if (c.height !== h) c.height = h;
         const context = c.getContext("2d", { willReadFrequently: true });
         if (!context) return schedule();
         context.drawImage(v, 0, 0, c.width, c.height);

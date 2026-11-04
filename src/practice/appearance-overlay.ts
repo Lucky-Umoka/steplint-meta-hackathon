@@ -189,86 +189,149 @@ export function trackOverlay(
     );
     return { mean, sd };
   });
+  // Latency (owner request 2026-11-04): the candidate loop below is the
+  // tracker's hot path (~1,000 to ~9,400 evaluations per object per frame).
+  // Everything that does not depend on the candidate is prepared once:
+  // per-scale sample base positions (the SAME float expression as before,
+  // so Math.round(base + d) is bit-identical), flat template colours, and
+  // each outside sample's constant palette distance. Pixels are read once
+  // per sample and reused for illumination fitting and scoring. Decisions
+  // are unchanged (scripts/bench/tracking-bench.ts checksum).
+  const sampleCount = t.samples.length;
+  const insideFlag = new Uint8Array(sampleCount),
+    colour = new Int16Array(sampleCount * 3),
+    negativeCandidate = new Uint8Array(sampleCount);
+  for (let i = 0; i < sampleCount; i++) {
+    const sample = t.samples[i];
+    insideFlag[i] = sample.inside ? 1 : 0;
+    colour[i * 3] = sample.color[0];
+    colour[i * 3 + 1] = sample.color[1];
+    colour[i * 3 + 2] = sample.color[2];
+    if (!sample.inside) {
+      let old = 255;
+      for (const c of t.palette)
+        old = Math.min(
+          old,
+          Math.max(
+            Math.abs(c[0] - sample.color[0]),
+            Math.abs(c[1] - sample.color[1]),
+            Math.abs(c[2] - sample.color[2]),
+          ),
+        );
+      negativeCandidate[i] = old > 35 ? 1 : 0;
+    }
+  }
+  const paletteFlat = t.palette.flat();
+  const bases = new Map<number, { x: Float64Array; y: Float64Array }>();
+  const baseFor = (scale: number) => {
+    let base = bases.get(scale);
+    if (!base) {
+      base = { x: new Float64Array(sampleCount), y: new Float64Array(sampleCount) };
+      for (let i = 0; i < sampleCount; i++) {
+        base.x[i] = t.origin.x + (t.samples[i].x - t.origin.x) * scale;
+        base.y[i] = t.origin.y + (t.samples[i].y - t.origin.y) * scale;
+      }
+      bases.set(scale, base);
+    }
+    return base;
+  };
+  const pixel = new Int32Array(sampleCount);
+  const width = p.width,
+    height = p.height,
+    data = p.data;
   const evaluate = (dx: number, dy: number, scale = currentScale) => {
-    histogram.fill(0);
-    let gain = [1, 1, 1],
-      offset = [0, 0, 0];
-    if (t.illumination) {
-      let n = 0;
-      const sum = [0, 0, 0],
-        sq = [0, 0, 0];
-      for (const sample of t.samples) {
-        if (!sample.inside) continue;
-        const x = Math.round(t.origin.x + (sample.x - t.origin.x) * scale + dx),
-          y = Math.round(t.origin.y + (sample.y - t.origin.y) * scale + dy);
-        if (x < 0 || y < 0 || x >= p.width || y >= p.height) return Infinity;
-        const index = (y * p.width + x) * 4;
-        for (let c = 0; c < 3; c++) {
-          const v = p.data[index + c];
-          sum[c] += v;
-          sq[c] += v * v;
-        }
+    const base = baseFor(scale);
+    // One read per sample; any sample outside the frame rejects the
+    // candidate (as both former passes did).
+    let n = 0,
+      s0 = 0,
+      s1 = 0,
+      s2 = 0,
+      q0 = 0,
+      q1 = 0,
+      q2 = 0;
+    for (let i = 0; i < sampleCount; i++) {
+      const x = Math.round(base.x[i] + dx),
+        y = Math.round(base.y[i] + dy);
+      if (x < 0 || y < 0 || x >= width || y >= height) return Infinity;
+      const index = (y * width + x) * 4;
+      pixel[i] = index;
+      if (insideFlag[i]) {
+        const r = data[index],
+          g = data[index + 1],
+          b = data[index + 2];
+        s0 += r;
+        s1 += g;
+        s2 += b;
+        q0 += r * r;
+        q1 += g * g;
+        q2 += b * b;
         n++;
       }
+    }
+    let g0 = 1,
+      g1 = 1,
+      g2 = 1,
+      o0 = 0,
+      o1 = 0,
+      o2 = 0;
+    const illumination = !!t.illumination;
+    if (illumination) {
       if (!n) return Infinity;
-      gain = [0, 1, 2].map((c) => {
-        const mean = sum[c] / n,
-          sd = Math.sqrt(Math.max(0, sq[c] / n - mean * mean));
+      const gainOf = (sum: number, sq: number, c: number) => {
+        const mean = sum / n,
+          sd = Math.sqrt(Math.max(0, sq / n - mean * mean));
         // Flat regions: brightness offset only (no noise amplification).
         return stats[c].sd < 6 || sd < 6 ? 1 : stats[c].sd / sd;
-      });
+      };
+      g0 = gainOf(s0, q0, 0);
+      g1 = gainOf(s1, q1, 1);
+      g2 = gainOf(s2, q2, 2);
       // A plausible global lighting change, not an arbitrary remapping.
-      if (gain.some((g) => g < 0.5 || g > 2)) return Infinity;
-      offset = [0, 1, 2].map((c) => stats[c].mean - gain[c] * (sum[c] / n));
+      if (g0 < 0.5 || g0 > 2 || g1 < 0.5 || g1 > 2 || g2 < 0.5 || g2 > 2)
+        return Infinity;
+      o0 = stats[0].mean - g0 * (s0 / n);
+      o1 = stats[1].mean - g1 * (s1 / n);
+      o2 = stats[2].mean - g2 * (s2 / n);
     }
-    const map = (v: number, c: number) =>
-      t.illumination
-        ? Math.min(255, Math.max(0, Math.round(v * gain[c] + offset[c])))
-        : v;
+    histogram.fill(0);
     let count = 0,
       total = 0,
       negative = 0,
       negativeCount = 0;
-    for (const sample of t.samples) {
-      const x = Math.round(t.origin.x + (sample.x - t.origin.x) * scale + dx),
-        y = Math.round(t.origin.y + (sample.y - t.origin.y) * scale + dy);
-      if (x < 0 || y < 0 || x >= p.width || y >= p.height) return Infinity;
-      const index = (y * p.width + x) * 4,
-        r = map(p.data[index], 0),
-        g = map(p.data[index + 1], 1),
-        b = map(p.data[index + 2], 2);
-      if (sample.inside) {
+    for (let i = 0; i < sampleCount; i++) {
+      const index = pixel[i];
+      let r = data[index],
+        g = data[index + 1],
+        b = data[index + 2];
+      if (illumination) {
+        r = Math.min(255, Math.max(0, Math.round(r * g0 + o0)));
+        g = Math.min(255, Math.max(0, Math.round(g * g1 + o1)));
+        b = Math.min(255, Math.max(0, Math.round(b * g2 + o2)));
+      }
+      if (insideFlag[i]) {
         const error = Math.max(
-          Math.abs(r - sample.color[0]),
-          Math.abs(g - sample.color[1]),
-          Math.abs(b - sample.color[2]),
+          Math.abs(r - colour[i * 3]),
+          Math.abs(g - colour[i * 3 + 1]),
+          Math.abs(b - colour[i * 3 + 2]),
         );
         histogram[error]++;
         count++;
         total += error;
       } else {
         negativeCount++;
-        let old = 255,
-          now = 255;
-        for (const colour of t.palette) {
-          old = Math.min(
-            old,
-            Math.max(
-              Math.abs(colour[0] - sample.color[0]),
-              Math.abs(colour[1] - sample.color[1]),
-              Math.abs(colour[2] - sample.color[2]),
-            ),
-          );
+        if (!negativeCandidate[i]) continue;
+        let now = 255;
+        for (let k = 0; k < paletteFlat.length; k += 3)
           now = Math.min(
             now,
             Math.max(
-              Math.abs(colour[0] - r),
-              Math.abs(colour[1] - g),
-              Math.abs(colour[2] - b),
+              Math.abs(paletteFlat[k] - r),
+              Math.abs(paletteFlat[k + 1] - g),
+              Math.abs(paletteFlat[k + 2] - b),
             ),
           );
-        }
-        if (old > 35 && now < 25) negative++;
+        if (now < 25) negative++;
       }
     }
     const retained = Math.ceil(count * fraction);
@@ -277,9 +340,9 @@ export function trackOverlay(
       let remaining = retained;
       total = 0;
       for (let error = 0; error < 256 && remaining; error++) {
-        const n = Math.min(remaining, histogram[error]);
-        total += n * error;
-        remaining -= n;
+        const k = Math.min(remaining, histogram[error]);
+        total += k * error;
+        remaining -= k;
       }
     }
     return (

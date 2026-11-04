@@ -2,6 +2,18 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.19.1 — 2026-11-04
+
+### Changed (latency; owner request "low latency for everything")
+- Tracker hot path (`trackOverlay` candidate scoring) rewritten without changing a single decision: per-scale sample positions computed once (same float expression, so rounding is bit-identical), flat template colours, constant palette distances precomputed, one pixel read per sample. Benchmark `scripts/bench/tracking-bench.ts` (bowl/towel/mat scene, 320x180): still median 47 -> 19 ms, carry 26 -> 12 ms (p95 65 -> 30 ms), lost-object search p95 128 -> 48 ms; decisions checksum identical (962558481).
+- The tracker gets the newest waiting camera frame immediately when it replies (was: idle until the next camera tick); a frame is never tracked twice.
+- Camera capture no longer resizes (clears) its canvas every frame.
+- SAM camera-locate retry after "scene changed" waits exactly for the server's 8 s interval instead of retrying early into an HTTP 429 and a further 8 s wait.
+- Gideon's 3D face renders at 12 instead of 24 frames/s so it competes less with live tracking. Measured in a GPU-less test browser (moved-camera page test, page's own latency export): avatar at 24 fps 8 frames/s, median 153 ms frame-to-feedback; at 12 fps 11 frames/s, 133 ms; without WebGL 20 frames/s, 68 ms. Tracker time ~20 ms in all cases.
+
+### Verified
+- Unit 789; type-check; eslint 0 errors; production build; Practice browser specs 33/33 on the final build. Confirmation timing rules (fresh frames, stable time) unchanged. Not yet measured on the owner's physical camera.
+
 ## 0.19.0 — 2026-11-04
 
 ### Added (Gideon 3D upgrade and UI polish; owner request)
