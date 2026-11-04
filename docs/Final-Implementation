@@ -1,84 +1,137 @@
-# STEPLINT — PHASE 0: FINAL REPOSITORY AUDIT
+Felicity should automatically resolve inconsistencies when the existing evidence supports a correction. She must not invent missing physical evidence or declare an unobservable action successful.
 
-We are preparing StepLint for the Meta AI Developer Hackathon submission.
+The creator or learner should not see internal technical errors, validation exceptions or agent logs. They should see a ready lesson, or one simple instruction if the camera genuinely needs help.
 
-Our priority is a working physical-world demonstration, not architectural perfection.
+Branch fix/phyical-practice-test. TIME-BOXED 20 minutes. Do NOT change behaviour.
+Find the exact stage where Teach -> Practice fails on my real clip.
+1. Read src/server/teach/pipeline.ts (compileLesson, draftWithOneCorrection),
+   src/app/teach/local-teach.tsx, review.tsx, src/app/practice/local-practice.tsx,
+   src/practice/local-tracking.ts (bootstrapLocal).
+2. Add structured logging (no secrets, no video bytes): stage reached, objects
+   kept/dropped with reasons, movement windows per object, Spark validation issues,
+   and in Practice the exact bootstrapLocal error and lifecycle state.
+3. Tell me the exact paid request counts, wait for my approval, then I run one
+   Teach+Practice cycle.
+4. Output a failure ledger: every place the user sees an error or dead end, with
+   file:line, cause, and whether code, Felicity repair, or only a re-record fixes it.
+Run tsc/vitest and report real output.
 
-Before writing or modifying any code, inspect the current repository and report the existing implementation.
+# STEPLINT EMERGENCY REPAIR — PHASE 1
+## Diagnose the actual Teach → Practice failure
 
-## 1. Inspect these areas
+We have a hackathon submission deadline approaching. The Teach → Practice experience has repeatedly failed to work smoothly in real use.
 
-- Practice interface and camera lifecycle.
-- Practice tracker and object identity recovery.
-- Deterministic verifier and step-completion logic.
-- Gideon avatar, voice, and feedback system.
-- Existing Felicity or recovery logic, if any.
-- Existing API routes for recovery and AI reasoning.
-- Existing Baseten adapter and Muse Spark Open configuration.
-- Teach interface and demonstration upload.
-- Teach compilation pipeline.
-- Muse Voice Transcribe integration.
-- SAM 3.1 integration.
-- V3 procedure contract, evidence, approval, and persistence.
-- Teach-to-Practice handoff.
-- Existing tests and deployment configuration.
+I do not want another architecture, another Practice engine, another AI framework, or another generic error-handling layer.
 
-Pay particular attention to:
+I want you to inspect the CURRENT repository and identify the exact reason the latest Teach → Practice workflow fails.
 
-- `src/app/teach/local-teach.tsx`
-- `src/app/api/teach/compile`
-- `src/server/teach/`
+### STEP 1 — Establish the real repository state
+
+Run:
+
+- `git branch --show-current`
+- `git status --short`
+- `git log -6 --oneline`
+- `git diff --stat`
+- `git diff`
+
+Do not discard or overwrite uncommitted owner changes.
+
+Read:
+
+- `CLAUDE.md`
+- `AGENTS.md`
+- `PLANS.md`
+- `docs/DECISIONS.md`
+- `docs/HANDOFF_NEXT_AGENT.md`
+- `docs/REPAIR_VERIFICATION.md`
+- `docs/ACCURACY_GAPS.md`
+- `docs/PRACTICE_V3_PHASE3.md`
+- `docs/PRACTICE_V4_PHASE4.md`
+- `docs/PRACTICE_V5_PHASE5.md`
+
+Use the newest recorded decisions and retained test evidence. Historical documents may contradict one another.
+
+### STEP 2 — Inspect the entire Teach pipeline
+
+Trace the real implementation:
+
+`local-teach.tsx → /api/teach/compile → pipeline.ts → review.tsx → /api/teach/approve → approved artifact → Practice lesson loading`
+
+Inspect:
+
+- Original video and its timestamps.
+- Voice transcript and its timestamps.
+- SAM object identities, boxes and masks.
+- Source reference frames.
+- Starting conditions.
+- Every intermediate action.
+- Every action's start/change/result evidence.
+- Final conditions and final goal.
+- Felicity audit findings.
+- Procedure approval and revision.
+- The exact saved artifact consumed by Practice.
+
+Determine whether the full intended procedure survives every transformation.
+
+### STEP 3 — Inspect Practice execution
+
+Trace:
+
+`approved artifact → load-approved-lesson → automatic setup → local tracking → watch set → verifier → final goal`
+
+Identify whether the approved starting positions, object identities, zones and measurement points match the evidence Practice actually observes.
+
+Inspect the latest recorded Practice failure, including any retained run artifacts, logs, screenshots, offline replays and diagnostic exports available in the current repository.
+
+Prioritize the newest failure, not an old failure that has already been repaired.
+
+### STEP 4 — Inspect Felicity's actual responsibilities
+
+Inspect:
+
+- `src/server/teach/audit.ts`
+- `src/app/api/teach/audit/route.ts`
+- `src/app/teach/review.tsx`
+- `src/practice/felicity.ts`
 - `src/app/practice/local-practice.tsx`
-- `src/practice/`
-- `src/procedure/verifier.ts`
-- `src/components/GuideAvatar.tsx`
+- `src/app/api/practice/recover/route.ts`, if present.
 
-These are starting points, not permission to assume the implementation is unchanged. Discover the actual current paths.
+Determine:
 
-## 2. Identify existing functionality
+1. Does Teach Felicity actually compare transcript, measured video evidence, draft steps and final goal?
+2. Are audit findings only displayed, or can grounded issues be automatically corrected?
+3. Does Practice Felicity receive the current step, current object identity, current observations and verifier state?
+4. Can the existing system recover from a bad setup or inconsistent evidence without asking the learner to debug it?
+5. Are old or stale AI responses prevented from affecting a new incident?
 
-Create a report with four categories:
+### STEP 5 — Identify the single highest-impact root cause
 
-A. Already implemented and working.
+Rank the failures by impact on the complete workflow.
 
-B. Implemented but not sufficiently tested.
+Do not simply list every possible improvement.
 
-C. Missing or broken.
+Identify:
 
-D. Features that should not be touched because they already work.
+- The exact failing file and function.
+- The exact data that becomes incorrect or is lost.
+- The reason the existing recovery architecture does not resolve it.
+- The smallest safe correction.
+- The existing test or retained artifact that can prove the correction.
 
-## 3. Identify the smallest implementation plan
+### Restrictions
 
-Recommend the minimum code changes required to deliver:
+- Do not change source code yet.
+- Do not make paid Meta or Baseten calls.
+- Do not change model providers or model identifiers.
+- Do not lower confidence or identity thresholds.
+- Do not bypass approval.
+- Do not modify the deterministic verifier to force completion.
+- Do not create a hardcoded phone/bottle-specific production workaround.
+- Do not commit, push or deploy.
 
-1. Immediate local Gideon warnings.
-2. Background Felicity recovery advice.
-3. Stale-response protection.
-4. Object occlusion and reacquisition handling.
-5. Teach procedure quality audit.
-6. Complete Teach-to-Practice demonstration.
+### Final response
 
-## 4. Important restrictions
+Give me the three most important findings, the exact root cause of the latest failure, and the smallest implementation plan.
 
-- Do not write or modify code.
-- Do not install packages.
-- Do not change model providers.
-- Do not change model identifiers.
-- Do not make live paid model calls.
-- Do not commit, push, or deploy.
-
-Preserve the existing Muse Spark Open integration through Baseten. Read its actual model identifier from the code or environment configuration. Do not invent one.
-
-## 5. Final report
-
-Give me:
-
-- Existing architecture.
-- Features already working.
-- Critical remaining bugs.
-- Files that need modification.
-- Recommended implementation order.
-- Existing test commands.
-- Risks that could prevent the demo from working.
-
-Be concise and specific. Do not propose a major rewrite.
+I need a practical diagnosis, not another architectural proposal.

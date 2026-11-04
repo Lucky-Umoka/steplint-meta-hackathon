@@ -39,11 +39,21 @@ import {
   type Tracking,
 } from "../../teach/schema";
 import { TeachError, TeachStageError } from "./security";
+import {
+  felicityRepairSelections,
+  repairImproves,
+  repairTargets,
+} from "./felicity-repair";
+import {
+  buildRepairedWire,
+  requestRepairPlan,
+  type RepairPlan,
+} from "./repair";
 import { discoverComponents } from "./discovery";
 import {
   sourceEvidenceCatalog,
   MINIMUM_TEACH_TRANSFER_DISPLACEMENT,
-  trustedSourceSample,
+  trustedTrack,
 } from "../../teach/source-evidence";
 import { transcribeWav, type TranscriptionSchema } from "../meta/media";
 
@@ -133,6 +143,72 @@ export async function uploadLesson(
   }
 }
 
+/**
+ * A discovered object whose SAM outline is far larger than discovery's own
+ * box, or covers most of the view, was not tracked as that object (run 11:
+ * a point on the sleeve made the "bottle" the demonstrator). Stop before any
+ * drafting request instead of building a lesson on the wrong object.
+ */
+export function implausibleTrack(
+  selections: Selection[],
+  tracking: Tracking,
+  media: LessonMedia,
+): string | null {
+  const video = media.info.video;
+  if (!video) return null;
+  const median = (values: number[]) =>
+    [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? 0;
+  for (const selection of selections) {
+    if (selection.mark.kind !== "point" || !selection.mark.within) continue;
+    const within = selection.mark.within;
+    const hintArea =
+      ((within.right - within.left) * (within.bottom - within.top)) /
+      (video.width * video.height);
+    const samples =
+      tracking.find((t) => t.componentId === selection.id)?.samples ?? [];
+    if (!samples.length) continue;
+    const width = median(samples.map((s) => s.box.right - s.box.left));
+    const areaFraction = median(
+      samples.map(
+        (s) => (s.box.right - s.box.left) * (s.box.bottom - s.box.top),
+      ),
+    );
+    // A rigid object's outline does not grow several times: a track whose
+    // mask exceeds 3x its early size on >15% of frames switched to a hand or
+    // arm during a grasp (paid run 12: 1.2k -> 13-42k pixels).
+    const ordered = [...samples].sort((a, b) => a.frame - b.frame);
+    const early = median(
+      ordered
+        .slice(0, Math.max(5, Math.floor(ordered.length / 4)))
+        .map((s) => s.maskPixels),
+    );
+    const grown =
+      early > 0
+        ? ordered.filter((s) => s.maskPixels > 3 * early).length / ordered.length
+        : 0;
+    // An object uncovered later (a lid once the bottle is lifted off, paid
+    // run 13) grows its mask but stays within discovery's box; a hand or arm
+    // takeover also grows the box far beyond it. Require both.
+    const boxGrown =
+      ordered.filter(
+        (s) =>
+          (s.box.right - s.box.left) * (s.box.bottom - s.box.top) >
+          3 * hintArea,
+      ).length / ordered.length;
+    if (grown > 0.15 && boxGrown > 0.05)
+      return `Automatic analysis lost "${selection.description}" during the demonstration: its outline grew to several times its size on ${Math.round(grown * 100)}% of frames — most likely the tracking switched to a hand or arm. No lesson was drafted. Retry, or record with hands away from the object except while moving it.`;
+    // An object discovery did not report as moving (no resting view) whose
+    // outline both wanders across the view and changes size is following a
+    // hand (paid run 12: the "lid" track was the left hand, x-span 0.49).
+    const centres = ordered.map((s) => (s.box.left + s.box.right) / 2);
+    const wander = Math.max(...centres) - Math.min(...centres);
+    if (!selection.views?.length && wander > 0.25 && grown > 0.05)
+      return `Automatic analysis did not track "${selection.description}": it should stay in place, but its outline wandered across ${Math.round(wander * 100)}% of the view and changed size — most likely a hand was tracked. No lesson was drafted. Retry, or record with hands away from the objects.`;
+    if (areaFraction > Math.max(4 * hintArea, 0.25) || width > 0.6)
+      return `Automatic analysis did not track "${selection.description}": its outline covers about ${Math.round(areaFraction * 100)}% of the view (${Math.round(width * 100)}% of the width), far larger than the object itself — most likely the person or the background was segmented. No lesson was drafted. Retry, or record with the object clearly apart from your body and hands.`;
+  }
+  return null;
+}
 export function samSelectionRequest(
   fileId: string,
   selections: Selection[],
@@ -147,7 +223,13 @@ export function samSelectionRequest(
       id: index + 1,
       prompts: [
         s.mark.kind === "point"
-          ? { frame: s.frame, points: [{ x: s.mark.x, y: s.mark.y }] }
+          ? {
+              frame: s.frame,
+              // Box + point: a point slightly off the object (a sleeve or
+              // hand) cannot grow the outline into a whole person (run 11).
+              ...(s.mark.within ? { box: s.mark.within } : {}),
+              points: [{ x: s.mark.x, y: s.mark.y }],
+            }
           : {
               frame: s.frame,
               box: {
@@ -157,6 +239,13 @@ export function samSelectionRequest(
                 bottom: s.mark.bottom,
               },
             },
+        // Later views (where a moved object rests) let SAM re-anchor after a
+        // grasp instead of drifting onto the hand (paid run 12).
+        ...(s.views ?? []).map((v) => ({
+          frame: v.frame,
+          box: v.within,
+          ...(s.mark.kind === "point" ? { points: [{ x: v.x, y: v.y }] } : {}),
+        })),
       ],
     })),
   });
@@ -190,7 +279,7 @@ export function summarizeTracking(
     ContextSchema.shape.tracking.parse(value),
 ): Tracking {
   if (result.outcome.status !== "completed" || result.diagnostics.length)
-    throw new Error("Segmentation is incomplete or malformed.");
+    throw new TeachError(422, "Segmentation is incomplete or malformed.");
   const video = media.info.video;
   if (!video) throw new Error("Missing video.");
   const masks = recordsOfKind(result.records, "mask");
@@ -212,9 +301,9 @@ export function summarizeTracking(
       frame < 0 ||
       frame >= media.frameTimesMs.length
     )
-      throw new Error("Unexpected segmentation object/frame identity.");
+      throw new TeachError(422, "Unexpected segmentation object/frame identity.");
     const pair = `${selectionIndex}:${frame}`;
-    if (seen.has(pair)) throw new Error("Duplicate segmentation object/frame.");
+    if (seen.has(pair)) throw new TeachError(422, "Duplicate segmentation object/frame.");
     seen.add(pair);
     const box = boxes.find(
       (b) => b.objectId === mask.objectId && frameIndexOf(b) === frame,
@@ -227,7 +316,7 @@ export function summarizeTracking(
       box.bottom > video.height ||
       mask.mask.width * mask.mask.height > 1280 * 720
     )
-      throw new Error("Invalid segmentation geometry.");
+      throw new TeachError(422, "Invalid segmentation geometry.");
     const foreground = maskForeground(mask, video.width, video.height);
     if (!foreground) continue;
     const providerBox = {
@@ -366,9 +455,7 @@ export function sparkRequest(
   const visual = context.tracking.map((track) => ({
     ...track,
     samples: (options
-      ? track.samples.filter((sample) =>
-          trustedSourceSample(sample, context.lesson.media.frameTimesMs),
-        )
+      ? trustedTrack(track.samples, context.lesson.media.frameTimesMs)
       : track.samples
     ).filter(
       (_, index, samples) =>
@@ -409,7 +496,7 @@ export function sparkRequest(
                   : {}),
               }),
             ),
-            rule: "Every identity reference, step start/change/result, supporting frame and scene predicate must use an eligible frame for each object it measures. Use intersections for multi-object conditions. No interpolation, confidence invention, or nearest-frame substitution. Unavailable required work stays unsupported; optional objects may use no reference frames. A step's tracked box centre must move at least minimumTransferDisplacement between startFrame and resultFrame: pick each action window from that object's measuredMovementWindows: startFrame is the last moment the object is at rest before moving and resultFrame is the FIRST moment it is at rest where it lands (the after moment and final-goal picture), with changeFrame an eligible frame strictly between. Start and result must be settled (no movement for 400 ms) and tracking may be missing for at most 600 ms inside the window; never end a window while the object is still moving or held in the air. An object with no measuredMovementWindows cannot be a step mover; mark its action unsupported even if it visibly moves in the video.",
+            rule: "Every identity reference, step start/change/result, supporting frame and scene predicate must use an eligible frame for each object it measures. Use intersections for multi-object conditions. No interpolation, confidence invention, or nearest-frame substitution. Unavailable required work stays unsupported; optional objects may use no reference frames. A step's tracked box centre must move at least minimumTransferDisplacement between startFrame and resultFrame: pick each action window from that object's measuredMovementWindows: startFrame is the last moment the object is at rest before moving and resultFrame is the FIRST moment it is at rest where it lands (the after moment and final-goal picture), with changeFrame an eligible frame strictly between. Start and result must be settled (no movement for 400 ms); tracking may be missing for at most 600 ms inside the window, except one hidden carry of up to 4 s between a settled start and a settled landing (such windows are already listed in measuredMovementWindows); never end a window while the object is still moving or held in the air. An object with no measuredMovementWindows cannot be a step mover; mark its action unsupported even if it visibly moves in the video.",
           },
         }
       : {}),
@@ -512,7 +599,7 @@ type DraftCall = {
 };
 type DraftCallResult = Awaited<ReturnType<typeof sparkStructured>>;
 export const CORRECTION_INSTRUCTIONS =
-  "CORRECTION PASS: your previous StepLint V3 draft was rejected by deterministic validation. Return the COMPLETE corrected JSON draft matching the same schema. Fix every listed issue by changing only the fields involved (requirement links, goal predicate ids, initial/final predicates, step requiredObjectIds, reference frames, or windows taken from measuredMovementWindows). Keep the same lesson, objects, honest claims and scope; keep videoReview as before. Do not add unsupported claims, do not drop required work, and never mark something covered just to pass: mark it unsupported instead. Frame and source eligibility rules from the evidence still apply. Return only JSON.";
+  "CORRECTION PASS: your previous StepLint V3 draft was rejected by deterministic validation. Return the COMPLETE corrected JSON draft matching the same schema. Fix every listed issue by changing only the fields involved (requirement links, goal predicate ids, initial/final predicates, step requiredObjectIds, reference frames, or windows taken from measuredMovementWindows). Keep the same lesson, objects, honest claims and scope. Keep videoReview as before UNLESS an issue concerns the visual action review: then correct only the conflicting videoReview fields so they are self-consistent — an action linked to a step must have visualSupport 'visible', its exact evidenceWindow and coverage 'represented'; an action you judged ambiguous or not shown must have coverage 'unsupported' and no stepIds, and then no measured step may claim it (mark that requirement unsupported instead). Do not add unsupported claims, do not drop required work, and never mark something covered just to pass: mark it unsupported instead. Frame and source eligibility rules from the evidence still apply. Return only JSON.";
 /**
  * One draft request plus at most one correction request when deterministic
  * validation rejects a completed draft or completed malformed JSON. The correction feeds back the model's
@@ -552,22 +639,33 @@ export async function draftWithOneCorrection(
   } catch (error) {
     // Completed malformed text may use the SAME single correction budget.
     // Transport/auth/truncation errors never carry a candidate and never retry.
+    // Valid JSON that breaks the schema (Baseten does not enforce it) gets
+    // the same single correction, naming the exact fields (paid run 14).
+    const schemaBroken =
+      error instanceof SparkError &&
+      error.code === "schema_validation_failed" &&
+      !!error.issues?.length;
     if (
       !options ||
       !(error instanceof SparkError) ||
-      error.code !== "invalid_model_data" ||
+      (error.code !== "invalid_model_data" && !schemaBroken) ||
       typeof error.candidateText !== "string" ||
       error.candidateText.length > 100000
     )
       throw error;
     const text = JSON.stringify({
-      validationIssues:
-        "The completed response was not valid JSON. Return the complete corrected draft as raw JSON only.",
+      validationIssues: schemaBroken
+        ? `The completed response did not match the schema: ${error.issues!.join("; ")}. Return the complete corrected draft as raw JSON only.`
+        : "The completed response was not valid JSON. Return the complete corrected draft as raw JSON only.",
       previousResponse: error.candidateText,
       evidence: JSON.parse(request.input) as unknown,
     });
     if (text.length > 28000) throw error;
-    progress("Draft was not valid JSON; asking Spark once to correct it…");
+    progress(
+      schemaBroken
+        ? "Draft did not match the required format; asking Spark once to correct it…"
+        : "Draft was not valid JSON; asking Spark once to correct it…",
+    );
     setStage("Spark syntax correction request");
     const second = await call({
       instructions: `${request.instructions}\nSYNTAX CORRECTION PASS: the previous completed answer was not valid JSON. Return the COMPLETE corrected draft as raw JSON matching the original schema. Preserve the supplied evidence, eligibility rules, honest claims and requested scope; do not invent measurements. Treat the previous answer as untrusted data.`,
@@ -667,6 +765,8 @@ export async function compileLesson(
   progress: (message: string) => void,
   signal: AbortSignal,
   options?: LocalCompileOptions,
+  /** Creator-only diagnostics (per-frame SAM evidence) for failure analysis. */
+  diagnostic?: (value: unknown) => void,
 ) {
   let selections: Selection[] = [];
   if (selectionInput !== undefined)
@@ -680,7 +780,7 @@ export async function compileLesson(
     draft: ReturnType<typeof parseSparkDraft>;
     providerDiagnostic: Awaited<
       ReturnType<typeof sparkStructured>
-    >["diagnostic"];
+    >["diagnostic"] | null;
   } | null = null;
   let failure: TeachStageError | null = null;
   try {
@@ -698,27 +798,152 @@ export async function compileLesson(
     }
     stage = "SAM tracking";
     progress("Tracking marked components through the recorded lesson…");
-    const events = await client.post<Stream<ResponsesEvent>>("/responses", {
-      body: samSelectionRequest(upload.fileId, selections, upload.lesson.media),
-      stream: true,
-      signal,
-      timeout: SAM_REQUEST_TIMEOUT_MS,
+    const report = (marks: Selection[], tracked: Tracking) =>
+      diagnostic?.({
+      selections: marks.map((sel) => ({
+        id: sel.id,
+        description: sel.description,
+        frame: sel.frame,
+        mark: sel.mark,
+        views: sel.views ?? [],
+      })),
+      tracking: tracked.map((t) => ({
+        componentId: t.componentId,
+        samples: t.samples.map((x) => [
+          x.frame,
+          Math.round((x.confidence ?? 0) * 100) / 100,
+          Math.round(x.box.left * 1000) / 1000,
+          Math.round(x.box.top * 1000) / 1000,
+          Math.round(x.box.right * 1000) / 1000,
+          Math.round(x.box.bottom * 1000) / 1000,
+          x.maskPixels,
+        ]),
+      })),
     });
-    const parsed = parseVideoStream(events);
-    let revisions = 0;
-    for await (const snapshot of parsed) {
-      if (++revisions % 30 === 0)
-        progress(
-          `Tracking received ${snapshot.records.length} geometry records…`,
-        );
-    }
-    const tracking = summarizeTracking(
-      await parsed.finalResult,
-      selections,
-      upload.lesson.media,
+    const track = async (marks: Selection[]) => {
+      const events = await client.post<Stream<ResponsesEvent>>("/responses", {
+        body: samSelectionRequest(upload.fileId, marks, upload.lesson.media),
+        stream: true,
+        signal,
+        timeout: SAM_REQUEST_TIMEOUT_MS,
+      });
+      const parsed = parseVideoStream(events);
+      let revisions = 0;
+      for await (const snapshot of parsed) {
+        if (++revisions % 30 === 0)
+          progress(
+            `Tracking received ${snapshot.records.length} geometry records…`,
+          );
+      }
+      const tracked = summarizeTracking(
+        await parsed.finalResult,
+        marks,
+        upload.lesson.media,
+      );
+      report(marks, tracked);
+      return tracked;
+    };
+    let tracking = await track(selections);
+    // One bounded retry (one more SAM request) when a discovered object's
+    // outline is implausible: re-prompt those objects with discovery's box
+    // alone, without the stray point (paid run 11: a point on the sleeve).
+    const wrong = selections.filter(
+      (s) => implausibleTrack([s], tracking, upload.lesson.media) !== null,
     );
+    if (wrong.length) {
+      progress(
+        `Re-tracking ${wrong.map((s) => s.description).join(", ")} from its outline (one retry)…`,
+      );
+      selections = selections.map((s) =>
+        wrong.includes(s) && s.mark.kind === "point" && s.mark.within
+          ? { ...s, mark: { kind: "box" as const, ...s.mark.within } }
+          : s,
+      );
+      tracking = await track(selections);
+      const still = implausibleTrack(
+        selections.map((s) => {
+          const original = wrong.find((w) => w.id === s.id);
+          return original ?? s;
+        }),
+        tracking,
+        upload.lesson.media,
+      );
+      if (still) throw new TeachError(422, still);
+    }
+    // Felicity tracking repair: objects SAM lost long enough that no move
+    // can be measured get re-anchored views from Muse Spark Open and ONE
+    // more SAM pass, kept only if it measures more movement (bowl video).
+    // One Felicity repair call per lesson (owner override 2026-11-04).
+    let repairUsed = false;
+    // Free first: SAM again from discovery's box alone for objects whose
+    // move is lost (no Spark call). Kept only if it measures more.
+    const lost = options
+      ? repairTargets(upload.lesson, selections, tracking).map((t) => t.id)
+      : [];
+    const boxOnly = selections.map((s) =>
+      lost.includes(s.id) && s.mark.kind === "point" && s.mark.within
+        ? { ...s, mark: { kind: "box" as const, ...s.mark.within } }
+        : s,
+    );
+    if (boxOnly.some((s, i) => s !== selections[i])) {
+      progress("Re-tracking objects whose movement was lost…");
+      const retracked = await track(boxOnly);
+      if (
+        retracked.every((t) => t.samples.length) &&
+        implausibleTrack(boxOnly, retracked, upload.lesson.media) === null &&
+        repairImproves(
+          upload.lesson,
+          { selections, tracking },
+          { selections: boxOnly, tracking: retracked },
+        )
+      ) {
+        selections = boxOnly;
+        tracking = retracked;
+      }
+    }
+    if (
+      options?.videoBase64 &&
+      tracking.every((t) => t.samples.length) &&
+      repairTargets(upload.lesson, selections, tracking).length
+    ) {
+      try {
+        repairUsed = true;
+        const repair = await felicityRepairSelections(
+          upload.lesson,
+          selections,
+          tracking,
+          options.videoBase64,
+          signal,
+        );
+        if (repair) {
+          progress(
+            `Felicity is re-anchoring ${repair.targets.map((t) => t.description).join(", ")} where tracking was lost…`,
+          );
+          const retracked = await track(repair.selections);
+          if (
+            retracked.every((t) => t.samples.length) &&
+            implausibleTrack(repair.selections, retracked, upload.lesson.media) === null &&
+            repairImproves(
+              upload.lesson,
+              { selections, tracking },
+              { selections: repair.selections, tracking: retracked },
+            )
+          ) {
+            selections = repair.selections;
+            tracking = retracked;
+            progress("Felicity recovered the lost tracking.");
+          } else progress("Felicity's re-anchoring did not measure more; keeping the original tracking.");
+        }
+      } catch (error) {
+        if (signal.aborted) throw error;
+        console.warn(
+          `[teach] Felicity tracking repair skipped: ${error instanceof Error ? error.message.slice(0, 200) : "unknown"}`,
+        );
+      }
+    }
     if (tracking.some((track) => !track.samples.length))
-      throw new Error(
+      throw new TeachError(
+        422,
         "A selected object has no usable object outline (SAM may have returned the whole scene). Correct its mark or use a clearer view; no procedure was invented.",
       );
     const context = ContextSchema.parse({
@@ -726,8 +951,41 @@ export async function compileLesson(
       selections,
       tracking,
     });
+    // Diagnostics only: each object's measured evidence before drafting.
+    console.info(
+      `[teach] objects: ${sourceEvidenceCatalog(context)
+        .map(
+          (e) =>
+            `${e.componentId} reliable=${e.trustedFrames.length} windows=${JSON.stringify(e.displacementWindows.map((w) => [w.startFrame, w.resultFrame]))}${e.movementDiagnosis ? ` why=${e.movementDiagnosis.slice(0, 160)}` : ""}`,
+        )
+        .join(" | ")
+        .slice(0, 1500)}`,
+    );
+    // No object has a measured movement window: every V3 step would be
+    // impossible, so a drafting request can only fail (paid run 14). Stop
+    // here with each object's measured reason instead of spending it.
+    if (options) {
+      const movable = sourceEvidenceCatalog(context).filter(
+        (entry) => entry.displacementWindows.length > 0,
+      );
+      if (!movable.length) {
+        const reasons = sourceEvidenceCatalog(context)
+          .map((entry) => {
+            const name =
+              context.selections.find((s) => s.id === entry.componentId)
+                ?.description ?? entry.componentId;
+            return `${name}: ${entry.movementDiagnosis ?? "no measured movement"}`;
+          })
+          .join("; ");
+        console.warn(`[teach] no measured movement: ${reasons.slice(0, 800)}`);
+        throw new TeachError(
+          422,
+          "We couldn't see the moved object clearly enough to build steps. Please record again with the object fully visible, holding it still for a moment before and after each move.",
+        );
+      }
+    }
     progress("Drafting candidate steps and review questions…");
-    const drafted = await draftWithOneCorrection(
+    const draftOnce = () => draftWithOneCorrection(
       context,
       options,
       (call) =>
@@ -741,6 +999,70 @@ export async function compileLesson(
       },
       progress,
     );
+    let drafted:
+      | (Omit<Awaited<ReturnType<typeof draftOnce>>, "diagnostic"> & {
+          diagnostic: Awaited<ReturnType<typeof draftOnce>>["diagnostic"] | null;
+        })
+      | null = null;
+    let draftFailure: unknown = null;
+    try {
+      drafted = await draftOnce();
+    } catch (error) {
+      if (!(error instanceof TeachError) || error.status !== 422 || !options)
+        throw error;
+      draftFailure = error;
+    }
+    // Felicity draft repair: one bounded plan request when drafting was
+    // rejected or left review issues; applied only if every validator passes.
+    if (options && !repairUsed && (draftFailure || drafted?.reviewIssue)) {
+      repairUsed = true;
+      const issues =
+        draftFailure instanceof Error
+          ? draftFailure.message
+          : (drafted?.reviewIssue ?? "");
+      console.warn(`[teach] Felicity draft repair triggered: ${issues.slice(0, 400)}`);
+      progress("Felicity is checking the steps against the measured video…");
+      try {
+        stage = "Felicity draft repair";
+        const plan = await requestRepairPlan(
+          context,
+          issues,
+          drafted?.draft ?? null,
+          options.videoBase64,
+          signal,
+        );
+        const { draft: repaired, remaining } = applyRepairPlan(
+          context,
+          plan,
+          options,
+        );
+        if (!remaining || !drafted) {
+          drafted = {
+            draft: repaired,
+            diagnostic: drafted?.diagnostic ?? null,
+            corrected: true,
+            reviewIssue: remaining,
+          };
+          draftFailure = null;
+          progress("Felicity rebuilt the steps from the measured video.");
+        } else
+          console.warn(`[teach] Felicity repair kept prior draft: ${remaining.slice(0, 300)}`);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        console.warn(
+          `[teach] Felicity draft repair failed: ${error instanceof Error ? error.message.slice(0, 300) : "unknown"}`,
+        );
+      }
+    }
+    if (!drafted) {
+      console.warn(
+        `[teach] drafting failed after repair: ${draftFailure instanceof Error ? draftFailure.message.slice(0, 400) : "unknown"}`,
+      );
+      throw new TeachError(
+        422,
+        "We couldn't build a reliable lesson from this recording. Please try once more; if it happens again, record with each object clearly visible before and after it moves.",
+      );
+    }
     result = {
       context,
       draft: drafted.draft,
@@ -768,4 +1090,21 @@ export async function compileLesson(
       "No validated draft was produced; temporary upload deletion was confirmed.",
     );
   return result;
+}
+/**
+ * Felicity's plan -> full V3 draft -> every existing validator (parse,
+ * evidence, video review) -> remaining review issue. Throws when invalid.
+ */
+export function applyRepairPlan(
+  context: TeachContext,
+  plan: RepairPlan,
+  options: LocalCompileOptions,
+) {
+  const wire = buildRepairedWire(context, plan, !!options.videoBase64);
+  const draft = parseSparkDraft(
+    { status: "completed", output_text: JSON.stringify(wire) },
+    context,
+    options,
+  );
+  return { draft, remaining: reviewEvidenceIssue(draft, context) };
 }

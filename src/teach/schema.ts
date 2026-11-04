@@ -4,7 +4,8 @@ import { ProcedureSpecSchema } from "../procedure/schema";
 import { MediaInfoSchema } from "../media/inspect";
 import { validateV3Evidence } from "./v3-evidence";
 import { executableRevision } from "./revision";
-import { actionWindowIssue, trustedSourceSample } from "./source-evidence";
+import { actionWindowIssue, trustedTrack } from "./source-evidence";
+import { measuredPoint, objectPoint } from "../procedure/measured-point";
 import { VideoReviewSchema, validateVideoReview } from "./video-review";
 
 export { MAX_TEACH_BODY } from "../media/limits";
@@ -24,12 +25,26 @@ export const RegionSchema = z
   );
 export type Region = z.infer<typeof RegionSchema>;
 const pixel = z.number().int().nonnegative();
+const BoxPixels = z.strictObject({ left: pixel, top: pixel, right: pixel, bottom: pixel });
 export const SelectionSchema = z.strictObject({
   id: z.string().regex(/^component-[1-4]$/),
   description: z.string().trim().min(1).max(100),
+  /** Extra SAM prompts on later frames (e.g. where a moved object rests). */
+  views: z
+    .array(z.strictObject({ frame: pixel, x: pixel, y: pixel, within: BoxPixels }))
+    .max(2)
+    .optional(),
   frame: pixel,
   mark: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("point"), x: pixel, y: pixel }),
+    z.strictObject({
+      kind: z.literal("point"),
+      x: pixel,
+      y: pixel,
+      /** Discovery's object outline (pixels): constrains SAM around the point. */
+      within: z
+        .strictObject({ left: pixel, top: pixel, right: pixel, bottom: pixel })
+        .optional(),
+    }),
     z.strictObject({
       kind: z.literal("box"),
       left: pixel,
@@ -159,6 +174,17 @@ export function validateSelections(
       throw new Error(
         "Component mark is outside the source frame or has no area.",
       );
+    for (const v of s.views ?? [])
+      if (
+        v.frame >= media.frameTimesMs.length ||
+        v.x >= video.width ||
+        v.y >= video.height ||
+        v.within.left >= v.within.right ||
+        v.within.top >= v.within.bottom ||
+        v.within.right > video.width ||
+        v.within.bottom > video.height
+      )
+        throw new Error("Component view is outside the source frame or has no area.");
   }
   return selections;
 }
@@ -315,15 +341,11 @@ export function validateReviewEvidence(
       };
     }
     if (p.execution?.schemaVersion === 3) {
-      // Owner decision 2026-11-02: a V3 action may span a short tracking gap
-      // (<= Practice's 600 ms observation gap) between an at-rest start and an
-      // at-rest result. Same rule as compile (validateV3Evidence).
+      // Owner decisions 2026-11-02/04: a V3 action may span a short tracking
+      // gap (<= 600 ms), or one hidden carry (<= 4 s), between an at-rest
+      // start and an at-rest result. Same rule as compile (validateV3Evidence).
       const issue = actionWindowIssue(
-        track.samples
-          .filter((s) =>
-            trustedSourceSample(s, context.lesson.media.frameTimesMs),
-          )
-          .sort((a, b) => a.frame - b.frame),
+        trustedTrack(track.samples, context.lesson.media.frameTimesMs),
         from.frame,
         to.frame,
       );
@@ -346,11 +368,19 @@ export function validateReviewEvidence(
       throw new Error(
         "The reviewed interval contains missing or uncertain visual evidence.",
       );
+    const reliable =
+      p.execution?.schemaVersion === 3
+        ? new Set(
+            trustedTrack(track.samples, context.lesson.media.frameTimesMs),
+          )
+        : null;
     if (
-      from.confidence === null ||
-      to.confidence === null ||
-      Math.min(from.confidence, to.confidence) <
-        step.condition.minimumConfidence
+      reliable
+        ? !reliable.has(from) || !reliable.has(to)
+        : from.confidence === null ||
+          to.confidence === null ||
+          Math.min(from.confidence, to.confidence) <
+            step.condition.minimumConfidence
     )
       throw new Error(
         "Missing/low confidence remains unverified; choose supported evidence or revise the rule.",
@@ -406,10 +436,10 @@ export function validateReviewEvidence(
           const box = track?.samples.find((s) => s.frame === frame)?.box;
           return (
             !box ||
-            !contains(region, {
-              x: (box.left + box.right) / 2,
-              y: (box.top + box.bottom) / 2,
-            })
+            !contains(
+              region,
+              measuredPoint(box, objectPoint(p, predicate.objectId)),
+            )
           );
         })
       )

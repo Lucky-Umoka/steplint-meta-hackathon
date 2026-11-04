@@ -25,7 +25,11 @@ export function localExecutionDraft(
       const window = step.execution.evidenceWindow;
       step.measurement ??= {
         method: "zone_transition",
-        point: "center",
+        // The base (bottom centre) is where an object rests and is measured
+        // consistently by SAM (Teach) and the local tracker (Practice); a tall
+        // object's top edge is not (paid run 16: tops differed by 0.058, bases
+        // by 0.004, so the centre missed the approved destination zone).
+        point: "bottom_center",
         maximumPositionDrift: TEACH_REST_MAX_DRIFT,
         minimumFreshFrames: 3,
         stableForMs: TEACH_REST_MS,

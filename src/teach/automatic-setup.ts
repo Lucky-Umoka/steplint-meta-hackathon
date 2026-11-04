@@ -3,6 +3,7 @@ import { z } from "zod";
 import { BoxSchema } from "../guide/schema";
 import type { TeachContext, TeachReview } from "./schema";
 import type { ProcedureSpec } from "../procedure/schema";
+import { trustedTrack } from "./source-evidence";
 const jpeg = z
   .string()
   .max(120_000)
@@ -68,15 +69,15 @@ export function automaticSetupPlan(
     // plate or lid has too little detail to match live, so automatic startup
     // could never align (live E2E run 1). The point patch is only a fallback.
     const trustedFixed = fixed
-      ? (context.tracking
-          .find((track) => track.componentId === component.id)
-          ?.samples.filter(
-            (sample) =>
-              sample.confidence !== null &&
-              sample.confidence >= 0.9 &&
-              sample.box.right - sample.box.left >= 0.02 &&
-              sample.box.bottom - sample.box.top >= 0.02,
-          ) ?? [])
+      ? trustedTrack(
+          context.tracking.find((track) => track.componentId === component.id)
+            ?.samples ?? [],
+          context.lesson.media.frameTimesMs,
+        ).filter(
+          (sample) =>
+            sample.box.right - sample.box.left >= 0.02 &&
+            sample.box.bottom - sample.box.top >= 0.02,
+        )
       : [];
     if (fixed && selection?.mark.kind === "point" && !trustedFixed.length) {
       const x = selection.mark.x / video.width,
@@ -96,12 +97,11 @@ export function automaticSetupPlan(
     const frame = first
       ? review.steps.find((step) => step.stepId === first.id)!.fromFrame
       : sceneFrame;
-    const samples =
-      context.tracking
-        .find((track) => track.componentId === component.id)
-        ?.samples.filter(
-          (sample) => sample.confidence !== null && sample.confidence >= 0.9,
-        ) ?? [];
+    const samples = trustedTrack(
+      context.tracking.find((track) => track.componentId === component.id)
+        ?.samples ?? [],
+      context.lesson.media.frameTimesMs,
+    );
     const start = fixed ? undefined : samples.find((s) => s.frame === frame);
     // A mover's identity view: an approved reference frame before its action
     // where it already sits at the same starting position, so the template is
@@ -144,13 +144,49 @@ export function automaticSetupPlan(
       );
     return { id: component.id, fixed, frame: sample.frame, box: sample.box };
   };
+  // Paid run 17: the draft labelled the lid and plate "irrelevant" (they
+  // only define zones), leaving Practice without stationary references. An
+  // unmoved irrelevant object whose reliable Teach box (nearest the scene
+  // frame) holds an approved zone centre is that zone's physical anchor: it is
+  // set up as an optional fixed reference, never a step or goal object.
+  const zoneCentres = review.steps
+    .flatMap((step) => [step.fromRegion, step.toRegion])
+    .map((r) => ({ x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 }));
+  const zoneAnchor = (component: ProcedureSpec["components"][number]) => {
+    if (
+      procedure.execution?.schemaVersion !== 3 ||
+      role(component) !== "irrelevant" ||
+      component.execution?.motion !== "stationary" ||
+      procedure.steps.some((s) => s.condition.componentId === component.id)
+    )
+      return false;
+    const nearest = trustedTrack(
+      context.tracking.find((t) => t.componentId === component.id)?.samples ??
+        [],
+      context.lesson.media.frameTimesMs,
+    ).sort(
+      (a, b) => Math.abs(a.frame - sceneFrame) - Math.abs(b.frame - sceneFrame),
+    )[0];
+    return (
+      !!nearest &&
+      zoneCentres.some(
+        (c) =>
+          c.x >= nearest.box.left &&
+          c.x <= nearest.box.right &&
+          c.y >= nearest.box.top &&
+          c.y <= nearest.box.bottom,
+      )
+    );
+  };
   const objects = procedure.components
-    .filter((component) => role(component) !== "irrelevant")
+    .filter(
+      (component) => role(component) !== "irrelevant" || zoneAnchor(component),
+    )
     .flatMap((component) => {
       try {
         return [setupObject(component)];
       } catch (error) {
-        if (role(component) === "supporting") return [];
+        if (role(component) !== "required") return [];
         throw error;
       }
     });
@@ -209,7 +245,9 @@ export function automaticSetupIssue(
     procedure.components.some(
       (c) =>
         (role(c) === "required" && !ids.has(c.id)) ||
-        (role(c) === "irrelevant" && ids.has(c.id)),
+        // Irrelevant objects appear only as fixed zone anchors.
+        (role(c) === "irrelevant" &&
+          setup.objects.some((o) => o.id === c.id && !o.fixed)),
     ) ||
     [...ids].some((id) => !procedure.components.some((c) => c.id === id)) ||
     !frames.has(setup.sceneFrame) ||

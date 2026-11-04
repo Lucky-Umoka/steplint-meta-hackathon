@@ -214,7 +214,8 @@ it("reviews the visible base rather than silently substituting the object's cent
     reason: "Synthetic explicit review",
   };
   const check = suggestReviews(local, context).transfer;
-  expect(check.toRegion!.top).toBeGreaterThan(0.6);
+  // The zone is centred on the base, not the box centre (size-scaled radius).
+  expect((check.toRegion!.top + check.toRegion!.bottom) / 2).toBeGreaterThan(0.6);
   expect(
     approveDraft(
       local,
@@ -264,7 +265,7 @@ it("local discovery includes stationary supports and uses an explicit visible po
       ],
     }),
   };
-  expect(parseDiscovery(response, context.lesson, goal)[0].mark).toEqual({
+  expect(parseDiscovery(response, context.lesson, goal)[0].mark).toMatchObject({
     kind: "point",
     x: 64,
     y: 143,

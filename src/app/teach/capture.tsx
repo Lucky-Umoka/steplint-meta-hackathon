@@ -16,7 +16,7 @@ import {
 } from "@/media/convert";
 import { MAX_TEACH_VIDEO_BYTES, MAX_LESSON_FRAMES } from "@/media/limits";
 import { inspectMedia } from "@/media/inspect";
-import { inspectLessonVideo } from "@/teach/media";
+import { frameTimingIrregular, inspectLessonVideo } from "@/teach/media";
 import { MAX_TEACH_BODY, type LessonMedia } from "@/teach/schema";
 
 export type PreparedLesson = {
@@ -137,10 +137,13 @@ export default function LessonCapture({
     setState("preparing");
     try {
       const audio = await extractWav(source, controller.signal);
+      // Keep an existing clip only if it already fits and has steady frame
+      // timing; variable-frame-rate phone clips are normalized like recordings.
       const video =
         existing &&
         source.size <= MAX_TEACH_VIDEO_BYTES &&
-        (await inspectMedia(source)).video!.frames <= MAX_LESSON_FRAMES
+        (await inspectMedia(source)).video!.frames <= MAX_LESSON_FRAMES &&
+        !(await frameTimingIrregular(source))
           ? source
           : (
               await createMp4(
@@ -386,7 +389,7 @@ export default function LessonCapture({
         autoPlay
         muted
         playsInline
-        className="max-h-[30vh] w-full rounded-xl bg-slate-950"
+        className="mx-auto block max-h-[45vh] w-auto max-w-full rounded-xl bg-slate-950"
         aria-label="Live lesson preview"
       />
       <div className="flex flex-wrap gap-3">

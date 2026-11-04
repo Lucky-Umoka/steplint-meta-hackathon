@@ -283,7 +283,9 @@ it("automatic setup excludes irrelevant objects and still requires every require
       objects: setup.objects.slice(0, 1),
     }),
   ).toMatch(/does not match/);
-  context.tracking[1].samples.forEach((s) => (s.confidence = 0.5));
+  // Below the steady-rest floor (0.5, owner decision 2026-11-04) nothing of
+  // this required object is reliable, so setup must refuse.
+  context.tracking[1].samples.forEach((s) => (s.confidence = 0.45));
   expect(() =>
     automaticSetupPlan(reviewed.procedure, reviewed.review, context),
   ).toThrow("reliable source");

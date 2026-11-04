@@ -2,14 +2,21 @@ import Link from "next/link";
 export default function Workspace({
   children,
   mode,
+  fitScreen = false,
 }: {
   children: React.ReactNode;
   mode: "teach" | "practice" | "home";
+  /** Desktop: fit the page to one screen height (Practice camera view). */
+  fitScreen?: boolean;
 }) {
   return (
-    <div className="min-h-dvh bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-4">
+    <div
+      className={`min-h-dvh bg-slate-50 text-slate-900 ${fitScreen ? "md:flex md:h-dvh md:flex-col" : ""}`}
+    >
+      <header className="shrink-0 border-b border-slate-200 bg-white">
+        <div
+          className={`mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 ${fitScreen ? "py-2" : "py-4"}`}
+        >
           <Link href="/" className="text-xl font-bold tracking-tight">
             StepLint
             <span className="ml-2 text-xs font-normal text-slate-500">
@@ -35,7 +42,7 @@ export default function Workspace({
         </div>
       </header>
       <main
-        className={`flow-workspace mx-auto ${mode === "practice" ? "w-full px-4 py-3" : "max-w-7xl px-5 py-6"}`}
+        className={`flow-workspace mx-auto ${mode === "practice" ? `w-full px-4 ${fitScreen ? "py-2 md:flex md:min-h-0 md:flex-1 md:flex-col md:overflow-y-auto" : "py-3"}` : "max-w-7xl px-5 py-6"}`}
       >
         {children}
       </main>

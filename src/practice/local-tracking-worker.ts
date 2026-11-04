@@ -11,7 +11,10 @@ import {
   LocalWorkerReplySchema,
   type LocalWorkerReply,
 } from "./local-tracking-protocol";
+import { mappedSetupIssue, warpToTeach, type View } from "./viewpoint";
 let state: LocalTrackingState | null = null;
+/** Teach -> live mapping from the locate step (null: same viewpoint). */
+let view: View | null = null;
 function send(reply: LocalWorkerReply) {
   self.postMessage(LocalWorkerReplySchema.parse(reply));
 }
@@ -37,7 +40,16 @@ self.onmessage = (event: MessageEvent<unknown>) => {
   const input = parsed.data;
   try {
     if (input.type === "bootstrap") {
-      const initialized = bootstrapLocal(input.image, input.source);
+      // Camera placed differently from the Teach recording: track in the
+      // Teach viewpoint (src/practice/viewpoint.ts). A large residual after
+      // mapping means a mis-matched reference: refuse, the page retries.
+      view = input.view ?? null;
+      const initialized = bootstrapLocal(
+        view ? warpToTeach(input.image, view) : input.image,
+        input.source,
+      );
+      const issue = view ? mappedSetupIssue(initialized.zoneTranslations) : null;
+      if (issue) throw Error(issue);
       state = initialized.state;
       send({
         type: "calibrated",
@@ -59,7 +71,7 @@ self.onmessage = (event: MessageEvent<unknown>) => {
     }
     if (!state) throw Error("Calibrate before tracking.");
     const started = performance.now(),
-      result = trackLocal(input.image, state, {
+      result = trackLocal(view ? warpToTeach(input.image, view) : input.image, state, {
         nowMs: input.timestampMs,
         frameId: input.frameId,
         watch: input.watch,

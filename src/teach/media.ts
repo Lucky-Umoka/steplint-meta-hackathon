@@ -96,3 +96,35 @@ export async function frameImage(
     input.dispose();
   }
 }
+
+/**
+ * True when frame spacing is irregular (variable-frame-rate phone video).
+ * Such clips are re-encoded to the steady lesson rate before upload, so SAM's
+ * frame indices and the lesson's frame timeline describe the same frames.
+ */
+export async function frameTimingIrregular(video: Blob): Promise<boolean> {
+  const input = new Input({ formats: [MP4], source: new BlobSource(video) });
+  try {
+    const track = await input.getPrimaryVideoTrack();
+    if (!track) return true;
+    const times: number[] = [];
+    for await (const packet of new EncodedPacketSink(track).packets(
+      undefined,
+      undefined,
+      { metadataOnly: true },
+    )) {
+      times.push(packet.timestamp * 1000);
+      if (times.length > MAX_LESSON_FRAMES * 6) return true;
+    }
+    times.sort((a, b) => a - b);
+    const gaps = times.slice(1).map((t, i) => t - times[i]);
+    if (gaps.length < 2) return true;
+    const median = [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)];
+    return (
+      median <= 0 ||
+      gaps.some((gap) => Math.abs(gap - median) > median * 0.25)
+    );
+  } finally {
+    input.dispose();
+  }
+}

@@ -41,6 +41,18 @@ import VoicePanel, { appendVoiceEvent } from "@/voice/VoicePanel";
 import GestureControls from "@/gesture/GestureControls";
 import CommandHelp from "@/voice/CommandHelp";
 import {
+  bestTimeKey,
+  estimateProgress,
+  formatDuration,
+} from "@/practice/progress";
+import {
+  FelicityGate,
+  incidentStillRelevant,
+  visibilityRequest,
+  type FelicityIncident,
+  type FelicityKind,
+} from "@/practice/felicity";
+import {
   TrackingReadiness,
   readinessRows,
   type LiveTracking,
@@ -49,19 +61,25 @@ import {
 const PRACTICE_GESTURES = [
   {
     gesture: "Enable gesture control",
-    action: "Tick the box under the camera controls first; it is off by default.",
+    action:
+      "Tick the box under the camera controls first; it is off by default.",
   },
   {
-    gesture: "Point your index finger UP inside the dashed strip on the right edge of the camera picture",
-    action: "A cyan dot follows your fingertip; the strip covers the whole screen. Pointing never clicks.",
+    gesture:
+      "Point your index finger UP inside the dashed strip on the right edge of the camera picture",
+    action:
+      "A cyan dot follows your fingertip; the strip covers the whole screen. Pointing never clicks.",
   },
   {
-    gesture: "Pinch: aim the dot at a button, then touch thumb to index finger and hold about half a second",
-    action: "Clicks exactly like a mouse at the spot you aimed. Open your fingers before the next pinch.",
+    gesture:
+      "Pinch: aim the dot at a button, then touch thumb to index finger and hold about half a second",
+    action:
+      "Clicks exactly like a mouse at the spot you aimed. Open your fingers before the next pinch.",
   },
   {
     gesture: "Open palm held flat in the strip for 1.2 seconds",
-    action: "Pauses practice, the same as the Pause button. Verified work is kept.",
+    action:
+      "Pauses practice, the same as the Pause button. Verified work is kept.",
   },
 ];
 import { LOCAL_PRACTICE_COMMANDS } from "@/practice/local-commands";
@@ -78,6 +96,19 @@ import {
 } from "@/practice/lifecycle";
 import type { ActionOutcome } from "@/voice/use-voice-control";
 import { isProcedureComplete, type GoalState } from "@/procedure/goal";
+import {
+  chooseWorkspace,
+  liveSetup,
+  shortNoun,
+  toLive,
+  type View,
+} from "@/practice/viewpoint";
+type LiveSetup = {
+  objects: { id: string; box: Region; fixed: boolean }[];
+  zones: Record<string, Region>;
+  /** Null: the fixed supports (towel, mat) are the camera references. */
+  workspace: Region | null;
+};
 import {
   RehearsalSchema,
   RevisionSchema,
@@ -116,6 +147,16 @@ export default function LocalPractice() {
     scene: Pixels;
     objects: { id: string; box: Region; fixed: boolean; image: Pixels }[];
   } | null>(null);
+  // Camera locate (one SAM 3.1 step per camera session): Teach -> live
+  // mapping when the learner's camera is not where Teach was recorded.
+  const cameraView = useRef<View | null>(null);
+  const locateState = useRef<"idle" | "pending" | "done">("idle");
+  const locateAt = useRef(-Infinity);
+  /** Calibrated from SAM boxes on the live frame (no Teach-pixel setup). */
+  const liveMode = useRef(false);
+  const uiPaintAt = useRef(0);
+  /** Felicity's supervised recoveries (bounded): timestamps of attempts. */
+  const supervised = useRef<number[]>([]);
   const [manualSetupOpen, setManualSetupOpen] = useState(false);
   const [references, setReferences] = useState<ProcedureReferences | null>(
     null,
@@ -126,6 +167,55 @@ export default function LocalPractice() {
   const [liveTracking, setLiveTracking] = useState<LiveTracking | null>(null);
   const replyTimes = useRef<number[]>([]);
   const staleSince = useRef<number | null>(null);
+  // Felicity: background recovery advice (advisory only; never a verdict).
+  const felicity = useRef(new FelicityGate());
+  const felicitySessionId = useRef("");
+  const failureSince = useRef(
+    new Map<string, { key: string; since: number }>(),
+  );
+  const lostSince = useRef(new Map<string, number>());
+  const latestDetections = useRef<ObjectDetection[]>([]);
+  const cameraActiveRef = useRef(false);
+  const setupSince = useRef<number | null>(null);
+  const setupHelped = useRef({ gideon: false, felicity: false });
+  const [felicityAdvice, setFelicityAdvice] = useState<string | null>(null);
+  // Learner timing (display only): starts when Practice first arms.
+  const [practiceStartedAt, setPracticeStartedAt] = useState<number | null>(
+    null,
+  );
+  const practiceStartedRef = useRef<number | null>(null);
+  const celebratedV2 = useRef(false);
+  const [clockMs, setClockMs] = useState(0);
+  const [celebration, setCelebration] = useState<{
+    elapsedMs: number;
+    bestMs: number | null;
+    newBest: boolean;
+    steps: number;
+    pace: number | null;
+  } | null>(null);
+  /** Demonstrated duration of a step from its reviewed Teach window. */
+  function stepDemoMs(
+    step: PracticeLesson["procedure"]["steps"][number],
+  ): number {
+    const times = lesson?.sourceLesson?.media.frameTimesMs;
+    const window = step.execution?.evidenceWindow;
+    if (!times || !window) return 0;
+    const start = times[window.startFrame],
+      end = times[window.resultFrame];
+    return start !== undefined && end !== undefined
+      ? Math.max(0, end - start)
+      : 0;
+  }
+  useEffect(() => {
+    if (practiceStartedAt === null) return;
+    const id = window.setInterval(() => setClockMs(performance.now()), 500);
+    return () => window.clearInterval(id);
+  }, [practiceStartedAt]);
+  useEffect(() => {
+    if (!celebration) return;
+    const id = window.setTimeout(() => setCelebration(null), 9000);
+    return () => window.clearTimeout(id);
+  }, [celebration]);
   const [switchingCamera, setSwitchingCamera] = useState(false);
   const goalRef = useRef<GoalState | null>(null);
   // Phase 4: the single authoritative lifecycle, shared by UI and voice.
@@ -380,6 +470,255 @@ export default function LocalPractice() {
       });
     }
   }
+  /** First completion of this session: finish time, pace and personal best. */
+  function celebrate(active: PracticeSession) {
+    if (practiceStartedRef.current === null) return;
+
+    const elapsedMs = performance.now() - practiceStartedRef.current;
+    let bestMs: number | null = null;
+    try {
+      const stored = Number(
+        window.localStorage.getItem(bestTimeKey(active.procedure.id)),
+      );
+      bestMs = Number.isFinite(stored) && stored > 0 ? stored : null;
+      if (bestMs === null || elapsedMs < bestMs)
+        window.localStorage.setItem(
+          bestTimeKey(active.procedure.id),
+          String(Math.round(elapsedMs)),
+        );
+    } catch {
+      // Storage unavailable: the celebration still shows this time.
+    }
+    const demoMs = active.procedure.steps.reduce(
+      (sum, step) => sum + stepDemoMs(step),
+      0,
+    );
+    setCelebration({
+      elapsedMs,
+      bestMs,
+      newBest: bestMs === null || elapsedMs < bestMs,
+      steps: active.procedure.steps.length,
+      pace: demoMs > 0 ? elapsedMs / demoMs : null,
+    });
+  }
+  /** Unseen this long (beyond tracking gaps) before Gideon asks to see it. */
+  const VISIBILITY_TIMEOUT_MS = 1500;
+  /** Snapshot used to decide whether delayed Felicity advice is still current. */
+  function felicitySnapshot(incident: FelicityIncident) {
+    const active = session.current;
+    return {
+      sessionActive:
+        !!active && !active.stopped && lifecycleRef.current.state === "running",
+      generation: generation.current,
+      revision: active?.procedure.approval?.revision ?? null,
+      nowMs: performance.now(),
+      stepStatus: active?.result.steps.find((s) => s.stepId === incident.stepId)
+        ?.status,
+      objectQuality: latestDetections.current.find(
+        (d) => d.objectId === incident.objectId,
+      )?.quality,
+      practiceRunning: lifecycleRef.current.state === "running",
+      cameraOn: cameraActiveRef.current,
+    };
+  }
+  function requestFelicity(
+    procedure: PracticeSession["procedure"],
+    kind: FelicityKind,
+    stepId: string,
+    objectId: string,
+    reason: string,
+    key: string,
+  ) {
+    felicitySessionId.current ||= crypto.randomUUID();
+    const incident: FelicityIncident = {
+      id: `${felicitySessionId.current.slice(0, 8)}:${key}`
+        .replace(/[^A-Za-z0-9:_-]/g, "-")
+        .slice(0, 120),
+      kind,
+      stepId,
+      objectId,
+      revision: procedure.approval?.revision ?? null,
+      generation: generation.current,
+      createdAtMs: performance.now(),
+    };
+    const signal = felicity.current.start(incident);
+    if (!signal) return; // one request per incident
+    const step = procedure.steps.find((s) => s.id === stepId);
+    const latestFrame = evidence.current.frames().at(-1)?.image;
+    let evidenceImage: string | undefined;
+    try {
+      const url = latestFrame ? imageUrl(latestFrame) : undefined;
+      evidenceImage = url && url.length <= 120_000 ? url : undefined;
+    } catch {
+      evidenceImage = undefined;
+    }
+    console.info(
+      `[felicity] Muse Spark Open (Baseten): advice request for "${kind}"${evidenceImage ? " with the current camera frame" : ""}`,
+    );
+    void fetch("/api/practice/recovery", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal,
+      body: JSON.stringify({
+        incidentId: incident.id,
+        sessionId: felicitySessionId.current,
+        procedureId: procedure.id,
+        revision: incident.revision,
+        stepId,
+        kind,
+        instruction: (step?.description ?? "Follow the current step.").slice(
+          0,
+          400,
+        ),
+        approvedRecovery: step?.recovery?.instruction?.slice(0, 400) ?? null,
+        reason: reason.slice(0, 400) || "Practice incident",
+        objects: procedure.components
+          .map((c) => c.description.slice(0, 120))
+          .slice(0, 6),
+        zones: procedure.zones
+          .map((z) => (z.description || z.id).slice(0, 160))
+          .slice(0, 8),
+        ...(evidenceImage ? { evidenceImage } : {}),
+      }),
+    })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: unknown) => {
+        const advice =
+          data &&
+          typeof data === "object" &&
+          "incidentId" in data &&
+          data.incidentId === incident.id &&
+          "advice" in data &&
+          typeof data.advice === "string"
+            ? data.advice
+            : null;
+        if (!advice) return;
+        // Delayed answer: deliver only if it is still about the same, still
+        // uncorrected incident in the same running session and revision.
+        const check = incidentStillRelevant(
+          incident,
+          felicity.current.active?.id ?? null,
+          felicitySnapshot(incident),
+        );
+        if (!check.deliver) {
+          log({
+            at: Date.now(),
+            source: "control",
+            text: `Felicity advice discarded (${check.reason}).`,
+          });
+          return;
+        }
+        setFelicityAdvice(advice);
+        log({
+          at: Date.now(),
+          source: "guidance",
+          text: `Felicity: ${advice}`,
+        });
+        speak(`Felicity suggests: ${advice}`, false);
+      })
+      .catch(() => {
+        // A failed or aborted advice request never affects Practice; an
+        // abort only means we stopped listening.
+      });
+  }
+  /** Per tracker reply: drop stale incidents and open new difficult ones. */
+  function felicityTick(
+    active: PracticeSession,
+    replyDetections: ObjectDetection[],
+  ) {
+    latestDetections.current = replyDetections;
+    const now = performance.now();
+    const current = felicity.current.active;
+    if (
+      current &&
+      !incidentStillRelevant(current, current.id, felicitySnapshot(current))
+        .deliver
+    ) {
+      felicity.current.clear();
+      setFelicityAdvice(null);
+    }
+    if (lifecycleRef.current.state !== "running" || !active.armed) return;
+    for (const state of active.result.steps) {
+      if (state.status !== "failed") {
+        failureSince.current.delete(state.stepId);
+        continue;
+      }
+      const event = active.result.events.findLast(
+        (e) => e.stepId === state.stepId && e.status === "failed",
+      );
+      // One incident per failure episode: the verifier records a failed
+      // event on every frame while the mistake persists, so the episode is
+      // keyed by its first failed event and resets only when it is corrected.
+      const tracked = failureSince.current.get(state.stepId);
+      if (!tracked)
+        failureSince.current.set(state.stepId, {
+          key: `${state.stepId}:${event?.eventId ?? "failed"}`,
+          since: now,
+        });
+      else if (now - tracked.since > 4000) {
+        const key = tracked.key;
+        const step = active.procedure.steps.find((s) => s.id === state.stepId);
+        requestFelicity(
+          active.procedure,
+          event?.decision === "reversal"
+            ? "unresolved_recovery"
+            : "confirmed_mistake",
+          state.stepId,
+          step?.condition.componentId ?? "",
+          event?.reason ?? "Confirmed violation is still unresolved.",
+          key,
+        );
+      }
+    }
+    for (const detection of replyDetections) {
+      if (detection.quality === "observed") {
+        lostSince.current.delete(detection.objectId);
+        continue;
+      }
+      const since = lostSince.current.get(detection.objectId) ?? now;
+      lostSince.current.set(detection.objectId, since);
+      // Gideon, locally and at once: unavailable past the visibility timeout
+      // means "show me", never a violation (once per unseen episode).
+      if (now - since >= VISIBILITY_TIMEOUT_MS) {
+        const name =
+          active.procedure.components.find((c) => c.id === detection.objectId)
+            ?.description ?? detection.objectId;
+        show(
+          "needs_verification",
+          visibilityRequest(
+            name,
+            detection.quality === "obstructed"
+              ? "obstructed"
+              : detection.quality === "ambiguous"
+                ? "lost"
+                : "unclear",
+          ),
+          null,
+          `visibility:${detection.objectId}:${Math.round(since)}`,
+        );
+      }
+      if (now - since < 8000) continue;
+      const step =
+        active.procedure.steps.find(
+          (s) =>
+            s.condition.componentId === detection.objectId &&
+            active.result.steps.find((r) => r.stepId === s.id)?.status !==
+              "passed",
+        ) ??
+        active.procedure.steps.find(
+          (s) => s.condition.componentId === detection.objectId,
+        );
+      if (!step) continue;
+      requestFelicity(
+        active.procedure,
+        detection.quality === "ambiguous" ? "identity_uncertain" : "occluded",
+        step.id,
+        detection.objectId,
+        `The ${detection.objectId} has been ${detection.quality} for 8 seconds.`,
+        `lost:${detection.objectId}:${Math.round(since)}`,
+      );
+    }
+  }
   function show(
     kind: string,
     text: string,
@@ -405,6 +744,8 @@ export default function LocalPractice() {
     kind: "pause" | "failure" | "camera" = "pause",
   ) {
     const haltedGeneration = generation.current;
+    felicity.current.clear();
+    setFelicityAdvice(null);
     awaiting.current = null;
     automaticWanted.current = false;
     speechGeneration.current++;
@@ -525,16 +866,32 @@ export default function LocalPractice() {
   const handlers = useRef({
     halt,
     show,
-    automaticStart: (image: Pixels) =>
-      start({ image, source: automaticSource.current! }),
+    felicityTick,
+    requestFelicity,
+    automaticStart: (image: Pixels) => {
+      locateCamera(image);
+      // Live setup is primary; the Teach-pixel setup only until SAM answers.
+      if (!liveMode.current)
+        start({ image, source: automaticSource.current! });
+    },
+    liveStart: (image: Pixels, live: LiveSetup) => start(undefined, { image, ...live }),
+    supervise,
     workerTimeout,
   });
   useEffect(() => {
     handlers.current = {
       halt,
       show,
-      automaticStart: (image: Pixels) =>
-        start({ image, source: automaticSource.current! }),
+      felicityTick,
+      requestFelicity,
+      automaticStart: (image: Pixels) => {
+        locateCamera(image);
+        // Live setup is primary; the Teach-pixel setup only until SAM answers.
+        if (!liveMode.current)
+          start({ image, source: automaticSource.current! });
+      },
+      liveStart: (image: Pixels, live: LiveSetup) => start(undefined, { image, ...live }),
+    supervise,
       workerTimeout,
     };
   });
@@ -759,6 +1116,10 @@ export default function LocalPractice() {
           ? "Opening the camera. Automatic tracking will begin when the starting view is recognized."
           : "This older export has no automatic visual references. Create a fresh Teach approval for automatic Practice; manual setup is available under settings.",
       );
+      cameraView.current = null;
+      locateState.current = "idle";
+      locateAt.current = -Infinity;
+      liveMode.current = false;
       if (validated.automaticSetup) {
         automaticWanted.current = true;
         automaticAttemptAt.current = -Infinity;
@@ -938,6 +1299,155 @@ export default function LocalPractice() {
         "Practice paused. Verified work is kept; say “Guide, resume practice” to continue.",
     };
   }
+  /**
+   * One locate step per camera session (no per-frame model calls): SAM finds
+   * the approved objects in this camera; if they agree on a camera mapping
+   * different from the Teach recording, setup restarts in that mapping.
+   * Runs in parallel with the normal setup, so a camera already at the Teach
+   * viewpoint starts without waiting.
+   */
+  function locateCamera(image: Pixels) {
+    const source = automaticSource.current;
+    if (locateState.current === "pending") return;
+    // Re-locate (objects may have moved) at most every 20 s per session.
+    if (performance.now() - locateAt.current < 20_000) return;
+    if (!source || !lesson) {
+      console.info("[practice] camera locate skipped: lesson has no automatic setup");
+      return;
+    }
+    const objects = source.objects.map((object) => ({
+      id: object.id,
+      fixed: object.fixed,
+      noun: shortNoun(
+        lesson.procedure.components.find((c) => c.id === object.id)
+          ?.description ?? "",
+      ),
+      teach: object.box,
+    }));
+    if (objects.some((object) => object.noun.length < 2)) {
+      console.info("[practice] camera locate skipped: an approved object has no usable name");
+      return;
+    }
+    locateState.current = "pending";
+    locateAt.current = performance.now();
+    console.info(
+      `[practice] SAM 3.1 camera locate: asking for ${objects.map((o) => `"${o.noun}"`).join(", ")}`,
+    );
+    if (!felicitySessionId.current)
+      felicitySessionId.current = `practice-${crypto.randomUUID()}`;
+    const frame = {
+      width: image.width,
+      height: image.height,
+      data: new Uint8ClampedArray(image.data),
+    };
+    void fetch("/api/practice/locate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: felicitySessionId.current,
+        image: imageUrl(frame),
+        width: frame.width,
+        height: frame.height,
+        objects: objects.map(({ id, noun }) => ({ id, noun })),
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          // Respect the server's per-session interval before asking again.
+          if (response.status === 429) locateAt.current = performance.now();
+          console.warn(
+            `[practice] camera locate unavailable (HTTP ${response.status}); setup continues without it`,
+          );
+          return;
+        }
+        const body = (await response.json()) as {
+          objects?: { id: string; box: Region | null }[];
+          provenance?: { model: string; provider: string; requests: number; ms: number };
+        };
+        if (body.provenance)
+          console.info(
+            `[practice] ${body.provenance.model} (${body.provenance.provider}): ${body.provenance.requests} requests in ${body.provenance.ms} ms`,
+          );
+        const live = Object.fromEntries(
+          (body.objects ?? []).map((o) => [o.id, o.box]),
+        );
+        const found = objects.filter((o) => live[o.id]).length;
+        // Primary: calibrate on THIS live frame from SAM's boxes (any camera
+        // position, aspect ratio or object arrangement).
+        const setup = liveSetup({
+          objects,
+          live,
+          zones: lesson.zoneBindings.map((b) => ({
+            zoneId: b.zoneId,
+            region: b.region,
+          })),
+        });
+        // Camera references are the approved fixed objects themselves (with
+        // the tracker's rules for objects resting on / lifted off them). A
+        // background patch is used only when the lesson has no fixed object:
+        // on real cameras it "moved" with exposure and arms (owner console).
+        // Plus one background reference above the objects, away from where
+        // arms come in; occluding it is uncertainty, never "camera moved".
+        const workspace = setup
+          ? chooseWorkspace(frame, setup.objects.map((o) => o.box))
+          : null;
+        console.info(
+          `[practice] camera locate: ${found}/${objects.length} objects found; ${setup && (workspace || setup.objects.some((o) => o.fixed)) ? "starting live setup from this camera view" : "live setup not possible (an object was not found)"}`,
+        );
+        if (!setup || (!workspace && !setup.objects.some((o) => o.fixed))) return;
+        if (worker.current && session.current?.armed) return; // already tracking
+        if (worker.current) {
+          worker.current.onerror = null;
+          worker.current.onmessage = null;
+          worker.current.terminate();
+          worker.current = null;
+          busy.current = false;
+          if (session.current) session.current.stopped = true;
+          setRunning(false);
+          setStarting(false);
+          setDetections([]);
+        }
+        liveMode.current = true;
+        handlers.current.liveStart(frame, { ...setup, workspace });
+      })
+      .catch((error) => {
+        // Locate is an aid; the unchanged setup keeps retrying.
+        console.warn(
+          `[practice] camera locate failed: ${error instanceof Error ? error.message : "network error"}`,
+        );
+      })
+      .finally(() => {
+        locateState.current = "done";
+      });
+  }
+  /**
+   * Felicity supervisor (bounded repair loop): when tracking stops because
+   * evidence arrives too late, the tracker crashes or calibration is lost,
+   * Practice does not stay stopped. It re-locates the approved objects with
+   * SAM and restarts live setup, at most 4 times per 5 minutes; Felicity's
+   * advice request explains the incident. Never marks anything passed.
+   */
+  function supervise(reason: string) {
+    if (!lesson?.automaticSetup || !cameraActive) return;
+    const now = performance.now();
+    supervised.current = supervised.current.filter((at) => now - at < 300_000);
+    if (supervised.current.length >= 4) {
+      console.warn(`[felicity] supervisor: stopping after 4 recoveries in 5 min (${reason})`);
+      setNotice("I keep losing the objects. Check the light and keep them in view, then say “Guide, resume practice”.");
+      return;
+    }
+    supervised.current.push(now);
+    console.info(
+      `[felicity] supervisor: ${reason} -> re-locating objects with SAM and restarting live setup (attempt ${supervised.current.length}/4)`,
+    );
+    setNotice("Give me a moment, I'm finding your objects again…");
+    speak("Give me a moment, I'm finding your objects again.");
+    // Re-locate as soon as the server's 20 s per-session interval allows.
+    window.setTimeout(() => {
+      automaticWanted.current = true;
+      automaticAttemptAt.current = -Infinity;
+    }, 1500);
+  }
   function prepareSetup(resume = false) {
     if (!latest.current || !cameraActive) {
       setError("Start the camera and wait for a fresh frame first.");
@@ -967,15 +1477,18 @@ export default function LocalPractice() {
     );
     return true;
   }
-  function start(automatic?: {
-    image: Pixels;
-    source: NonNullable<typeof automaticSource.current>;
-  }) {
-    const setupImage = automatic?.image ?? still?.image;
+  function start(
+    automatic?: {
+      image: Pixels;
+      source: NonNullable<typeof automaticSource.current>;
+    },
+    live?: LiveSetup & { image: Pixels },
+  ) {
+    const setupImage = automatic?.image ?? live?.image ?? still?.image;
     if (
       !lesson ||
       !setupImage ||
-      (!automatic && !calibrationConsent) ||
+      (!automatic && !live && !calibrationConsent) ||
       !cameraActive ||
       worker.current
     )
@@ -993,7 +1506,11 @@ export default function LocalPractice() {
     try {
       const bindings: ZoneBinding[] = lesson.zoneBindings.map((b) => ({
         zoneId: b.zoneId,
-        region: automatic ? b.region : marks[`zone:${b.zoneId}`],
+        region: automatic
+          ? b.region
+          : live
+            ? live.zones[b.zoneId]
+            : marks[`zone:${b.zoneId}`],
       }));
       const resuming =
         resumeRequested &&
@@ -1001,7 +1518,9 @@ export default function LocalPractice() {
         session.current?.procedure.version === lesson.procedure.version;
       const objects = automatic
         ? automatic.source.objects
-        : lesson.procedure.components.map((c) => ({
+        : live
+          ? live.objects
+          : lesson.procedure.components.map((c) => ({
             id: c.id,
             fixed: !lesson.procedure.steps.some(
               (s) => s.condition.componentId === c.id,
@@ -1009,7 +1528,7 @@ export default function LocalPractice() {
             box: marks[`object:${c.id}`],
           }));
       if (
-        (!automatic && !marks.workspace) ||
+        (!automatic && !live && !marks.workspace) ||
         objects.some((o) => !o.box) ||
         bindings.some((b) => !b.region)
       )
@@ -1025,7 +1544,13 @@ export default function LocalPractice() {
           : resuming && session.current
             ? resumeSession(session.current, bindings, performance.now())
             : createSession(lesson.procedure, bindings, performance.now());
-      if (automatic && !resuming) {
+      if (!resuming) {
+        celebratedV2.current = false;
+        practiceStartedRef.current = null;
+        setPracticeStartedAt(null);
+        setCelebration(null);
+      }
+      if ((automatic || live) && !resuming) {
         next.calibrations[0].humanConfirmed = false;
         next.calibrations[0].method = "source_alignment";
       }
@@ -1042,13 +1567,13 @@ export default function LocalPractice() {
       setAlert(null);
       setDetections([]);
       setStartingVerified(false);
-      if (!resuming && !automatic) archiveSession();
+      if (!resuming && !automatic && !live) archiveSession();
       session.current = next;
       setResult(next.result);
       // Announce only learner-initiated starts: automatic retries must stay
       // silent, or repeated setup failures would stutter speech and suppress
       // voice commands while the engine is always speaking.
-      if (!automatic) {
+      if (!automatic && !live) {
         const firstPending = next.procedure.steps.find(
           (step) =>
             next.result.steps.find((state) => state.stepId === step.id)
@@ -1091,7 +1616,13 @@ export default function LocalPractice() {
             trackingMeasurements.current = reply.measurements;
             autoFailures.current = 0;
           }
-          if (reply.type === "error" && automatic && automaticWanted.current) {
+          if (reply.type === "error")
+            console.error(`[practice] ${live ? "live " : ""}setup error from tracker: ${reply.message}`);
+          if (
+            reply.type === "error" &&
+            (automatic || live) &&
+            automaticWanted.current
+          ) {
             localWorker.terminate();
             worker.current = null;
             busy.current = false;
@@ -1119,13 +1650,20 @@ export default function LocalPractice() {
                 "Automatic setup keeps failing. Adjust the view, or capture the setup for manual calibration.",
               );
             } else {
-              // Name the object as reviewed in Teach, not by its internal ID.
+              // Name objects plainly ("blue towel"), never by internal ID or
+              // the long reviewed description; keep the learner message short.
+              const named = (lesson?.procedure.components ?? []).reduce(
+                (text, component) =>
+                  text.replaceAll(
+                    component.id,
+                    `the ${shortNoun(component.description) || "object"}`,
+                  ),
+                reply.message,
+              );
               setNotice(
-                (lesson?.procedure.components ?? []).reduce(
-                  (text, component) =>
-                    text.replaceAll(component.id, component.description),
-                  reply.message,
-                ),
+                /^Finding the work area/i.test(named)
+                  ? `Looking for ${named.replace(/^Finding the work area[^:]*:\s*show\s*/i, "").replace(/\s+clearly in the demonstrated position\..*$/i, "")} in your camera view…`
+                  : named,
               );
             }
             return;
@@ -1198,12 +1736,14 @@ export default function LocalPractice() {
           ) {
             trackingCounters.current.droppedStale++;
             staleSince.current ??= replyAt;
-            if (replyAt - staleSince.current > 3000)
+            if (replyAt - staleSince.current > 3000) {
               handlers.current.halt(
                 "Tracking evidence keeps arriving too late on this device. Verification stopped; close other tabs or apps, then resume.",
                 true,
                 "failure",
               );
+              handlers.current.supervise("tracking evidence arrived too late");
+            }
             return;
           }
           staleSince.current = null;
@@ -1213,7 +1753,19 @@ export default function LocalPractice() {
             reply.watchRevision !== watchRevision.current
           )
             return;
-          setDetections(reply.detections);
+          // Screen-only updates at most 10/s: every reply is still verified,
+          // but re-rendering the whole page per reply made replies arrive
+          // after the 600 ms evidence limit on slower (dev-mode) browsers.
+          const paint = performance.now() - uiPaintAt.current >= 100;
+          if (paint) {
+            uiPaintAt.current = performance.now();
+            setDetections(
+              reply.detections.map((d) => ({
+                ...d,
+                box: d.box && toLive(d.box, cameraView.current),
+              })),
+            );
+          }
           const wasArmed = active.armed;
           const frame = feedTrackingFrame(active, {
             ...reply,
@@ -1225,6 +1777,7 @@ export default function LocalPractice() {
             ...replyTimes.current.filter((at) => repliedAt - at < 1000),
             repliedAt,
           ];
+          if (paint || active.armed !== wasArmed)
           setLiveTracking({
             rows: readinessRows(active, reply.detections),
             calibrationValid: reply.calibrationValid,
@@ -1248,6 +1801,8 @@ export default function LocalPractice() {
               setNotice(goalMessage(frame.goal));
             if (frame.goal.status === "complete" && before !== "complete")
               goalSpeech = "Final goal verified.";
+            if (frame.goal.status === "complete" && before !== "complete")
+              celebrate(active);
             if (frame.goal.status === "invalidated" && before === "complete")
               goalSpeech = "Completion invalidated. Restore the final state.";
           }
@@ -1255,11 +1810,18 @@ export default function LocalPractice() {
             (event) => event.status === "needs_user_view",
           );
           if (unseen) {
-            const name =
+            const description =
               active.procedure.components.find(
                 (component) => component.id === unseen.objectId,
               )?.description ?? unseen.objectId;
+            const name = `the ${shortNoun(description) || "object"}`;
             setNotice(`${name}: ${unseen.reason}`);
+            handlers.current.show(
+              "needs_verification",
+              visibilityRequest(name, "lost"),
+              null,
+              `lost:${unseen.objectId}`,
+            );
           }
           const updated = frame.changed ? frame.result : null;
           const warning = frame.warning;
@@ -1281,6 +1843,11 @@ export default function LocalPractice() {
             )
               evidence.current.commit(outcome.evidenceFrames ?? []);
           }
+          if (!reply.calibrationValid)
+            console.warn(`[practice] calibration lost: ${reply.reason ?? "unknown"}`);
+          for (const event of reply.identityEvents)
+            if (event.status !== "tracked")
+              console.info(`[practice] ${event.objectId}: ${event.status} (${event.reason})`);
           if (
             !reply.calibrationValid &&
             lesson.automaticSetup &&
@@ -1315,6 +1882,10 @@ export default function LocalPractice() {
           if (active.armed && !wasArmed)
             lc({ type: "armed", generation: reply.generation });
           if (active.armed && !wasArmed) {
+            if (practiceStartedRef.current === null) {
+              practiceStartedRef.current = performance.now();
+              setPracticeStartedAt(practiceStartedRef.current);
+            }
             setStartingVerified(true);
             const next = active.procedure.steps.find(
               (step) =>
@@ -1344,12 +1915,26 @@ export default function LocalPractice() {
               const step = active.procedure.steps.find(
                 (s) => s.id === decision.stepId,
               );
+              const objectId = step?.condition.componentId;
+              const objectName =
+                active.procedure.components.find((c) => c.id === objectId)
+                  ?.description ??
+                objectId ??
+                "object";
               const text =
                 decision.status === "passed"
                   ? `${step?.description ?? "Step"} Verified.`
                   : decision.status === "failed"
                     ? `Stop. ${decision.recovery?.instruction ?? decision.reason}`
-                    : decision.reason;
+                    : // Missing visibility is uncertainty, not a violation:
+                      // Gideon asks for a clearer view, naming the object.
+                      visibilityRequest(
+                        objectName,
+                        reply.detections.find((d) => d.objectId === objectId)
+                          ?.quality === "obstructed"
+                          ? "obstructed"
+                          : "unclear",
+                      );
               const last = index === decisions.length - 1;
               if (
                 handlers.current.show(
@@ -1384,8 +1969,18 @@ export default function LocalPractice() {
                 "Monitoring active. Some required evidence is unclear; restore a clear view before continuing.",
               );
             if (updated.status === "passed") setNotice(goalMessage(frame.goal));
+            // Older (V2) lessons complete when every step passes.
+            if (
+              !goalGatedV3 &&
+              updated.status === "passed" &&
+              !celebratedV2.current
+            ) {
+              celebratedV2.current = true;
+              celebrate(active);
+            }
           }
           if (goalSpeech) speak(goalSpeech);
+          handlers.current.felicityTick(active, reply.detections);
           if (
             warning &&
             !active.result.steps.some((step) => step.status === "failed") &&
@@ -1414,12 +2009,21 @@ export default function LocalPractice() {
           );
         }
       };
-      localWorker.onerror = () =>
+      localWorker.onerror = (event) => {
+        // A worker that was already replaced (e.g. the Teach-based setup
+        // worker terminated when live setup starts) must never halt the
+        // current one: its late load error used to kill the live tracker.
+        if (worker.current !== localWorker) return;
+        console.error(
+          `[practice] local tracker crashed: ${event.message || "unknown error"}${event.filename ? ` (${event.filename}:${event.lineno})` : ""}`,
+        );
         handlers.current.halt(
           "The local tracker stopped. Recalibrate before continuing.",
           true,
           "failure",
         );
+        handlers.current.supervise("the local tracker crashed");
+      };
       const copy = new Uint8ClampedArray(setupImage.data);
       const startWatch = watchSet(next.procedure, next.result);
       localWorker.postMessage(
@@ -1427,6 +2031,7 @@ export default function LocalPractice() {
           ...(automatic
             ? {
                 type: "bootstrap",
+                view: cameraView.current,
                 source: {
                   ...automatic.source,
                   zones: lesson.zoneBindings.map((binding) => binding.region),
@@ -1450,7 +2055,11 @@ export default function LocalPractice() {
               }
             : {
                 type: "calibrate",
-                calibration: { objects, workspace: marks.workspace },
+                calibration: {
+                  objects,
+                  workspace: live ? live.workspace : marks.workspace,
+                  ...(live ? { zones: Object.values(live.zones) } : {}),
+                },
               }),
           generation: gen,
           image: {
@@ -1462,11 +2071,93 @@ export default function LocalPractice() {
         [copy.buffer],
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not start tracking.");
+      const message = e instanceof Error ? e.message : "Could not start tracking.";
+      if (live) {
+        // A live setup that cannot start is retried, never a silent halt
+        // (halt cancels Gideon's speech and stops automatic setup).
+        console.error(`[practice] live setup failed: ${message}`);
+        worker.current?.terminate();
+        worker.current = null;
+        busy.current = false;
+        setStarting(false);
+        automaticWanted.current = true;
+        automaticAttemptAt.current = -Infinity;
+        setNotice("Almost ready: I'm re-checking where your objects are…");
+        return;
+      }
+      console.error(`[practice] setup failed: ${message}`);
+      setError(message);
       if (session.current) setResult(session.current.result);
       halt();
     }
   }
+  useEffect(() => {
+    cameraActiveRef.current = cameraActive;
+  }, [cameraActive]);
+  // Automatic Practice not starting: Gideon gives a local hint at 12 s, then
+  // Felicity diagnoses once (at 20 s) from the real setup state. Advice only;
+  // it never starts, arms or verifies anything.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const state = lifecycleRef.current.state;
+      const settingUp =
+        !!lesson &&
+        cameraActiveRef.current &&
+        ["acquiring_initial_objects", "arming", "recovering"].includes(state);
+      if (!settingUp) {
+        setupSince.current = null;
+        setupHelped.current = { gideon: false, felicity: false };
+        if (
+          felicity.current.active?.kind === "setup_blocked" &&
+          state === "running"
+        ) {
+          felicity.current.clear();
+          setFelicityAdvice(null);
+        }
+        return;
+      }
+      const now = performance.now();
+      setupSince.current ??= now;
+      const waited = now - setupSince.current;
+      const first = lesson.procedure.steps[0];
+      const object = lesson.procedure.components.find(
+        (c) => c.id === first?.condition.componentId,
+      );
+      const zone = lesson.procedure.zones.find(
+        (z) => z.id === first?.condition.fromZone,
+      );
+      if (waited > 12_000 && !setupHelped.current.gideon) {
+        setupHelped.current.gideon = true;
+        handlers.current.show(
+          "needs_verification",
+          `I'm still getting ready. Put the ${object?.description ?? "first object"}${zone ? ` at ${zone.description || zone.id}` : " where you started in Teach"}, keep it fully in view and hold the camera still.`,
+          null,
+          `setup-hint:${Math.round(setupSince.current)}`,
+        );
+      }
+      if (waited > 20_000 && !setupHelped.current.felicity && first) {
+        setupHelped.current.felicity = true;
+        const d = lifecycleDiagnostics(lifecycleRef.current);
+        const rows = latestDetections.current
+          .map((det) => {
+            const name =
+              lesson.procedure.components.find((c) => c.id === det.objectId)
+                ?.description ?? det.objectId;
+            return `${name}: ${det.quality}`;
+          })
+          .join("; ");
+        handlers.current.requestFelicity(
+          lesson.procedure,
+          "setup_blocked",
+          first.id,
+          first.condition.componentId,
+          `Automatic Practice has not started after ${Math.round(waited / 1000)} s. State: ${d.state}; camera ${d.camera}; tracker ${d.worker}; starting objects ${d.acquisitionComplete ? "found" : "not yet found"}; armed ${d.armed}.${d.lastError ? ` Last problem: ${d.lastError}.` : ""}${rows ? ` Objects: ${rows}.` : ""}`,
+          `setup:${Math.round(setupSince.current)}`,
+        );
+      }
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [lesson]);
   // Restart on the newly chosen camera once the old stream has stopped.
   useEffect(() => {
     if (!switchingCamera || cameraActive || cameraRequesting) return;
@@ -1690,11 +2381,14 @@ export default function LocalPractice() {
           : "#0891b2";
   }
   return (
-    <Workspace mode="practice">
-      <div className="w-full space-y-2">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+    <Workspace mode="practice" fitScreen>
+      <div className="practice-compact flex w-full flex-col gap-2 md:min-h-0 md:flex-1">
+        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1">
           <h1 className="text-lg font-bold">Practice</h1>
-          <span className="text-sm text-slate-600">
+          <span
+            className="max-w-xs truncate text-sm text-slate-600"
+            title={lesson?.procedure.title}
+          >
             {lesson?.procedure.title}
           </span>
           {!cameraActive ? (
@@ -1764,7 +2458,8 @@ export default function LocalPractice() {
             id="local-practice-status"
             role="status"
             data-lifecycle-state={lifecycle.state}
-            className="text-sm text-slate-600"
+            className="min-w-0 basis-full truncate text-sm text-slate-600 md:basis-0 md:flex-1"
+            title={notice}
           >
             {notice}
           </p>
@@ -1772,17 +2467,20 @@ export default function LocalPractice() {
             <TrackingReadiness live={liveTracking} state={lifecycle.state} />
           )}
         </div>
-        <div className={calibrating ? "hidden" : "contents space-y-2"}>
-          <div className="flex flex-wrap items-stretch gap-2 text-xs">
+        <div className={calibrating ? "hidden" : "contents"}>
+          <div className="flex shrink-0 flex-wrap items-stretch gap-2 text-xs">
             {lesson && (
               <section
                 aria-label="Current step and goal"
                 className="min-w-52 flex-1 space-y-0.5 rounded-2xl border bg-white p-2"
               >
-                <p className="truncate font-semibold">
+                <p
+                  className="truncate font-semibold"
+                  title={lesson.procedure.execution?.goal}
+                >
                   Goal: {lesson.procedure.execution?.goal}
                 </p>
-                <p>
+                <p className="line-clamp-2">
                   Next:{" "}
                   {!running
                     ? lesson.automaticSetup
@@ -1805,25 +2503,27 @@ export default function LocalPractice() {
               </section>
             )}
             <div className="min-w-52 flex-1 space-y-0.5 rounded-2xl border bg-white p-2">
-              <label className="flex gap-2 font-medium">
-                <input
-                  type="checkbox"
-                  checked={voiceOn}
-                  onChange={(e) => {
-                    setVoiceOn(e.target.checked);
-                    if (!e.target.checked) {
-                      speechGeneration.current++;
-                      setSpeaking(false);
-                      window.speechSynthesis?.cancel();
-                    }
-                  }}
+              <div className="flex flex-wrap items-center gap-x-2">
+                <label className="flex gap-2 font-medium">
+                  <input
+                    type="checkbox"
+                    checked={voiceOn}
+                    onChange={(e) => {
+                      setVoiceOn(e.target.checked);
+                      if (!e.target.checked) {
+                        speechGeneration.current++;
+                        setSpeaking(false);
+                        window.speechSynthesis?.cancel();
+                      }
+                    }}
+                  />
+                  Enable microphone voice controls
+                </label>
+                <CommandHelp
+                  commands={LOCAL_PRACTICE_COMMANDS}
+                  gestures={PRACTICE_GESTURES}
                 />
-                Enable microphone voice controls
-              </label>
-              <CommandHelp
-                commands={LOCAL_PRACTICE_COMMANDS}
-                gestures={PRACTICE_GESTURES}
-              />
+              </div>
               <p
                 className="truncate text-slate-600"
                 title={`Voice control: ${voice.status}. ${voice.feedback}`}
@@ -1833,6 +2533,7 @@ export default function LocalPractice() {
               <p
                 className="truncate text-slate-600"
                 data-testid="voice-transcript"
+                title={`${lastHeard ? `You said: “${lastHeard}”` : ""}${lastHeard && lastGuide ? " · " : ""}${lastGuide ? `Guide said: “${lastGuide}”` : ""}`}
               >
                 {lastHeard ? `You said: “${lastHeard}”` : " "}
                 {lastHeard && lastGuide ? " · " : ""}
@@ -1849,7 +2550,7 @@ export default function LocalPractice() {
           </div>
           <div
             data-testid="practice-live-row"
-            className="relative grid items-stretch gap-2 md:h-[calc(100dvh-300px)] md:min-h-[360px] md:grid-cols-[3fr_2fr]"
+            className="relative grid items-stretch gap-2 md:min-h-[320px] md:flex-1 md:grid-cols-[3fr_2fr] md:grid-rows-[minmax(0,1fr)]"
           >
             {running && (complete || result?.status === "failed") && (
               <div
@@ -1863,7 +2564,7 @@ export default function LocalPractice() {
               data-testid="practice-camera"
               className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border-2 bg-white ${running && result?.status === "failed" ? "border-red-600 practice-frame-warning" : running && complete ? "border-green-600" : "border-slate-200"}`}
             >
-              <div className="flex items-center justify-between border-b px-3 py-2 text-sm font-semibold">
+              <div className="flex shrink-0 items-center justify-between border-b px-3 py-1 text-sm font-semibold">
                 <span>Live work camera</span>
                 <button
                   type="button"
@@ -1911,6 +2612,48 @@ export default function LocalPractice() {
                   <p className="absolute inset-0 flex items-center justify-center p-4 text-center text-sm text-slate-400">
                     Choose a guide and start the camera when you’re ready.
                   </p>
+                )}
+                {celebration && (
+                  <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center p-4">
+                    <section
+                      role="dialog"
+                      aria-label="Goal complete"
+                      data-testid="practice-celebration"
+                      className="practice-celebrate pointer-events-auto w-full max-w-xs rounded-2xl border-2 border-emerald-500 bg-white p-4 text-center shadow-2xl"
+                    >
+                      <p className="text-3xl" aria-hidden="true">
+                        🏆🎉
+                      </p>
+                      <h2 className="text-xl font-extrabold text-emerald-700">
+                        Goal complete!
+                      </h2>
+                      <p className="mt-1 text-sm text-slate-800">
+                        All {celebration.steps} step
+                        {celebration.steps === 1 ? "" : "s"} verified in{" "}
+                        <strong>{formatDuration(celebration.elapsedMs)}</strong>
+                        .
+                      </p>
+                      {celebration.pace !== null && (
+                        <p className="text-xs text-slate-600">
+                          {celebration.pace <= 1
+                            ? "As fast as the demonstration or faster."
+                            : `${celebration.pace.toFixed(1)}× the demonstration time.`}
+                        </p>
+                      )}
+                      <p className="mt-1 text-sm font-bold text-amber-600">
+                        {celebration.newBest
+                          ? "New personal best!"
+                          : `Personal best: ${formatDuration(celebration.bestMs ?? celebration.elapsedMs)}`}
+                      </p>
+                      <button
+                        type="button"
+                        className="mt-2"
+                        onClick={() => setCelebration(null)}
+                      >
+                        Close
+                      </button>
+                    </section>
+                  </div>
                 )}
                 {running && trackingOverlay && (
                   <svg
@@ -1965,39 +2708,224 @@ export default function LocalPractice() {
                   </svg>
                 )}
               </div>
-              {lesson && !running && references && (
-                <div className="p-2" aria-label="Before and after goal">
-                  <p className="mb-1 text-xs font-bold">
-                    Before and after goal
-                  </p>
-                  <div className="flex justify-start gap-2">
-                    <figure className="w-20 overflow-hidden rounded-lg border bg-slate-50">
-                      <img
-                        src={references.before}
-                        alt="Demonstrated starting state"
-                        className="block h-12 w-full object-cover"
-                      />
-                      <figcaption className="px-1 py-0.5 text-xs font-bold">
-                        Before
-                      </figcaption>
-                    </figure>
-                    <figure className="w-20 overflow-hidden rounded-lg border bg-slate-50">
-                      <img
-                        src={references.goal}
-                        alt="Demonstrated final goal"
-                        className="block h-12 w-full object-cover"
-                      />
-                      <figcaption className="px-1 py-0.5 text-xs font-bold">
-                        After
-                      </figcaption>
-                    </figure>
+              {alert && (
+                <div className="shrink-0 px-2 pt-1">
+                  <div
+                    key={alert.key}
+                    data-testid="practice-verdict"
+                    role={alert.kind === "failed" ? "alert" : "status"}
+                    aria-live="polite"
+                    title={alert.text}
+                    className={`line-clamp-2 rounded-xl border-2 px-2 py-1 text-sm font-bold ${alert.kind === "failed" ? "border-red-600 bg-red-50 text-red-800 practice-correction-pulse" : alert.kind === "passed" ? "border-green-600 bg-green-50 text-green-800" : "border-amber-600 bg-amber-50 text-amber-800"}`}
+                  >
+                    {alert.text}
                   </div>
                 </div>
               )}
               {lesson && (
-                <section aria-label="Steps" className="px-2 py-1 text-xs">
+                <div className="flex shrink-0 flex-wrap items-start gap-2 border-t p-2 text-xs md:flex-nowrap">
+                  {!running && references && (
+                    <div
+                      className="shrink-0"
+                      aria-label="Before and after goal"
+                    >
+                      <p className="sr-only">Before and after goal</p>
+                      <div className="flex justify-start gap-1">
+                        <figure className="w-16 overflow-hidden rounded border bg-slate-50">
+                          {/* eslint-disable-next-line @next/next/no-img-element -- local data URL */}
+                          <img
+                            src={references.before}
+                            alt="Demonstrated starting state"
+                            className="block h-10 w-full object-cover"
+                          />
+                          <figcaption className="px-1 text-[10px] font-bold">
+                            Before
+                          </figcaption>
+                        </figure>
+                        <figure className="w-16 overflow-hidden rounded border bg-slate-50">
+                          {/* eslint-disable-next-line @next/next/no-img-element -- local data URL */}
+                          <img
+                            src={references.goal}
+                            alt="Demonstrated final goal"
+                            className="block h-10 w-full object-cover"
+                          />
+                          <figcaption className="px-1 text-[10px] font-bold">
+                            After
+                          </figcaption>
+                        </figure>
+                      </div>
+                    </div>
+                  )}
+                  {/* Live goal panel, kept outside the camera image:
+                      before/after pictures and the approved step checklist
+                      (display only; the verifier's step states drive the
+                      marks). */}
+                  <aside
+                    aria-label="Goal checklist"
+                    data-testid="goal-checklist"
+                    className="flex min-w-0 flex-1 flex-wrap items-start gap-2 text-slate-900 md:flex-nowrap"
+                  >
+                    {running && references && (
+                      <div className="flex shrink-0 gap-1">
+                        <figure className="w-16 overflow-hidden rounded border">
+                          {/* eslint-disable-next-line @next/next/no-img-element -- local data URL */}
+                          <img
+                            src={references.before}
+                            alt="Starting state"
+                            className="block h-10 w-full object-cover"
+                          />
+                          <figcaption className="px-1 text-[10px] font-bold">
+                            Before
+                          </figcaption>
+                        </figure>
+                        <figure className="w-16 overflow-hidden rounded border">
+                          {/* eslint-disable-next-line @next/next/no-img-element -- local data URL */}
+                          <img
+                            src={references.goal}
+                            alt="Final goal"
+                            className="block h-10 w-full object-cover"
+                          />
+                          <figcaption className="px-1 text-[10px] font-bold">
+                            Goal
+                          </figcaption>
+                        </figure>
+                      </div>
+                    )}
+                    <div className="min-w-0 basis-full md:w-60 md:shrink-0 md:basis-auto">
+                      <p
+                        className="line-clamp-2 font-bold"
+                        title={
+                          lesson.procedure.execution?.goal ??
+                          lesson.procedure.title
+                        }
+                      >
+                        {lesson.procedure.execution?.goal ??
+                          lesson.procedure.title}
+                      </p>
+                      {(() => {
+                        const statuses = Object.fromEntries(
+                          (result?.steps ?? []).map((st) => [
+                            st.stepId,
+                            st.status,
+                          ]),
+                        );
+                        const p = estimateProgress({
+                          steps: lesson.procedure.steps.map((step) => ({
+                            id: step.id,
+                            demoMs: stepDemoMs(step),
+                          })),
+                          status: statuses,
+                          startedAtMs: practiceStartedAt,
+                          nowMs: Math.max(clockMs, practiceStartedAt ?? 0),
+                          goalComplete: !!complete,
+                        });
+                        return (
+                          <div data-testid="practice-progress" className="my-1">
+                            <div
+                              role="progressbar"
+                              aria-label="Progress to the final goal"
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={Math.round(p.fraction * 100)}
+                              className="h-2 w-full overflow-hidden rounded-full bg-slate-200"
+                            >
+                              <div
+                                className={`h-full rounded-full ${result?.status === "failed" ? "bg-red-500" : "bg-emerald-500"} transition-all`}
+                                style={{
+                                  width: `${Math.round(p.fraction * 100)}%`,
+                                }}
+                              />
+                            </div>
+                            <p className="mt-0.5 text-[11px] text-slate-700">
+                              {p.done}/{p.total} steps
+                              {practiceStartedAt !== null &&
+                                ` · ${formatDuration(p.elapsedMs)}`}
+                              {p.remainingMs !== null &&
+                                ` · ≈ ${formatDuration(p.remainingMs)} left`}
+                            </p>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    <ul className="max-h-16 min-w-0 flex-1 space-y-0.5 overflow-y-auto">
+                      {(() => {
+                        const firstOpen = lesson.procedure.steps.findIndex(
+                          (step) =>
+                            result?.steps.find(
+                              (state) => state.stepId === step.id,
+                            )?.status !== "passed",
+                        );
+                        return lesson.procedure.steps.map((step, index) => {
+                          const status =
+                            result?.steps.find(
+                              (state) => state.stepId === step.id,
+                            )?.status ?? "pending";
+                          const mark =
+                            status === "passed"
+                              ? "✓"
+                              : status === "failed"
+                                ? "✗"
+                                : index === firstOpen
+                                  ? "●"
+                                  : "○";
+                          return (
+                            <li
+                              key={step.id}
+                              data-step-status={status}
+                              className={`flex gap-1 ${status === "passed" ? "text-emerald-800" : status === "failed" ? "font-bold text-red-700" : index === firstOpen ? "font-semibold" : "text-slate-600"}`}
+                            >
+                              <span aria-hidden="true">{mark}</span>
+                              <span>
+                                {index + 1}. {step.description}
+                              </span>
+                            </li>
+                          );
+                        });
+                      })()}
+                    </ul>
+                  </aside>
+                </div>
+              )}
+            </section>
+            <div className="flex min-w-0 flex-col gap-2 md:min-h-0 md:overflow-y-auto">
+              <div data-testid="practice-companion" className="min-w-0 flex-1">
+                <GuideAvatar
+                  artClassName="mx-auto h-52 w-48 [@media(min-height:880px)]:h-64 [@media(min-height:880px)]:w-60"
+                  mode={resolveAvatarMode({
+                    violation: running && result?.status === "failed",
+                    complete: running && complete && alert?.kind !== "warning",
+                    uncertain:
+                      (!running && cameraActive) ||
+                      result?.status === "needs_verification" ||
+                      alert?.kind === "warning",
+                    busy: starting,
+                  })}
+                  speech={
+                    speaking
+                      ? "speaking"
+                      : voice.status === "listening"
+                        ? "listening"
+                        : "silent"
+                  }
+                  caption={alert?.text ?? notice}
+                />
+                {felicityAdvice && (
+                  <p
+                    data-testid="felicity-advice"
+                    role="status"
+                    className="mt-2 rounded-xl border border-violet-300 bg-violet-50 p-2 text-sm text-violet-900"
+                  >
+                    <strong>Felicity:</strong> {felicityAdvice}
+                  </p>
+                )}
+              </div>
+              {lesson && (
+                <section
+                  aria-label="Steps"
+                  className="shrink-0 rounded-2xl border bg-white px-2 py-1 text-xs"
+                >
                   <details open={running ? true : undefined}>
-                    <summary className="cursor-pointer font-bold">
+                    <summary className="cursor-pointer py-0.5 font-bold">
                       Steps ·{" "}
                       {running ? "live verification" : "last observed result"}
                     </summary>
@@ -2029,51 +2957,6 @@ export default function LocalPractice() {
                   </details>
                 </section>
               )}
-              {alert && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/85 to-transparent px-3 pb-2 pt-8">
-                  <div
-                    key={alert.key}
-                    data-testid="practice-verdict"
-                    role={alert.kind === "failed" ? "alert" : "status"}
-                    aria-live="polite"
-                    className={`rounded-xl border-2 p-2 text-base font-bold ${alert.kind === "failed" ? "border-red-600 bg-red-50 text-red-800 practice-correction-pulse" : alert.kind === "passed" ? "border-green-600 bg-green-50 text-green-800" : "border-amber-600 bg-amber-50 text-amber-800"}`}
-                  >
-                    {alert.text}
-                  </div>
-                </div>
-              )}
-              {running && references && (
-                <div className="pointer-events-none absolute right-2 top-14 w-24 overflow-hidden rounded-lg border-2 border-white bg-slate-950 shadow-lg">
-                  <img src={references.goal} alt="" className="block w-full" />
-                  <p className="bg-slate-950 px-1 py-0.5 text-center text-[10px] font-bold text-white">
-                    Goal
-                  </p>
-                </div>
-              )}
-            </section>
-            <div className="flex min-w-0 flex-col">
-              <div data-testid="practice-companion" className="min-w-0 flex-1">
-                <GuideAvatar
-                  artClassName="mx-auto h-72 w-64 sm:h-80 sm:w-72"
-                  mode={resolveAvatarMode({
-                    violation: running && result?.status === "failed",
-                    complete: running && complete && alert?.kind !== "warning",
-                    uncertain:
-                      (!running && cameraActive) ||
-                      result?.status === "needs_verification" ||
-                      alert?.kind === "warning",
-                    busy: starting,
-                  })}
-                  speech={
-                    speaking
-                      ? "speaking"
-                      : voice.status === "listening"
-                        ? "listening"
-                        : "silent"
-                  }
-                  caption={alert?.text ?? notice}
-                />
-              </div>
             </div>
           </div>
         </div>

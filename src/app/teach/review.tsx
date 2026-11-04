@@ -6,6 +6,65 @@ import {
 } from "@/teach/automatic-setup";
 import { saveApprovedProcedure } from "@/teach/approved-storage";
 import { alignScenePredicateEvidence } from "@/teach/predicate-evidence";
+
+type AuditFindingView = {
+  category: string;
+  attention: "requires_expert" | "suggestion";
+  message: string;
+  suggestion: string;
+  stepId: string | null;
+  transcriptMs: number | null;
+  frame: number | null;
+};
+const AUDIT_LABEL: Record<string, string> = {
+  missing_action: "Missing action",
+  visible_action_absent: "Movement not in the procedure",
+  unsupported_claim: "Claim beyond the evidence",
+  missing_object: "Object unclear or missing",
+  unclear_instruction: "Unclear instruction",
+  unclear_goal: "Final goal",
+};
+function renderFinding(finding: AuditFindingView, index: number) {
+  return (
+    <li
+      key={index}
+      data-attention={finding.attention}
+      className={`rounded-lg border bg-white p-2 text-sm ${finding.attention === "requires_expert" ? "border-amber-500" : "border-slate-200"}`}
+    >
+      <span
+        className={`mr-2 rounded px-1.5 py-0.5 text-xs font-bold ${finding.attention === "requires_expert" ? "bg-amber-100 text-amber-900" : "bg-slate-100 text-slate-700"}`}
+      >
+        {finding.attention === "requires_expert"
+          ? "Needs your attention"
+          : "Suggestion"}
+      </span>
+      <strong>{AUDIT_LABEL[finding.category] ?? finding.category}:</strong>{" "}
+      {finding.message}
+      <br />
+      <span className="text-slate-700">
+        Suggested: {finding.suggestion}
+      </span>
+      {(finding.stepId || finding.transcriptMs !== null || finding.frame !== null) && (
+        <span className="block text-xs text-slate-500">
+          {[
+            finding.stepId && `step ${finding.stepId}`,
+            finding.transcriptMs !== null &&
+              `narration at ${(finding.transcriptMs / 1000).toFixed(1)} s`,
+            finding.frame !== null && `video frame ${finding.frame}`,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
+      )}
+    </li>
+  );
+}
+/** One plain creator-facing sentence; the full text stays in Technical details. */
+function plainSentence(message: string): string {
+  const line = message.trim().split("\n")[0] ?? "";
+  const sentence = /^.*?[.!?](?=\s|$)/.exec(line)?.[0] ?? line;
+  return sentence.length > 200 ? `${sentence.slice(0, 197)}…` : sentence;
+}
 import { ApprovedArtifactSchema } from "@/teach/approved-artifact";
 import {
   RehearsalSchema,
@@ -13,7 +72,7 @@ import {
   type Rehearsal,
 } from "@/teach/rehearsal";
 import { executableRevision } from "@/teach/revision";
-import { sourceEvidenceCatalog } from "@/teach/source-evidence";
+import { sourceEvidenceCatalog, trustedTrack } from "@/teach/source-evidence";
 import FeedbackPopup, { useFeedback } from "@/components/feedback";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -125,6 +184,44 @@ export default function Review({
 }) {
   const router = useRouter();
   const feedback = useFeedback();
+  // Felicity quality audit of the generated draft (advisory; never edits or
+  // approves). One request per draft; failure leaves Teach unchanged.
+  const [audit, setAudit] = useState<
+    | { status: "loading" }
+    | { status: "unavailable"; reason: string }
+    | { status: "ready"; summary: string; findings: AuditFindingView[] }
+  >({ status: "loading" });
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/teach/audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({ token, draft: initial }),
+    })
+      .then(async (response) => {
+        const data = (await response.json().catch(() => null)) as
+          | { summary?: unknown; findings?: unknown; error?: unknown }
+          | null;
+        if (!response.ok || !data || !Array.isArray(data.findings))
+          throw Error(
+            typeof data?.error === "string" ? data.error : `HTTP ${response.status}`,
+          );
+        setAudit({
+          status: "ready",
+          summary: typeof data.summary === "string" ? data.summary : "",
+          findings: data.findings as AuditFindingView[],
+        });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setAudit({
+          status: "unavailable",
+          reason: error instanceof Error ? error.message : "Audit failed.",
+        });
+      });
+    return () => controller.abort();
+  }, [initial, token]);
   // Preserve the creator's entire intended scope, including unsupported work.
   // Scene predicates cite the measured boundary frames the reviewed zones
   // come from; the server re-validates this at approval.
@@ -241,67 +338,116 @@ export default function Review({
     setApproved(null);
     setError("");
   }
-  async function approve() {
+  // Approval (human gate + server validation + automatic setup) followed by
+  // save and Practice handoff. Both halves reuse the original flows; a save
+  // failure leaves the approved lesson on screen with a retry action.
+  async function approveAndPractice() {
+    if (busy) return;
     setError("");
     setBusy(true);
     try {
-      if (dirty) throw new Error("Apply edited draft changes before approval.");
-      if (effectiveBlockers.length) throw new Error(effectiveBlockers[0]);
-      const review = {
-        reviewer,
-        confirmed: confirm,
-        ...(draft.procedure.execution ? { goalConfirmed } : {}),
-        steps: draft.procedure.steps.map((step) =>
-          reviewStepInput(step.id, withReviewedMarks()[step.id]),
-        ),
-      };
-      const checked = approveDraft(draft, review, context, Date.now()); // server repeats validation
-      const plan = checked.procedure.execution
-        ? automaticSetupPlan(checked.procedure, checked.review, context)
-        : null;
-      const setupFrames = plan
-        ? await Promise.all(
-            [
-              ...new Set([
-                plan.sceneFrame,
-                plan.goalFrame,
-                ...plan.objects.map((object) => object.frame),
-              ]),
-            ].map(async (frame) => ({
-              frame,
-              image: await frameImage(
-                video,
-                context.lesson.media.frameTimesMs[frame],
-                320,
-              ),
-            })),
-          )
-        : undefined;
-      const response = await fetch("/api/teach/approve", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token,
-          draft,
-          review,
-          setupFrames,
-          rehearsal: readRehearsal(context.lesson.lessonId) ?? undefined,
-        }),
-      });
-      const result = await readAppJson(response, "Approval");
-      if (!ApprovedArtifactSchema.safeParse(result).success)
-        throw new Error(
-          "Approval could not be confirmed: the server returned an incomplete lesson. Keep this draft open and try again.",
-        );
+      const result = await approve();
       setApproved(result);
-      feedback.success("Lesson approved", "Save it to start Practice.");
+      feedback.success("Lesson approved", "Opening Practice…");
+      await saveAndOpen(result);
     } catch (e) {
-      const message = reviewErrorMessage(e);
-      setError(message);
-      feedback.failure(message);
+      report(reviewErrorMessage(e));
     } finally {
       setBusy(false);
     }
+  }
+  async function retrySave() {
+    if (busy || approved === null) return;
+    setError("");
+    setBusy(true);
+    try {
+      await saveAndOpen(approved);
+    } catch (e) {
+      report(
+        e instanceof Error
+          ? reviewErrorMessage(e)
+          : "Save failed. Download the approved export instead.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  function report(message: string) {
+    setError(message);
+    feedback.failure(plainSentence(message));
+  }
+  async function approve(): Promise<unknown> {
+    if (dirty) throw new Error("Apply edited draft changes before approval.");
+    if (effectiveBlockers.length) throw new Error(effectiveBlockers[0]);
+    const review = {
+      reviewer,
+      confirmed: confirm,
+      ...(draft.procedure.execution ? { goalConfirmed } : {}),
+      steps: draft.procedure.steps.map((step) =>
+        reviewStepInput(step.id, withReviewedMarks()[step.id]),
+      ),
+    };
+    const checked = approveDraft(draft, review, context, Date.now()); // server repeats validation
+    const plan = checked.procedure.execution
+      ? automaticSetupPlan(checked.procedure, checked.review, context)
+      : null;
+    const setupFrames = plan
+      ? await Promise.all(
+          [
+            ...new Set([
+              plan.sceneFrame,
+              plan.goalFrame,
+              ...plan.objects.map((object) => object.frame),
+            ]),
+          ].map(async (frame) => ({
+            frame,
+            image: await frameImage(
+              video,
+              context.lesson.media.frameTimesMs[frame],
+              320,
+            ),
+          })),
+        )
+      : undefined;
+    const response = await fetch("/api/teach/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token,
+        draft,
+        review,
+        setupFrames,
+        rehearsal: readRehearsal(context.lesson.lessonId) ?? undefined,
+      }),
+    });
+    const result = await readAppJson(response, "Approval");
+    if (!ApprovedArtifactSchema.safeParse(result).success)
+      throw new Error(
+        "Approval could not be confirmed: the server returned an incomplete lesson. Keep this draft open and try again.",
+      );
+    return result;
+  }
+  async function saveAndOpen(approvedLesson: unknown) {
+    const text = JSON.stringify(approvedLesson);
+    if (text.length > 1_500_000)
+      throw new Error(
+        "Use the downloaded export: this lesson is too large for quick handoff.",
+      );
+    const artifact = ApprovedArtifactSchema.parse(approvedLesson);
+    const beforeMs =
+      context.lesson.media.frameTimesMs[artifact.review.steps[0].fromFrame];
+    const goalMs = Math.max(
+      ...artifact.review.steps.map(
+        (step) => context.lesson.media.frameTimesMs[step.toFrame],
+      ),
+    );
+    const [before, goal] = await Promise.all([
+      frameImage(video, beforeMs),
+      frameImage(video, goalMs),
+    ]);
+    await saveApprovedProcedure(text, { before, goal, beforeMs, goalMs });
+    sessionStorage.setItem("steplint-approved-handoff", text);
+    router.push("/practice");
   }
   async function rehearse() {
     setError("");
@@ -371,9 +517,7 @@ export default function Review({
       );
       window.open("/practice?rehearsal=1", "_blank", "noopener");
     } catch (e) {
-      const message = reviewErrorMessage(e);
-      setError(message);
-      feedback.failure(message);
+      report(reviewErrorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -456,7 +600,6 @@ export default function Review({
           Re-run analysis
         </button>
         <button
-          className="primary"
           disabled={busy || effectiveBlockers.length > 0}
           onClick={() => void rehearse()}
         >
@@ -480,9 +623,10 @@ export default function Review({
         // selectable so the menu never blanks.
         const moments = keyFrames(
           context,
-          (track?.samples ?? [])
-            .filter((s) => (s.confidence ?? 0) >= 0.9)
-            .map((s) => s.frame),
+          trustedTrack(
+            track?.samples ?? [],
+            context.lesson.media.frameTimesMs,
+          ).map((s) => s.frame),
           [check.fromFrame, check.toFrame, check.changeFrame ?? -1],
         );
         const frameOptions = moments.map((frame) => (
@@ -779,15 +923,67 @@ export default function Review({
               setGoalConfirmed(false);
               setError("");
             } catch (e) {
-              const message = reviewErrorMessage(e);
-              setError(message);
-              feedback.failure(message);
+              report(reviewErrorMessage(e));
             }
           }}
         >
           Apply edited draft
         </button>
       </details>
+      <section
+        aria-label="Felicity audit"
+        data-testid="felicity-audit"
+        className="space-y-2 rounded-xl border border-violet-300 bg-violet-50 p-3"
+      >
+        <h3 className="font-bold text-violet-900">
+          Felicity audit — check before approving
+        </h3>
+        {audit.status === "loading" && (
+          <p className="text-sm">
+            Felicity is comparing this draft with the transcript and the
+            measured object movements…
+          </p>
+        )}
+        {audit.status === "unavailable" && (
+          <p className="text-sm" data-audit-status="unavailable">
+            Audit unavailable ({audit.reason}). The draft is unchanged; review it
+            yourself as usual.
+          </p>
+        )}
+        {audit.status === "ready" && (
+          <>
+            {audit.summary && <p className="text-sm">{audit.summary}</p>}
+            {audit.findings.length === 0 && (
+              <p className="text-sm" data-audit-status="clear">
+                No issues found. You are still responsible for the review.
+              </p>
+            )}
+            {audit.findings.some((f) => f.attention === "requires_expert") && (
+              <ul className="space-y-1">
+                {audit.findings
+                  .map((finding, index) => ({ finding, index }))
+                  .filter(({ finding }) => finding.attention === "requires_expert")
+                  .map(({ finding, index }) => renderFinding(finding, index))}
+              </ul>
+            )}
+            <details>
+              <summary className="text-sm text-violet-900">Felicity notes</summary>
+              {audit.findings.some((f) => f.attention !== "requires_expert") && (
+                <ul className="mt-2 space-y-1">
+                  {audit.findings
+                    .map((finding, index) => ({ finding, index }))
+                    .filter(({ finding }) => finding.attention !== "requires_expert")
+                    .map(({ finding, index }) => renderFinding(finding, index))}
+                </ul>
+              )}
+              <p className="mt-2 text-xs text-slate-600">
+                Advice only: Felicity never changes or approves the procedure.
+                Edit the steps above if you agree.
+              </p>
+            </details>
+          </>
+        )}
+      </section>
       <label>
         Your reviewer name{" "}
         <input
@@ -813,12 +1009,18 @@ export default function Review({
           role="status"
           className="rounded border border-amber-400 bg-amber-50 p-4"
         >
-          <h3 className="font-bold">Needs attention before approval</h3>
-          <ul className="list-disc pl-5">
-            {effectiveBlockers.map((message, index) => (
-              <li key={index}>{message}</li>
-            ))}
-          </ul>
+          <p className="font-medium">
+            This lesson needs one more look: {plainSentence(effectiveBlockers[0])}
+          </p>
+          <details className="mt-2 text-sm">
+            <summary>Technical details</summary>
+            <h3 className="font-bold">Needs attention before approval</h3>
+            <ul className="list-disc pl-5">
+              {effectiveBlockers.map((message, index) => (
+                <li key={index}>{message}</li>
+              ))}
+            </ul>
+          </details>
         </div>
       )}
       <button
@@ -833,20 +1035,24 @@ export default function Review({
           effectiveBlockers.length > 0
         }
         className="primary"
-        onClick={() => void approve()}
+        onClick={() => void approveAndPractice()}
       >
-        Approve procedure
+        Approve and practice
       </button>
       {error && (
-        <p role="alert" className="whitespace-pre-wrap text-red-800">
-          {error}
-        </p>
+        <div role="alert" className="text-red-800">
+          <p>{plainSentence(error)}</p>
+          <details className="text-sm">
+            <summary>Technical details</summary>
+            <p className="whitespace-pre-wrap">{error}</p>
+          </details>
+        </div>
       )}
       <FeedbackPopup notice={feedback.notice} onClose={feedback.close} />
       {approved !== null && (
         <div role="status">
           <p className="font-bold">
-            Procedure approved. Save and open Practice.
+            Procedure approved. Saving and opening Practice…
           </p>
           {ApprovedArtifactSchema.safeParse(approved).data?.rehearsal && (
             <p className="text-sm">
@@ -855,55 +1061,11 @@ export default function Review({
               )}
             </p>
           )}
-          <button
-            disabled={busy}
-            className="primary"
-            onClick={() => {
-              if (busy) return;
-              setBusy(true);
-              void (async () => {
-                try {
-                  const text = JSON.stringify(approved);
-                  if (text.length > 1_500_000)
-                    throw new Error(
-                      "Use the downloaded export: this lesson is too large for quick handoff.",
-                    );
-                  const artifact = ApprovedArtifactSchema.parse(approved);
-                  const beforeMs =
-                    context.lesson.media.frameTimesMs[
-                      artifact.review.steps[0].fromFrame
-                    ];
-                  const goalMs = Math.max(
-                    ...artifact.review.steps.map(
-                      (step) => context.lesson.media.frameTimesMs[step.toFrame],
-                    ),
-                  );
-                  const [before, goal] = await Promise.all([
-                    frameImage(video, beforeMs),
-                    frameImage(video, goalMs),
-                  ]);
-                  await saveApprovedProcedure(text, {
-                    before,
-                    goal,
-                    beforeMs,
-                    goalMs,
-                  });
-                  sessionStorage.setItem("steplint-approved-handoff", text);
-                  router.push("/practice");
-                } catch (e) {
-                  setError(
-                    e instanceof Error
-                      ? e.message
-                      : "Save failed. Download the approved export instead.",
-                  );
-                } finally {
-                  setBusy(false);
-                }
-              })();
-            }}
-          >
-            Save and open Practice
-          </button>
+          {error && (
+            <button disabled={busy} onClick={() => void retrySave()}>
+              Retry save and open Practice
+            </button>
+          )}
         </div>
       )}
     </section>

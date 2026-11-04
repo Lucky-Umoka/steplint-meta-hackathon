@@ -227,3 +227,49 @@ test("one late tracker reply is discarded without stopping Practice", async ({ p
   await expect(page.locator("#local-practice-status")).not.toContainText("too late");
   await expect(page.getByTestId("tracking-readiness")).toHaveAttribute("data-live", "yes");
 });
+
+
+test("when automatic Practice cannot start, Gideon hints at 12 s and Felicity's setup diagnosis is spoken by Gideon", async ({ page }) => {
+  test.setTimeout(90_000);
+  await lifecycleHarness(page, { findingSetup: true });
+  const kinds: string[] = [];
+  await page.route("**/api/practice/recovery", async (route) => {
+    const body = route.request().postDataJSON() as { incidentId: string; kind: string; reason: string };
+    kinds.push(body.kind);
+    expect(body.reason).toContain("has not started");
+    await route.fulfill({ json: { incidentId: body.incidentId, category: "setup_blocked", needsClarification: false, advice: "Place the neutral object on its starting mark and keep it fully in view." } });
+  });
+  await page.goto("/practice");
+  const spoken = () => page.evaluate(() => JSON.stringify((window as unknown as { localSpoken: string[] }).localSpoken));
+  await expect.poll(spoken, { timeout: 20_000 }).toContain("I'm still getting ready.");
+  await expect.poll(() => kinds, { timeout: 20_000 }).toEqual(["setup_blocked"]);
+  await expect(page.getByTestId("felicity-advice")).toContainText("starting mark");
+  await expect.poll(spoken).toContain("Felicity suggests: Place the neutral object");
+  expect(await lifecycleState(page)).not.toBe("running");
+});
+
+test("progress bar, timer and a centred finish celebration", async ({ page }) => {
+  await lifecycleHarness(page);
+  await page.goto("/practice");
+  await running(page);
+  const bar = page.getByRole("progressbar", { name: "Progress to the final goal" });
+  await expect(bar).toHaveAttribute("aria-valuenow", "0");
+  await expect(page.getByTestId("practice-progress")).toContainText(/0\/1 steps · \d+ s · ≈ \d+ s left/);
+  for (let x = 50; x <= 208; x += 4) {
+    await page.evaluate((x) => {
+      (window as unknown as { localScene: { x: number } }).localScene.x = x;
+    }, x);
+    await page.waitForTimeout(55);
+  }
+  const card = page.getByTestId("practice-celebration");
+  await expect(card).toBeVisible({ timeout: 15_000 });
+  await expect(card).toContainText("Goal complete!");
+  await expect(card).toContainText(/verified in \d+ s/);
+  await expect(card).toContainText(/New personal best!|Personal best:/);
+  await expect(bar).toHaveAttribute("aria-valuenow", "100");
+  const box = (await card.boundingBox())!;
+  const camera = (await page.getByLabel("Live work camera", { exact: true }).boundingBox())!;
+  expect(Math.abs(box.x + box.width / 2 - (camera.x + camera.width / 2))).toBeLessThan(12);
+  await card.getByRole("button", { name: "Close" }).click();
+  await expect(card).toBeHidden();
+});

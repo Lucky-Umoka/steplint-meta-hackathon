@@ -5,10 +5,30 @@ import {
   MINIMUM_TEACH_TRANSFER_DISPLACEMENT,
   sampleDisplacement,
   sourceEvidenceCatalog,
-  trustedSourceSample,
+  trustedTrack,
 } from "./source-evidence";
 
 /** Pure source checks: valid JSON and frame indices do not prove a measured action. */
+/**
+ * Final-goal consistency with the measured actions (owner report: the goal
+ * named an intermediate move or place). Never repaired silently: the issue
+ * goes to the single correction request, then to human review.
+ */
+export function finalGoalIssue(procedure: ProcedureSpec): string | null {
+  const execution = procedure.execution;
+  if (execution?.schemaVersion !== 3) return null;
+  const last = new Map<string, ProcedureSpec["steps"][number]>();
+  for (const step of procedure.steps) last.set(step.condition.componentId, step);
+  for (const p of execution.finalConditions) {
+    if (p.kind !== "object_in_zone") continue;
+    const step = last.get(p.objectId);
+    if (step && step.condition.toZone !== p.zoneId)
+      return `Final goal names ${p.objectId} in "${p.zoneId}", but its last measured action "${step.id}" ends in "${step.condition.toZone}". The final condition must be where the object finally rests; correct finalConditions (and its requirement links).`;
+  }
+  // Intermediate goal steps are rejected by the procedure schema with its own
+  // actionable "remove … from goalStepIds" message.
+  return null;
+}
 export function validateV3Evidence(
   draft: TeachDraft,
   context: TeachContext,
@@ -16,6 +36,8 @@ export function validateV3Evidence(
   const procedure: ProcedureSpec = draft.procedure;
   const execution = procedure.execution;
   if (execution?.schemaVersion !== 3) return;
+  const goalIssue = finalGoalIssue(procedure);
+  if (goalIssue) throw Error(goalIssue);
   const times = context.lesson.media.frameTimesMs;
   const measuredWindowHint = (objectId: string) => {
     const entry = sourceEvidenceCatalog(context).find(
@@ -29,13 +51,19 @@ export function validateV3Evidence(
       ? `Measured movement windows for this object: ${windows.slice(0, 8).join(", ")}.`
       : `This object has no measured movement window (${entry?.movementDiagnosis ?? "no reliable tracking"}); mark the action unsupported.`;
   };
+  const reliable = new Map(
+    context.tracking.map((t) => [
+      t.componentId,
+      new Set(trustedTrack(t.samples, times)),
+    ]),
+  );
   const sample = (objectId: string, frame: number) => {
     const value = context.tracking
       .find((t) => t.componentId === objectId)
       ?.samples.find((s) => s.frame === frame);
-    if (!value || !trustedSourceSample(value, times))
+    if (!value || !reliable.get(objectId)?.has(value))
       throw Error(
-        `Unsupported source evidence for ${objectId} at frame ${frame}: ${!value ? "no tracked observation" : value.timestampMs !== times[frame] ? "source timestamp mismatch" : "tracking score below 0.90 or unavailable"}. Use only this object's eligible source frames; video visibility alone is not a tracking measurement.`,
+        `Unsupported source evidence for ${objectId} at frame ${frame}: ${!value ? "no tracked observation" : value.timestampMs !== times[frame] ? "source timestamp mismatch" : "tracking score below 0.90 (and not part of a steady rest scoring 0.50 or higher) or unavailable"}. Use only this object's eligible source frames; video visibility alone is not a tracking measurement.`,
       );
     return value;
   };
@@ -70,12 +98,11 @@ export function validateV3Evidence(
     }
     // Same window rule Teach approval enforces (validateReviewEvidence): an
     // at-rest start and result, with tracking gaps no longer than the policy.
-    const trustedMover = (
+    const trustedMover = trustedTrack(
       context.tracking.find((t) => t.componentId === step.condition.componentId)
-        ?.samples ?? []
-    )
-      .filter((s) => trustedSourceSample(s, times))
-      .sort((a, b) => a.frame - b.frame);
+        ?.samples ?? [],
+      times,
+    );
     const windowIssue = actionWindowIssue(
       trustedMover,
       window.startFrame,

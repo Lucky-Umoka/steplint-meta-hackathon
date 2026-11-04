@@ -249,6 +249,7 @@ export async function compile(request: Request) {
             input.goal
               ? { goal: input.goal, videoBase64: input.videoBase64 }
               : undefined,
+            (value) => send({ type: "diagnostic", diagnostic: value }),
           );
           send({
             type: "draft",

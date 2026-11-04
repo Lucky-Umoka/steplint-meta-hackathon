@@ -8,6 +8,7 @@ import { nextProcessingStage, type ProcessingStage } from "@/teach/progress";
 import { useRouter } from "next/navigation";
 import {
   listApprovedProcedures,
+  lessonThumbnail,
   type SavedProcedure,
 } from "@/teach/approved-storage";
 import Review from "./review";
@@ -46,7 +47,7 @@ function RecordingPreview({ video }: { video: Blob }) {
       ref={element}
       controls
       playsInline
-      className="max-h-[32vh] w-full rounded-xl bg-slate-950"
+      className="mx-auto block max-h-[45vh] w-auto max-w-full rounded-xl bg-slate-950"
       aria-label="Prepared lesson preview"
     />
   );
@@ -237,6 +238,14 @@ function LocalTeachFlow() {
                 token: event.data.token,
               });
               complete = true;
+            } else if (
+              value &&
+              typeof value === "object" &&
+              "type" in value &&
+              value.type === "diagnostic"
+            ) {
+              // Creator diagnostics (per-frame SAM evidence); not shown.
+              continue;
             } else {
               const status = z
                 .object({
@@ -357,11 +366,11 @@ function LocalTeachFlow() {
                     key={row.id}
                     className="space-y-2 rounded-2xl border bg-white p-5"
                   >
-                    {row.references && (
+                    {lessonThumbnail(row) && (
                       <img
-                        src={row.references.goal}
-                        alt=""
-                        className="w-full rounded-xl bg-slate-950"
+                        src={lessonThumbnail(row)!}
+                        alt={`Preview of ${row.title}`}
+                        className="aspect-[4/3] w-full rounded-xl bg-slate-950 object-cover"
                       />
                     )}
                     <h2 className="text-lg font-bold">{row.title}</h2>

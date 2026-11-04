@@ -1,0 +1,239 @@
+import type { Box } from "../guide/schema";
+import type { Pixels } from "./tracker";
+
+/**
+ * Viewpoint mapping (owner physical-camera root cause, 2026-11-04).
+ *
+ * Practice matched every approved object only within ±48 px and ±15 % size
+ * of where it sat in the Teach video, so a camera placed differently from the
+ * recording camera could never start automatic tracking (every replay passed
+ * because it used the Teach video itself as the camera). At Practice start,
+ * SAM 3.1 locates the approved objects once in the learner's camera
+ * (src/server/practice/locate.ts). From those boxes and the approved Teach
+ * boxes we derive ONE camera mapping (uniform scale + shift), accepted only
+ * when at least two objects agree. Live frames are then resampled into the
+ * Teach viewpoint, so zones, templates, references and the verifier are
+ * unchanged and every observation still passes the existing gates.
+ */
+export type View = { scale: number; dx: number; dy: number };
+
+/** Teach -> live: live = teach * scale + d (normalized coordinates). */
+export function viewFromBoxes(
+  pairs: { teach: Box; live: Box }[],
+): View | null {
+  const centre = (b: Box) => ({ x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 });
+  const size = (b: Box) => Math.sqrt((b.right - b.left) * (b.bottom - b.top));
+  const views = pairs
+    .filter((p) => size(p.teach) > 0.01 && size(p.live) > 0.01)
+    .map((p) => {
+      const scale = size(p.live) / size(p.teach);
+      const t = centre(p.teach),
+        l = centre(p.live);
+      return { scale, dx: l.x - scale * t.x, dy: l.y - scale * t.y };
+    })
+    .filter((v) => v.scale >= 0.35 && v.scale <= 2.5);
+  let best: View[] = [];
+  for (const anchor of views) {
+    const agree = views.filter(
+      (v) =>
+        Math.abs(v.scale / anchor.scale - 1) <= 0.25 &&
+        Math.hypot(v.dx - anchor.dx, v.dy - anchor.dy) <= 0.08,
+    );
+    if (agree.length > best.length) best = agree;
+  }
+  if (best.length < 2) return null;
+  const mean = (k: keyof View) => best.reduce((a, v) => a + v[k], 0) / best.length;
+  const view = { scale: mean("scale"), dx: mean("dx"), dy: mean("dy") };
+  // Already the demonstrated viewpoint: no resampling.
+  if (Math.abs(view.scale - 1) < 0.08 && Math.hypot(view.dx, view.dy) < 0.03) return null;
+  return view;
+}
+
+/** Live frame resampled (bilinear) into the Teach viewpoint; outside: grey. */
+export function warpToTeach(live: Pixels, view: View): Pixels {
+  const { width, height } = live;
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    const fy = (((y + 0.5) / height) * view.scale + view.dy) * height - 0.5;
+    const y0 = Math.floor(fy),
+      ty = fy - y0;
+    for (let x = 0; x < width; x++) {
+      const fx = (((x + 0.5) / width) * view.scale + view.dx) * width - 0.5;
+      const x0 = Math.floor(fx),
+        tx = fx - x0;
+      const o = (y * width + x) * 4;
+      data[o + 3] = 255;
+      if (x0 < 0 || y0 < 0 || x0 + 1 >= width || y0 + 1 >= height) {
+        data[o] = data[o + 1] = data[o + 2] = 128;
+        continue;
+      }
+      const i00 = (y0 * width + x0) * 4,
+        i10 = i00 + 4,
+        i01 = i00 + width * 4,
+        i11 = i01 + 4;
+      for (let c = 0; c < 3; c++)
+        data[o + c] =
+          (live.data[i00 + c] * (1 - tx) + live.data[i10 + c] * tx) * (1 - ty) +
+          (live.data[i01 + c] * (1 - tx) + live.data[i11 + c] * tx) * ty;
+    }
+  }
+  return { width, height, data };
+}
+/** A Teach-viewpoint box drawn on the live camera image. */
+export function toLive(box: Box, view: View | null): Box {
+  if (!view) return box;
+  return {
+    left: box.left * view.scale + view.dx,
+    top: box.top * view.scale + view.dy,
+    right: box.right * view.scale + view.dx,
+    bottom: box.bottom * view.scale + view.dy,
+  };
+}
+
+/**
+ * With a SAM-derived camera mapping, the remaining per-reference correction
+ * must be small: a large residual means a reference was matched at a wrong
+ * place, so that setup attempt is refused (the next attempt retries).
+ */
+export const MAPPED_MAX_RESIDUAL = 0.05;
+export function mappedSetupIssue(
+  translations: { x: number; y: number }[],
+): string | null {
+  return translations.some((t) => Math.hypot(t.x, t.y) > MAPPED_MAX_RESIDUAL)
+    ? "Finding the work area again: a reference did not match where the camera mapping places it."
+    : null;
+}
+
+/** Short noun phrase for a SAM concept prompt from an approved description. */
+export function shortNoun(description: string): string {
+  const cut = description
+    .split(/[(,;:]|\s(?:on|in|under|over|at|from|to|with|moved|serving|used|placed|near|inside|beside|that|which|initially|as)\s/i)[0]
+    .replace(/[^\p{L}\p{N} '\-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (cut || description).split(" ").slice(0, 5).join(" ").slice(0, 60).trim();
+}
+
+/**
+ * Live setup from SAM boxes (owner physical-camera root cause, 2026-11-04):
+ * Practice must calibrate on what is in front of the learner's camera now,
+ * not on the Teach recording's pixels. Objects take SAM's live boxes; every
+ * approved zone moves with the object it belongs to in Teach (the fixed
+ * object whose Teach box contains the zone centre, else the one it overlaps
+ * most, else the mover that starts in it), keeping its relative position and
+ * size inside that object's box. Returns null when any object is missing.
+ */
+export function liveSetup(input: {
+  objects: { id: string; teach: Box; fixed: boolean }[];
+  live: Record<string, Box | null | undefined>;
+  zones: { zoneId: string; region: Box }[];
+}): { objects: { id: string; box: Box; fixed: boolean }[]; zones: Record<string, Box> } | null {
+  const objects = input.objects.map((o) => ({ ...o, box: input.live[o.id] ?? null }));
+  if (objects.some((o) => !o.box)) return null;
+  const inside = (b: Box, x: number, y: number) =>
+    x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
+  const overlap = (a: Box, b: Box) =>
+    Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) *
+    Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+  const zones: Record<string, Box> = {};
+  for (const { zoneId, region } of input.zones) {
+    const cx = (region.left + region.right) / 2,
+      cy = (region.top + region.bottom) / 2;
+    const fixed = objects.filter((o) => o.fixed);
+    const anchor =
+      fixed.find((o) => inside(o.teach, cx, cy)) ??
+      [...fixed].sort((a, b) => overlap(b.teach, region) - overlap(a.teach, region))
+        .find((o) => overlap(o.teach, region) > 0) ??
+      objects.find((o) => !o.fixed && inside(o.teach, cx, cy)) ??
+      // A zone on no object follows the nearest one (same offset and scale).
+      [...objects].sort(
+        (a, b) =>
+          Math.hypot((a.teach.left + a.teach.right) / 2 - cx, (a.teach.top + a.teach.bottom) / 2 - cy) -
+          Math.hypot((b.teach.left + b.teach.right) / 2 - cx, (b.teach.top + b.teach.bottom) / 2 - cy),
+      )[0];
+    if (!anchor) return null;
+    // A zone on a supporting object ("on the towel", "on the mat") is that
+    // object's whole live box: the camera's angle differs from Teach, so a
+    // small Teach-relative patch lands on the wrong part of the surface.
+    if (anchor.fixed) {
+      zones[zoneId] = { ...anchor.box! };
+      continue;
+    }
+    const t = anchor.teach,
+      l = anchor.box!;
+    const sx = (l.right - l.left) / (t.right - t.left),
+      sy = (l.bottom - l.top) / (t.bottom - t.top);
+    const box = {
+      left: l.left + (region.left - t.left) * sx,
+      top: l.top + (region.top - t.top) * sy,
+      right: l.left + (region.right - t.left) * sx,
+      bottom: l.top + (region.bottom - t.top) * sy,
+    };
+    zones[zoneId] = {
+      left: Math.max(0, box.left),
+      top: Math.max(0, box.top),
+      right: Math.min(1, box.right),
+      bottom: Math.min(1, box.bottom),
+    };
+  }
+  // Supports placed close together (towel next to mat) can overlap; zones
+  // must not, so overlapping zones are split at the middle of the overlap.
+  const ids = Object.keys(zones);
+  for (let i = 0; i < ids.length; i++)
+    for (let j = i + 1; j < ids.length; j++) {
+      const a = zones[ids[i]],
+        b = zones[ids[j]];
+      const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left),
+        oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+      if (ox <= 0 || oy <= 0) continue;
+      const acx = (a.left + a.right) / 2,
+        bcx = (b.left + b.right) / 2,
+        acy = (a.top + a.bottom) / 2,
+        bcy = (b.top + b.bottom) / 2;
+      if (Math.abs(acx - bcx) >= Math.abs(acy - bcy)) {
+        const mid = (Math.max(a.left, b.left) + Math.min(a.right, b.right)) / 2;
+        if (acx < bcx) { a.right = Math.min(a.right, mid - 0.005); b.left = Math.max(b.left, mid + 0.005); }
+        else { b.right = Math.min(b.right, mid - 0.005); a.left = Math.max(a.left, mid + 0.005); }
+      } else {
+        const mid = (Math.max(a.top, b.top) + Math.min(a.bottom, b.bottom)) / 2;
+        if (acy < bcy) { a.bottom = Math.min(a.bottom, mid - 0.005); b.top = Math.max(b.top, mid + 0.005); }
+        else { b.bottom = Math.min(b.bottom, mid - 0.005); a.top = Math.max(a.top, mid + 0.005); }
+      }
+    }
+  if (ids.some((id) => zones[id].right <= zones[id].left || zones[id].bottom <= zones[id].top))
+    return null;
+  return { objects: objects.map(({ id, box, fixed }) => ({ id, box: box!, fixed })), zones };
+}
+
+/** Most textured patch not overlapping any object: the camera-motion anchor. */
+export function chooseWorkspace(image: Pixels, avoid: Box[]): Box | null {
+  // Prefer the band above the objects and away from the side edges, where
+  // the learner's arms and body enter (owner camera: arm at the right edge).
+  const topOfObjects = avoid.length ? Math.min(...avoid.map((a) => a.top)) : 1;
+  const preferred = (box: Box) =>
+    box.bottom <= topOfObjects - 0.02 && box.left >= 0.18 && box.right <= 0.82;
+  let best: { box: Box; score: number } | null = null;
+  const size = 0.14;
+  for (let top = 0.02; top + size <= 0.98; top += 0.04)
+    for (let left = 0.02; left + size <= 0.98; left += 0.04) {
+      const box = { left, top, right: left + size, bottom: top + size };
+      if (avoid.some((a) => !(box.right < a.left - 0.03 || box.left > a.right + 0.03 || box.bottom < a.top - 0.03 || box.top > a.bottom + 0.03)))
+        continue;
+      let n = 0,
+        sum = 0,
+        sq = 0;
+      for (let y = Math.floor(top * image.height); y < (top + size) * image.height; y += 2)
+        for (let x = Math.floor(left * image.width); x < (left + size) * image.width; x += 2) {
+          const i = (y * image.width + x) * 4;
+          const v = (image.data[i] + image.data[i + 1] + image.data[i + 2]) / 3;
+          n++;
+          sum += v;
+          sq += v * v;
+        }
+      const sd = Math.sqrt(Math.max(0, sq / n - (sum / n) ** 2));
+      // Preferred placement wins whenever it has usable texture.
+      const score = sd + (preferred(box) && sd >= 8 ? 1000 : 0);
+      if (!best || score > best.score) best = { box, score };
+    }
+  return best && best.score % 1000 >= 8 ? best.box : null;
+}

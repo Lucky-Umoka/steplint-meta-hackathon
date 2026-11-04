@@ -78,11 +78,29 @@ async function camera(page: Page) {
       }
     bg.putImageData(pixels, 0, 0);
     object.putImageData(objectPixels, 0, 0);
+    // A distinctly coloured object for the moved-camera test (real objects
+    // differ from their background; uniform grey noise blurs into it).
+    const coloured = document.createElement("canvas");
+    coloured.width = 64;
+    coloured.height = 84;
+    const cc = coloured.getContext("2d")!;
+    cc.fillStyle = "#c8322d";
+    cc.fillRect(0, 0, 64, 84);
+    cc.globalAlpha = 0.35;
+    cc.drawImage(sprite, 0, 0);
     // The camera supplies pixels; avoid a synthetic 76,800-array allocation
     // loop per animation frame competing with the actual verification UI.
     const draw = () => {
+      // Optional camera placement (scale + shift) different from Teach.
+      const cam = (state as { cam?: { s: number; dx: number; dy: number } }).cam;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      if (cam) {
+        ctx.fillStyle = "#6e6e6e";
+        ctx.fillRect(0, 0, 320, 240);
+        ctx.setTransform(cam.s, 0, 0, cam.s, cam.dx, cam.dy);
+      }
       ctx.drawImage(background, 0, 0);
-      if (!state.hidden) ctx.drawImage(sprite, state.x, 72);
+      if (!state.hidden) ctx.drawImage(cam ? coloured : sprite, state.x, 72);
       requestAnimationFrame(draw);
     };
     draw();
@@ -357,7 +375,8 @@ test("default Teach reviews the full goal and source moments, then hands the app
   let automaticSetup: ReturnType<typeof bindAutomaticSetup> | undefined;
   let modelChecks = 0;
   let uploads = 0,
-    compiles = 0;
+    compiles = 0,
+    audits = 0;
   await camera(page);
   await page.route("**/api/teach/**", async (route) => {
     const url = route.request().url();
@@ -381,6 +400,19 @@ test("default Teach reviews the full goal and source moments, then hands the app
             token: "mock-review",
             uploadDeleted: true,
           }) + "\n",
+      });
+    }
+    if (url.endsWith("/audit")) {
+      audits++;
+      // Mocked Felicity audit (no paid call): one finding of each kind.
+      return route.fulfill({
+        json: {
+          summary: "One issue needs the expert; one suggestion.",
+          findings: [
+            { category: "missing_action", attention: "requires_expert", message: "The narration mentions pressing the lid down, but no step covers it.", suggestion: "Add that step if it is required.", stepId: null, transcriptMs: 1200, frame: null },
+            { category: "unclear_instruction", attention: "suggestion", message: "Name the destination in the instruction.", suggestion: "Say which zone the object goes to.", stepId: "transfer", transcriptMs: null, frame: null },
+          ],
+        },
       });
     }
     if (url.endsWith("/approve")) {
@@ -427,18 +459,20 @@ test("default Teach reviews the full goal and source moments, then hands the app
   ).toBeVisible();
   expect(uploads).toBe(1);
   expect(compiles).toBe(1);
+  // Felicity's audit findings appear in review, separated by attention.
+  const auditPanel = page.getByTestId("felicity-audit");
+  await expect(auditPanel).toContainText("Needs your attention");
+  await expect(auditPanel).toContainText("pressing the lid down");
+  await expect(auditPanel).toContainText("Suggestion");
+  await expect(auditPanel).toContainText("narration at 1.2 s");
+  expect(audits).toBe(1);
   await page
     .getByLabel("Your reviewer name")
     .fill("Synthetic browser reviewer");
   await page.getByLabel("I approve this lesson for Practice.").check();
+  // One primary action: approve (human gate above), save, then open Practice.
   await page
-    .getByRole("button", { name: "Approve procedure", exact: true })
-    .click();
-  await expect(
-    page.getByText(/Procedure approved. Save and open Practice/),
-  ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Save and open Practice", exact: true })
+    .getByRole("button", { name: "Approve and practice", exact: true })
     .click();
   await expect(page).toHaveURL(new RegExp(`lesson=${context.lesson.lessonId}`));
   await expect(page.getByText("Goal: Object at destination")).toBeVisible();
@@ -757,4 +791,177 @@ test("Teach library opens the selected approved lesson without a learner token o
   ).toBeVisible();
   await expect(page.getByTestId("practice-camera")).toHaveCount(0);
   expect(teachRequests).toBe(0);
+});
+
+test("Gideon warns immediately; Felicity advice is discarded when the learner corrects first, and delivered for a new unresolved mistake", async ({ page }) => {
+  test.setTimeout(120_000);
+  const { artifact, lesson } = fixture();
+  await camera(page);
+  await page.route("**/api/teach/**", (route) =>
+    route.request().url().endsWith("/practice-lesson") ? route.fulfill({ json: lesson }) : route.abort(),
+  );
+  // Mocked Felicity: no paid call. The first answer is held until released.
+  const felicity: { id: string }[] = [];
+  let release: (() => void) | null = null;
+  await page.route("**/api/practice/recovery", async (route) => {
+    const body = route.request().postDataJSON() as { incidentId: string; kind: string; stepId: string };
+    felicity.push({ id: body.incidentId });
+    if (felicity.length === 1) await new Promise<void>((done) => (release = done));
+    await route.fulfill({
+      json: { incidentId: body.incidentId, category: body.kind, needsClarification: false, advice: `Advice ${felicity.length}: move the object back to its destination.` },
+    });
+  });
+  await page.addInitScript((raw) => sessionStorage.setItem("steplint-approved-handoff", raw), JSON.stringify(artifact));
+  await page.goto("/practice");
+  await page.getByLabel("Enable microphone voice controls").check();
+  await utter(page, "Muse, start camera");
+  await expect(page.getByRole("button", { name: "Capture setup for calibration" })).toBeEnabled();
+  await utter(page, "Muse, capture setup");
+  await draw(page, "workspace", { left: 0.66, top: 0.08, right: 0.86, bottom: 0.24 });
+  await draw(page, "object:component-1", { left: 0.15, top: 0.3, right: 0.35, bottom: 0.65 });
+  await draw(page, "zone:origin", { left: 0.1, top: 0.25, right: 0.4, bottom: 0.7 });
+  await draw(page, "zone:destination", { left: 0.6, top: 0.25, right: 0.9, bottom: 0.7 });
+  await page.getByLabel(/I checked object identities/).check();
+  await utter(page, "Muse, start practice");
+  await expect(page.locator("#local-practice-status").filter({ hasText: /Automatic tracking active/ })).toBeVisible();
+  const move = async (from: number, to: number) => {
+    const step = from < to ? 4 : -4;
+    for (let x = from; step > 0 ? x <= to : x >= to; x += step) {
+      await page.evaluate((x) => {
+        (window as unknown as { localScene: { x: number } }).localScene.x = x;
+      }, x);
+      await page.waitForTimeout(55);
+    }
+  };
+  await page.waitForTimeout(600);
+  await move(50, 208);
+  await expect(page.locator("ol").getByText("passed", { exact: true })).toBeVisible({ timeout: 12000 });
+  // Flow A: a reversal gets Gideon's local warning at once (no remote wait).
+  await move(204, 160);
+  await expect(page.getByRole("alert").filter({ hasText: "Stop." })).toBeVisible({ timeout: 10000 });
+  expect(felicity).toHaveLength(0);
+  // Unresolved for 4 s: one Felicity request, answer held back.
+  await expect.poll(() => felicity.length, { timeout: 15000 }).toBe(1);
+  // The learner corrects the mistake before the answer arrives.
+  await move(164, 208);
+  await expect(page.locator("ol").getByText("passed", { exact: true })).toBeVisible({ timeout: 10000 });
+  release!();
+  await page.waitForTimeout(1500);
+  await expect(page.getByTestId("felicity-advice")).toHaveCount(0);
+  expect(JSON.stringify(await page.evaluate(() => (window as unknown as { localSpoken: string[] }).localSpoken))).not.toContain("Felicity");
+  // Flow B: a new mistake is a new incident; its advice is delivered.
+  await move(204, 160);
+  await expect(page.getByRole("alert").filter({ hasText: "Stop." })).toBeVisible({ timeout: 10000 });
+  await expect.poll(() => felicity.length, { timeout: 15000 }).toBe(2);
+  expect(felicity[1].id).not.toBe(felicity[0].id);
+  await expect(page.getByTestId("felicity-advice")).toContainText("Advice 2", { timeout: 10000 });
+  await expect.poll(() => page.evaluate(() => JSON.stringify((window as unknown as { localSpoken: string[] }).localSpoken))).toContain("Felicity suggests: Advice 2");
+  // The verifier, not Felicity, still holds the step as failed.
+  await expect(page.locator("ol").getByText("failed", { exact: true })).toBeVisible();
+});
+
+test("a failed Felicity request leaves Practice running and the verifier unchanged", async ({ page }) => {
+  test.setTimeout(90_000);
+  const { artifact, lesson } = fixture();
+  await camera(page);
+  await page.route("**/api/teach/**", (route) =>
+    route.request().url().endsWith("/practice-lesson") ? route.fulfill({ json: lesson }) : route.abort(),
+  );
+  let calls = 0;
+  await page.route("**/api/practice/recovery", (route) => {
+    calls++;
+    return route.fulfill({ status: 502, json: { error: "Spark request failed" } });
+  });
+  await page.addInitScript((raw) => sessionStorage.setItem("steplint-approved-handoff", raw), JSON.stringify(artifact));
+  await page.goto("/practice");
+  await page.getByLabel("Enable microphone voice controls").check();
+  await utter(page, "Muse, start camera");
+  await expect(page.getByRole("button", { name: "Capture setup for calibration" })).toBeEnabled();
+  await utter(page, "Muse, capture setup");
+  await draw(page, "workspace", { left: 0.66, top: 0.08, right: 0.86, bottom: 0.24 });
+  await draw(page, "object:component-1", { left: 0.15, top: 0.3, right: 0.35, bottom: 0.65 });
+  await draw(page, "zone:origin", { left: 0.1, top: 0.25, right: 0.4, bottom: 0.7 });
+  await draw(page, "zone:destination", { left: 0.6, top: 0.25, right: 0.9, bottom: 0.7 });
+  await page.getByLabel(/I checked object identities/).check();
+  await utter(page, "Muse, start practice");
+  await expect(page.locator("#local-practice-status").filter({ hasText: /Automatic tracking active/ })).toBeVisible();
+  await page.waitForTimeout(600);
+  for (let x = 50; x <= 208; x += 4) {
+    await page.evaluate((x) => { (window as unknown as { localScene: { x: number } }).localScene.x = x; }, x);
+    await page.waitForTimeout(55);
+  }
+  await expect(page.locator("ol").getByText("passed", { exact: true })).toBeVisible({ timeout: 12000 });
+  for (let x = 204; x >= 160; x -= 4) {
+    await page.evaluate((x) => { (window as unknown as { localScene: { x: number } }).localScene.x = x; }, x);
+    await page.waitForTimeout(55);
+  }
+  await expect(page.getByRole("alert").filter({ hasText: "Stop." })).toBeVisible({ timeout: 10000 });
+  await expect.poll(() => calls, { timeout: 15000 }).toBe(1);
+  await page.waitForTimeout(1500);
+  await expect(page.getByTestId("felicity-advice")).toHaveCount(0);
+  await expect(page.locator("ol").getByText("failed", { exact: true })).toBeVisible();
+  await expect(page.locator("#local-practice-status")).toHaveAttribute("data-lifecycle-state", "running");
+});
+
+test("automatic start calls the camera locate step from the real page (overwritten-handler regression)", async ({ page }) => {
+  const lines: string[] = [];
+  page.on("console", (m) => lines.push(m.text()));
+  await page.route("**/api/practice/locate", (route) => route.fulfill({ status: 503, json: { error: "disabled in test" } }));
+  await camera(page);
+  const { artifact } = fixture();
+  await page.addInitScript((raw) => {
+    const image = (window as unknown as { localReferenceImage: string }).localReferenceImage;
+    const approved = JSON.parse(raw);
+    approved.automaticSetup = { sceneFrame: 0, objects: [{ id: "component-1", frame: 0, box: { left: 0.15, top: 0.3, right: 0.35, bottom: 0.65 }, fixed: false }], frames: [{ frame: 0, image }] };
+    sessionStorage.setItem("steplint-approved-handoff", JSON.stringify(approved));
+  }, JSON.stringify(artifact));
+  await page.goto("/practice");
+  await expect(page.locator("#local-practice-status")).toContainText("Automatic tracking active", { timeout: 20000 });
+  // One-object lesson: the page reached the locate step and skipped it by rule.
+  expect(lines.some((l) => l.includes("[practice] SAM 3.1 camera locate: asking for"))).toBe(true);
+});
+
+test("camera placed differently from Teach: SAM locate (mocked) starts live tracking and the step passes (owner physical-camera root cause)", async ({ page }) => {
+  const lines: string[] = [];
+  page.on("console", (m) => lines.push(m.text()));
+  page.on("pageerror", (e) => lines.push(`PAGEERROR ${e.message}`));
+  page.on("worker", (w) => w.on("console", (m) => lines.push(`WORKER ${m.text()}`)));
+  const cam = { s: 0.7, dx: 70, dy: 30 };
+  let located = 0;
+  await page.route("**/api/practice/locate", async (route) => {
+    located++;
+    const body = route.request().postDataJSON() as { objects: { id: string; noun: string }[] };
+    expect(body.objects.map((o) => o.id)).toEqual(["component-1"]);
+    // Where the object really is in this camera (what SAM would return).
+    const box = {
+      left: (48 * cam.s + cam.dx) / 320,
+      top: (72 * cam.s + cam.dy) / 240,
+      right: ((48 + 64) * cam.s + cam.dx) / 320,
+      bottom: ((72 + 84) * cam.s + cam.dy) / 240,
+    };
+    await route.fulfill({ json: { objects: [{ id: "component-1", box, confidence: 0.95, instances: 1 }], provenance: { model: "sam-3.1", provider: "Meta API", requests: 1, ms: 900 } } });
+  });
+  await camera(page);
+  const { artifact } = fixture();
+  await page.addInitScript(({ raw, cam }) => {
+    const image = (window as unknown as { localReferenceImage: string }).localReferenceImage;
+    const approved = JSON.parse(raw);
+    approved.automaticSetup = { sceneFrame: 0, objects: [{ id: "component-1", frame: 0, box: { left: 0.15, top: 0.3, right: 0.35, bottom: 0.65 }, fixed: false }], frames: [{ frame: 0, image }] };
+    sessionStorage.setItem("steplint-approved-handoff", JSON.stringify(approved));
+    // The learner's camera is NOT where the Teach recording was made.
+    (window as unknown as { localScene: { cam: unknown } }).localScene.cam = cam;
+  }, { raw: JSON.stringify(artifact), cam });
+  await page.goto("/practice");
+  await expect(page.locator("#local-practice-status")).toContainText("Automatic tracking active", { timeout: 30000 });
+  expect(located).toBe(1);
+  expect(lines.some((l) => l.includes("starting live setup from this camera view"))).toBe(true);
+  expect(lines.some((l) => l.includes("sam-3.1 (Meta API): 1 requests"))).toBe(true);
+  await page.waitForTimeout(800);
+  for (let x = 50; x <= 208; x += 4) {
+    await page.evaluate((x) => {
+      (window as unknown as { localScene: { x: number } }).localScene.x = x;
+    }, x);
+    await page.waitForTimeout(55);
+  }
+  await expect(page.getByRole("region", { name: "Steps", exact: true })).toContainText("passed", { timeout: 20000 });
 });

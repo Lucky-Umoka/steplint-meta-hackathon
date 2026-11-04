@@ -341,6 +341,7 @@ it("passes the exact bound video through the canonical compile handler and retur
     expect.any(Function),
     expect.any(AbortSignal),
     { goal: "Visible transfer", videoBase64: url },
+    expect.any(Function), // creator diagnostics (per-frame SAM evidence)
   );
   expect(fetch).not.toHaveBeenCalled();
 });
@@ -377,4 +378,33 @@ it("realigning a contradicted final condition also realigns the video goal revie
   const e = parsed.procedure.execution as unknown as ExecutionV3;
   expect(e.finalConditions[0].evidenceFrames).toEqual([result]);
   expect(parsed.videoReview!.goal.evidenceFrames).toEqual([result]);
+});
+
+it("a contradictory video review can be fixed by the one correction (owner failure: 'Unseen or ambiguous actions…' twice)", async () => {
+  const { draft, context } = visualDraft();
+  const { url } = await clip();
+  const broken = structuredClone(draft);
+  // The model's contradiction: a step-linked action marked unclear.
+  broken.videoReview!.actions[0].visualSupport = "unclear";
+  const { CORRECTION_INSTRUCTIONS, draftWithOneCorrection } = pipeline;
+  expect(CORRECTION_INSTRUCTIONS).toContain("UNLESS an issue concerns the visual action review");
+  const calls: { text: string; instructions: string }[] = [];
+  const replies = [broken, draft];
+  const outcome = await draftWithOneCorrection(
+    context,
+    { goal: "Narration", videoBase64: url },
+    async (call: { text: string; instructions: string }) => {
+      calls.push(call);
+      return {
+        data: replies[calls.length - 1],
+        diagnostic: { provider: "baseten", modelId: "meta-models/muse-spark-open-1026", outputTokens: 1, visualInput: "video" },
+      } as never;
+    },
+    () => {},
+    () => {},
+  );
+  expect(outcome.corrected).toBe(true);
+  expect(calls).toHaveLength(2);
+  expect(JSON.stringify(JSON.parse(calls[1].text).validationIssues)).toContain("Unseen or ambiguous actions");
+  expect(calls[1].instructions).toContain("correct only the conflicting videoReview fields");
 });

@@ -1,4 +1,4 @@
-import { actionWindowIssue, trustedSourceSample } from "./source-evidence";
+import { actionWindowIssue, trustedTrack } from "./source-evidence";
 import {
   validateReviewEvidence,
   type TeachContext,
@@ -22,6 +22,42 @@ const centre = (r: Region, point?: "center" | "bottom_center") => ({
   x: (r.left + r.right) / 2,
   y: point === "bottom_center" ? r.bottom : (r.top + r.bottom) / 2,
 });
+/**
+ * Paid run 17: a zone made from one instant (the start frame, where the hand
+ * already grips the object) missed the object's own resting position by
+ * 0.013-0.03. A zone covers where the object was seen RESTING at that end of
+ * the move: the reliable, contiguous measured points next to the endpoint
+ * (before the start, after the result) within REST_SPREAD of it, plus the
+ * usual radius. Bounded, so a zone never stretches toward the other zone.
+ */
+const REST_SPREAD = 0.025;
+function restRegion(
+  trusted: { frame: number; box: Region }[],
+  endpoint: { frame: number; box: Region },
+  direction: -1 | 1,
+  point: "center" | "bottom_center" | undefined,
+  radius: number,
+): Region {
+  const p = centre(endpoint.box, point);
+  const points = [p];
+  const index = trusted.findIndex((s) => s.frame === endpoint.frame);
+  if (index >= 0)
+    for (
+      let i = index + direction;
+      i >= 0 && i < trusted.length;
+      i += direction
+    ) {
+      const q = centre(trusted[i].box, point);
+      if (Math.hypot(q.x - p.x, q.y - p.y) > REST_SPREAD) break;
+      points.push(q);
+    }
+  return {
+    left: Math.max(0, Math.min(...points.map((q) => q.x)) - radius),
+    top: Math.max(0, Math.min(...points.map((q) => q.y)) - radius),
+    right: Math.min(1, Math.max(...points.map((q) => q.x)) + radius),
+    bottom: Math.min(1, Math.max(...points.map((q) => q.y)) + radius),
+  };
+}
 function around(p: { x: number; y: number }, radius: number): Region {
   return {
     left: Math.max(0, p.x - radius),
@@ -68,20 +104,23 @@ export function suggestReviews(
         ) ?? [];
     const explicitChange =
       window?.changeFrame ?? step.measurement?.sourceFrames?.change;
+    // V3 source reliability is the Teach policy (trustedTrack), not the
+    // Practice threshold: a steady rest scoring >= 0.5 is a valid start/result.
+    const reliableFrames = new Set(
+      trustedTrack(
+        context.tracking.find(
+          (t) => t.componentId === step.condition.componentId,
+        )?.samples ?? [],
+        context.lesson.media.frameTimesMs,
+      ).map((s) => s.frame),
+    );
     const validWindow =
       !v3 ||
       (!!window &&
         window.startFrame < window.changeFrame &&
         window.changeFrame < window.resultFrame &&
         [window.startFrame, window.changeFrame, window.resultFrame].every(
-          (frame) =>
-            ownFrames.includes(frame) &&
-            samples.some(
-              (s) =>
-                s.frame === frame &&
-                s.confidence !== null &&
-                s.confidence >= step.condition.minimumConfidence,
-            ),
+          (frame) => ownFrames.includes(frame) && reliableFrames.has(frame),
         ));
     let best: { i: number; j: number; distance: number } | null = null;
     if (v3 && validWindow) {
@@ -89,15 +128,12 @@ export function suggestReviews(
       // tracking gaps no longer than the policy (same rule as compile/approval).
       const i = samples.findIndex((sample) => sample.frame === start),
         j = samples.findIndex((sample) => sample.frame === end);
-      const trusted = (
+      const trusted = trustedTrack(
         context.tracking.find(
           (t) => t.componentId === step.condition.componentId,
-        )?.samples ?? []
-      )
-        .filter((sample) =>
-          trustedSourceSample(sample, context.lesson.media.frameTimesMs),
-        )
-        .sort((a, b) => a.frame - b.frame);
+        )?.samples ?? [],
+        context.lesson.media.frameTimesMs,
+      );
       if (
         i >= 0 &&
         j > i &&
@@ -141,9 +177,29 @@ export function suggestReviews(
       }
     }
     if (best) {
+      const restTrack = trustedTrack(
+        context.tracking.find(
+          (t) => t.componentId === step.condition.componentId,
+        )?.samples ?? [],
+        context.lesson.media.frameTimesMs,
+      );
       const from = samples[best.i],
         to = samples[best.j],
-        radius = Math.min(0.04, best.distance / 4);
+        // SAM (Teach) and the live tracker disagree on a box edge by 15-18%
+        // of the object's height (paid runs 16-17), so the zone tolerance
+        // scales with the object: 0.2 x its height, at least 0.04, never more
+        // than a quarter of the move (start and target stay apart).
+        radius = Math.min(
+          best.distance / 4,
+          Math.max(
+            0.04,
+            0.2 *
+              Math.max(
+                from.box.bottom - from.box.top,
+                to.box.bottom - to.box.top,
+              ),
+          ),
+        );
       suggestions[step.id] = {
         ...(v3 ? { evidenceStatus: "supported" as const } : {}),
         reviewed: false,
@@ -158,10 +214,14 @@ export function suggestReviews(
           : {}),
         fromRegion:
           sharedRegions.get(step.condition.fromZone) ??
-          around(centre(from.box, step.measurement?.point), radius),
+          (v3
+            ? restRegion(restTrack, from, -1, step.measurement?.point, radius)
+            : around(centre(from.box, step.measurement?.point), radius)),
         toRegion:
           sharedRegions.get(step.condition.toZone) ??
-          around(centre(to.box, step.measurement?.point), radius),
+          (v3
+            ? restRegion(restTrack, to, 1, step.measurement?.point, radius)
+            : around(centre(to.box, step.measurement?.point), radius)),
       };
       sharedRegions.set(
         step.condition.fromZone,

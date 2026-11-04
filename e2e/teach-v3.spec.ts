@@ -106,7 +106,7 @@ test("canonical Teach preserves complete V3 scope and blocks approval while requ
   await page.getByLabel("Your reviewer name").fill("Mock browser reviewer");
   await page.getByLabel("I approve this lesson for Practice.").check();
   await expect(
-    page.getByRole("button", { name: "Approve procedure", exact: true }),
+    page.getByRole("button", { name: "Approve and practice", exact: true }),
   ).toBeDisabled();
   await expect(
     page.getByText(/Unsupported required work: Required force cannot be measured/).first(),

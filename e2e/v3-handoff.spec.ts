@@ -78,6 +78,8 @@ test("Phase 2: a corrected V3 lesson survives approve → save → reload → Pr
   await page.getByLabel(/I reviewed this recording/).check();
   await page.getByRole("button", { name: "Build my lesson", exact: true }).click();
   await expect(page.getByRole("heading", { name: "4. Review the draft" })).toBeVisible();
+  // No audit mock here: the request is blocked, and Teach continues normally.
+  await expect(page.getByTestId("felicity-audit")).toContainText("Audit unavailable");
 
   // 2. Review and correct roles, a step and the final goal (existing editor).
   await page.getByText("Advanced rule editor", { exact: true }).click();
@@ -86,18 +88,14 @@ test("Phase 2: a corrected V3 lesson survives approve → save → reload → Pr
   await expect(page.getByText(`Goal: ${corrected.procedure.execution!.goal}`)).toBeVisible();
   await expect(page.getByText("Needs attention before approval")).toHaveCount(0);
 
-  // 3. Approve.
+  // 3–4. Approve, save and open Practice with the single primary action.
   await page.getByLabel("Your reviewer name").fill("Phase 2 reviewer");
   await page.getByLabel("I approve this lesson for Practice.").check();
-  await page.getByRole("button", { name: "Approve procedure", exact: true }).click();
-  await expect(page.getByText(/Procedure approved. Save and open Practice/)).toBeVisible();
-  await expect(page.getByText("Rehearsal: not run for this exact revision.")).toBeVisible();
-  expect(approvedDraftInput).toEqual(JSON.parse(JSON.stringify(corrected)));
-
-  // 4. Save.
-  await page.getByRole("button", { name: "Save and open Practice", exact: true }).click();
+  await page.getByRole("button", { name: "Approve and practice", exact: true }).click();
   const id = context.lesson.lessonId;
   await expect(page).toHaveURL(new RegExp(`lesson=${id}`));
+  expect(approvedDraftInput).toEqual(JSON.parse(JSON.stringify(corrected)));
+  expect((approvedResponse as { rehearsal?: unknown }).rehearsal).toEqual({ status: "not_run" });
   const savedRaw = await storedRaw(page, id);
   expect(JSON.parse(savedRaw)).toEqual(JSON.parse(JSON.stringify(approvedResponse)));
 
@@ -144,5 +142,7 @@ test("Phase 2: a corrected V3 lesson survives approve → save → reload → Pr
   await page.goto(`/practice?lesson=${id}`);
   await expect(alert).toContainText("This approval is stale");
   await expect(page.getByTestId("practice-camera")).toHaveCount(0);
-  expect(paid).toEqual([]);
+  // Only the Felicity audit was attempted, and it was blocked (no paid call);
+  // Teach still reached approval with the audit shown as unavailable.
+  expect(paid).toEqual(["/api/teach/audit"]);
 });
