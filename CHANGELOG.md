@@ -2,6 +2,17 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.19.0 — 2026-11-04
+
+### Added (Gideon 3D upgrade and UI polish; owner request)
+- Gideon is a procedural holographic human head (Three.js / react-three-fiber): sculpted cranium, brow, eye sockets, nose, lips, chin, ears and neck, fresnel hologram shader with wire mesh and points. No spinning: only breathing and a slight attentive tilt. Eyes blink every 2.5–6 s and glance; colours follow the existing states (warning red pulse, uncertain amber, success green with a soft smile, thinking blue).
+- Lip sync and live transcript: a passive, display-only tap on the browser's real speech events (`start`, word `boundary`, `end`) drives both the mouth shape (open on vowels, closed on m/b/p) and a word-by-word transcript under Gideon at the talking pace (`src/components/guide-speech-clock.ts`). The voice system itself is unchanged.
+- Render budget: the face draws on demand at ≤24 fps, pixel ratio 1, paused while the tab is hidden. Root cause found in testing: the 3D face at 60 fps starved the tracking worker under software WebGL (6/11 Practice browser tests timed out; all 11 passed with the 2D face). With the budget all 11 pass with 3D on. The SVG face remains the fallback for SSR, no WebGL and reduced motion.
+- UI polish with layout unchanged and no page scrolling at 1440×900: modern font stack, soft neutral borders (Tailwind 4's currentColor default made every card outline near-black), refined buttons/inputs, card elevation, frosted sticky header with logo mark and segmented Teach/Practice switch, frosted modal backdrops with a short entrance animation (off under reduced motion), and a Home hero with Gideon.
+
+### Verified
+- `tsc --noEmit` and ESLint clean; Vitest 89 files / 789 tests passed (new `tests/guide-speech-clock.test.ts`); production build passed; `e2e/local-practice.spec.ts` 11/11 passed against the production build with 3D on; screenshots of Home, Teach and Practice at 1440×900 show document height = viewport (no scroll). Not verified on a real GPU, physical camera or real speech voice.
+
 ## 0.18.0 — 2026-11-04
 
 ### Fixed (owner export 17:10: goal verified, then tracking glitches)
