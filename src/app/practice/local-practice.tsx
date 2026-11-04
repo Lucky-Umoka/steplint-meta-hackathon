@@ -153,7 +153,7 @@ export default function LocalPractice() {
   const locateState = useRef<"idle" | "pending" | "done">("idle");
   const locateAt = useRef(-Infinity);
   /** Calibrated from SAM boxes on the live frame (no Teach-pixel setup). */
-  const liveMode = useRef(false);
+  const liveMode = useRef(true);
   const uiPaintAt = useRef(0);
   /** Felicity's supervised recoveries (bounded): timestamps of attempts. */
   const supervised = useRef<number[]>([]);
@@ -1119,7 +1119,11 @@ export default function LocalPractice() {
       cameraView.current = null;
       locateState.current = "idle";
       locateAt.current = -Infinity;
-      liveMode.current = false;
+      // Live setup (SAM boxes on this camera) is the only automatic setup
+      // while the locate service works: the Teach-video setup could
+      // "succeed" on wrong geometry first (owner diagnostics: zones at the
+      // wrong place, method source_alignment). It is used only as fallback.
+      liveMode.current = true;
       if (validated.automaticSetup) {
         automaticWanted.current = true;
         automaticAttemptAt.current = -Infinity;
@@ -1310,14 +1314,19 @@ export default function LocalPractice() {
     const source = automaticSource.current;
     if (locateState.current === "pending") return;
     // Re-locate (objects may have moved) at most every 20 s per session.
-    if (performance.now() - locateAt.current < 20_000) return;
+    if (performance.now() - locateAt.current < 8_000) return;
     if (!source || !lesson) {
       console.info("[practice] camera locate skipped: lesson has no automatic setup");
       return;
     }
     const objects = source.objects.map((object) => ({
       id: object.id,
-      fixed: object.fixed,
+      // A support is exactly an object no approved step moves (from the
+      // lesson's steps, not the saved setup flag: owner export showed zones
+      // attached to the bowl because the supports were not marked fixed).
+      fixed: !lesson.procedure.steps.some(
+        (step) => step.condition.componentId === object.id,
+      ),
       noun: shortNoun(
         lesson.procedure.components.find((c) => c.id === object.id)
           ?.description ?? "",
@@ -1355,6 +1364,12 @@ export default function LocalPractice() {
         if (!response.ok) {
           // Respect the server's per-session interval before asking again.
           if (response.status === 429) locateAt.current = performance.now();
+          // Locate switched off or unavailable: fall back to the Teach-video
+          // setup instead of waiting forever.
+          if (response.status !== 429) {
+            liveMode.current = false;
+            automaticAttemptAt.current = -Infinity;
+          }
           console.warn(
             `[practice] camera locate unavailable (HTTP ${response.status}); setup continues without it`,
           );
@@ -1394,6 +1409,10 @@ export default function LocalPractice() {
         console.info(
           `[practice] camera locate: ${found}/${objects.length} objects found; ${setup && (workspace || setup.objects.some((o) => o.fixed)) ? "starting live setup from this camera view" : "live setup not possible (an object was not found)"}`,
         );
+        if (setup)
+          console.info(
+            `[practice] live setup: ${objects.map((o) => `${o.noun}=${o.fixed ? "support" : "moved"}`).join(", ")}; zones ${Object.entries(setup.zones).map(([id, z]) => `${id} x${z.left.toFixed(2)}-${z.right.toFixed(2)} y${z.top.toFixed(2)}-${z.bottom.toFixed(2)}`).join("; ")}`,
+          );
         if (!setup || (!workspace && !setup.objects.some((o) => o.fixed))) return;
         if (worker.current && session.current?.armed) return; // already tracking
         if (worker.current) {
@@ -1408,10 +1427,44 @@ export default function LocalPractice() {
           setDetections([]);
         }
         liveMode.current = true;
-        handlers.current.liveStart(frame, { ...setup, workspace });
+        // SAM answered 1-3 s after this frame was taken. Calibrate on the
+        // CURRENT frame when the scene still matches inside the objects'
+        // boxes; if it changed (hand, bowl or camera moved), do not arm on
+        // stale pixels — re-locate instead (owner export: bowl never measured).
+        const now = latest.current;
+        if (!now || now.width !== frame.width || now.height !== frame.height) return;
+        let diff = 0,
+          n = 0;
+        for (const o of setup.objects) {
+          const x0 = Math.floor(o.box.left * frame.width),
+            x1 = Math.ceil(o.box.right * frame.width),
+            y0 = Math.floor(o.box.top * frame.height),
+            y1 = Math.ceil(o.box.bottom * frame.height);
+          for (let y = y0; y < y1; y += 3)
+            for (let x = x0; x < x1; x += 3) {
+              const i = (y * frame.width + x) * 4;
+              diff +=
+                Math.abs(now.data[i] - frame.data[i]) +
+                Math.abs(now.data[i + 1] - frame.data[i + 1]) +
+                Math.abs(now.data[i + 2] - frame.data[i + 2]);
+              n += 3;
+            }
+        }
+        if (n && diff / n > 22) {
+          console.warn(
+            `[practice] scene changed while SAM was answering (difference ${(diff / n).toFixed(1)}); locating again`,
+          );
+          locateAt.current = performance.now() - 6_000;
+          return;
+        }
+        handlers.current.liveStart(
+          { width: now.width, height: now.height, data: new Uint8ClampedArray(now.data) },
+          { ...setup, workspace },
+        );
       })
       .catch((error) => {
-        // Locate is an aid; the unchanged setup keeps retrying.
+        // Network failure: fall back to the Teach-video setup.
+        liveMode.current = false;
         console.warn(
           `[practice] camera locate failed: ${error instanceof Error ? error.message : "network error"}`,
         );

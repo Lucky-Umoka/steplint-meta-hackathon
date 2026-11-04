@@ -2,6 +2,33 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.16.4 — 2026-11-04
+
+### Fixed (owner export 15:38: zones again bowl-sized strips)
+- Live setup took each object's support role from the saved setup flag; in the owner's lesson the towel and mat were not flagged fixed, so zones were again placed relative to the bowl. A support is now exactly an object no approved step moves (from the lesson's steps). The console logs each object's role and the zones live setup uses.
+- Export evidence: the camera was aimed too high (objects cut off at the bottom edge, the learner's body filling the right half).
+
+### Verified
+- Unit 773; lint 0 errors; build; Practice browser tests. Not yet verified on the owner's physical camera.
+
+## 0.16.3 — 2026-11-04
+
+### Fixed (owner exports 1-2 and report "Practice started at the final goal")
+- Live setup anchored a zone to the BOWL when the Teach zone was not inside a support's Teach box, so the start zone was drawn around wherever the bowl was (on the mat -> "Practice started" at the goal; export 2: both zones the same height, bowl-relative). Zones now attach only to supports (containing, overlapping or nearest); the mover is never an anchor when supports exist. Regression test added.
+- Live setup calibrated on the frame sent to SAM (1-3 s old); the bowl's learned appearance could be stale and never matched (export 2: bowl never measured, 61 ambiguous observations). It now calibrates on the current frame when the scene inside the objects' boxes is unchanged, otherwise re-locates.
+- Evidence in export 2 also shows the camera facing the learner (shirt, face) at the end of the session: table not in view.
+
+### Verified
+- Unit 773; lint 0 errors; build; Practice + voice browser tests 26/26. Not yet verified on the owner's physical camera.
+
+## 0.16.2 — 2026-11-04
+
+### Fixed (owner diagnostics export: session set up by the Teach-video path with wrong zones)
+- The Teach-video setup kept retrying every second while SAM was answering and could "succeed" first on wrong geometry (export: method `source_alignment`, zones towel x 0.66-0.79 / mat x 0.52-0.65 while the evidence frames show the towel at ~0.08-0.45), arming on wrong zones with a Teach colour profile that flickered (tracked/occluded 13 times in 18 s). While the locate service works, live setup from SAM boxes is now the ONLY automatic setup; the Teach-video setup is a fallback when locate is disabled or unreachable. Re-locate every 8 s (was 20 s).
+
+### Verified
+- Unit 772; lint 0 errors; build; Practice + voice browser tests 26/26 (locate disabled on the test server, exercising the fallback). Real-frame scenarios from 0.16.1 unchanged. Not yet verified on the owner's physical camera.
+
 ## 0.16.1 — 2026-11-04
 
 ### Fixed (owner: bowl on the mat but Practice "Waiting for the starting position")

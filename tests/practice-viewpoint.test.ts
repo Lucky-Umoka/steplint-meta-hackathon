@@ -114,3 +114,24 @@ it("supports placed edge to edge: overlapping support zones are split, so setup 
   expect(a.left).toBeCloseTo(towel.left, 6);
   expect(b.right).toBeCloseTo(mat.right, 6);
 });
+
+it("zones attach to the nearest support, never to the mover: Practice cannot 'start' at the goal (owner report)", async () => {
+  const { liveSetup } = await import("../src/practice/viewpoint");
+  // Teach zones sit on the bowl's base point just OUTSIDE the supports' Teach boxes.
+  const input = {
+    objects: [
+      { id: "bowl", teach: { left: 0.2, top: 0.3, right: 0.3, bottom: 0.5 }, fixed: false },
+      { id: "towel", teach: { left: 0.1, top: 0.52, right: 0.4, bottom: 0.7 }, fixed: true },
+      { id: "mat", teach: { left: 0.55, top: 0.52, right: 0.85, bottom: 0.7 }, fixed: true },
+    ],
+    zones: [
+      { zoneId: "start", region: { left: 0.22, top: 0.47, right: 0.28, bottom: 0.51 } },
+      { zoneId: "goal", region: { left: 0.67, top: 0.47, right: 0.73, bottom: 0.51 } },
+    ],
+  };
+  const towel = { left: 0.05, top: 0.6, right: 0.4, bottom: 0.8 }, mat = { left: 0.55, top: 0.6, right: 0.9, bottom: 0.8 };
+  // SAM finds the bowl ON THE MAT (the learner already completed the move).
+  const setup = liveSetup({ ...input, live: { bowl: { left: 0.65, top: 0.45, right: 0.78, bottom: 0.66 }, towel, mat } })!;
+  expect(setup.zones.start).toEqual(towel); // still the towel, not around the bowl
+  expect(setup.zones.goal).toEqual(mat);
+});

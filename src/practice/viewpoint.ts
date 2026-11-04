@@ -140,17 +140,23 @@ export function liveSetup(input: {
     const cx = (region.left + region.right) / 2,
       cy = (region.top + region.bottom) / 2;
     const fixed = objects.filter((o) => o.fixed);
-    const anchor =
-      fixed.find((o) => inside(o.teach, cx, cy)) ??
-      [...fixed].sort((a, b) => overlap(b.teach, region) - overlap(a.teach, region))
-        .find((o) => overlap(o.teach, region) > 0) ??
-      objects.find((o) => !o.fixed && inside(o.teach, cx, cy)) ??
-      // A zone on no object follows the nearest one (same offset and scale).
-      [...objects].sort(
-        (a, b) =>
-          Math.hypot((a.teach.left + a.teach.right) / 2 - cx, (a.teach.top + a.teach.bottom) / 2 - cy) -
-          Math.hypot((b.teach.left + b.teach.right) / 2 - cx, (b.teach.top + b.teach.bottom) / 2 - cy),
-      )[0];
+    const centreDistance = (o: { teach: Box }) =>
+      Math.hypot(
+        (o.teach.left + o.teach.right) / 2 - cx,
+        (o.teach.top + o.teach.bottom) / 2 - cy,
+      );
+    // The mover is never an anchor when the lesson has supports: anchoring a
+    // zone to the bowl places the START zone wherever the bowl is now (owner:
+    // "Practice started at the final goal"). Zones belong to the support that
+    // contains them, else overlaps them most, else the nearest support.
+    const anchor = fixed.length
+      ? (fixed.find((o) => inside(o.teach, cx, cy)) ??
+        [...fixed]
+          .filter((o) => overlap(o.teach, region) > 0)
+          .sort((a, b) => overlap(b.teach, region) - overlap(a.teach, region))[0] ??
+        [...fixed].sort((a, b) => centreDistance(a) - centreDistance(b))[0])
+      : // No supports at all: relative to the nearest object (best effort).
+        [...objects].sort((a, b) => centreDistance(a) - centreDistance(b))[0];
     if (!anchor) return null;
     // A zone on a supporting object ("on the towel", "on the mat") is that
     // object's whole live box: the camera's angle differs from Teach, so a
