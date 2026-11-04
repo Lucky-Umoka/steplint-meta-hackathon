@@ -40,6 +40,15 @@ export const LocalWorkerInputSchema = z.discriminatedUnion("type", [
     type: z.literal("bootstrap"),
     generation,
     image,
+    /** Teach -> live camera mapping from the Practice locate step. */
+    view: z
+      .strictObject({
+        scale: z.number().min(0.35).max(2.5),
+        dx: z.number().min(-2).max(2),
+        dy: z.number().min(-2).max(2),
+      })
+      .nullable()
+      .optional(),
     source: z.strictObject({
       scene: image,
       zones: z.array(BoxSchema).max(100).optional(),

@@ -97,3 +97,8 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .practice-celebrate { animation: none; }
 }
+
+/* Practice fits one laptop screen: slimmer controls (layout only). */
+.flow-workspace .practice-compact button {
+  @apply px-3 py-1.5 text-sm;
+}

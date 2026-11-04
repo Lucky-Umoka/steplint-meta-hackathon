@@ -408,3 +408,7 @@ No-cost diagnostic continuation of the original approved run-4 lesson made zero 
 
 ## 2026-11-04 — Felicity repairs Teach (owner override, docs/new_final_phases)
 - Felicity may correct a draft when measured evidence supports it: Spark proposes a plan of steps as indexes into measured movement windows; code builds the draft and the unchanged validators accept or reject it. One Spark repair call per lesson; tracking repair (re-anchored SAM views) and draft repair share that budget, after a free box-only SAM retry. Unsupported narrated work stays unsupported. Creator sees plain messages; technical detail is logged or collapsed.
+
+## 2026-11-04 — Practice camera locate (owner: automatic, no alignment for the learner)
+- Root cause of "automatic tracking never starts" on real cameras: setup searched only near Teach positions/sizes. Owner chose automatic relocation with SAM over an alignment guide.
+- One bounded SAM 3.1 image step per camera session (one noun-phrase request per approved object, parallel); boxes only. Code derives one Teach->live mapping (>= 2 objects agreeing) and the worker resamples frames into the Teach viewpoint; all tracking and verification stay local and unchanged. Never per frame.

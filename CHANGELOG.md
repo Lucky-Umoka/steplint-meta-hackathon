@@ -2,6 +2,18 @@
 
 All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
 
+## 0.13.0 — 2026-11-04
+
+### Fixed (root cause: automatic Practice tracking never started on the owner's real camera)
+- Practice matched approved objects only within ±48 px and ±15 % size of their Teach-video positions (`appearance-overlay.ts`), so a camera placed differently from the recording camera could never start automatic tracking. All earlier replays and browser tests fed the Teach video itself as the camera, which hid this.
+- New one-time camera locate at Practice start: SAM 3.1 (Meta API) finds the approved objects in the learner's camera (one noun-phrase image request per object, in parallel; `/api/practice/locate`, same-site, one per camera session per 2 min, hourly limit, `PRACTICE_LOCATE_ENABLED=0` disables). At least two objects must agree on one camera mapping (scale + shift); live frames are then resampled into the Teach viewpoint in the tracker worker, so zones, references, tracking gates and the verifier are unchanged; boxes are drawn back on the live view. A large residual after mapping refuses that setup attempt. Same-viewpoint cameras start exactly as before (locate runs in parallel). No per-frame model calls.
+- Practice layout: the goal/step card no longer covers the camera; the page fits 1440x900 and 1280x800 without scrolling.
+
+### Verified
+- Unit 87 files / 771 tests (new: moved camera fails the old setup and tracks after mapping; mapping agreement rules; locate route bounds with mocked SAM); lint 0 errors; build; Playwright 50 passed / 1 skipped (locate disabled, no paid calls); layout check at 1440x900 and 1280x800 (page height = viewport).
+- Recorded-video replay: run 17's real bottle lesson with a simulated moved camera (75 % scale, shifted) and SAM-like boxes completes (armed, step passed, goal verified). Before: never armed.
+- Not yet verified: a real SAM locate call and a physical camera.
+
 ## 0.12.0 — 2026-11-04
 
 ### Added (owner override: Felicity repairs, the creator only records and approves)

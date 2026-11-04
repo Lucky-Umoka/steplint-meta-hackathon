@@ -96,6 +96,7 @@ import {
 } from "@/practice/lifecycle";
 import type { ActionOutcome } from "@/voice/use-voice-control";
 import { isProcedureComplete, type GoalState } from "@/procedure/goal";
+import { shortNoun, toLive, viewFromBoxes, type View } from "@/practice/viewpoint";
 import {
   RehearsalSchema,
   RevisionSchema,
@@ -134,6 +135,10 @@ export default function LocalPractice() {
     scene: Pixels;
     objects: { id: string; box: Region; fixed: boolean; image: Pixels }[];
   } | null>(null);
+  // Camera locate (one SAM 3.1 step per camera session): Teach -> live
+  // mapping when the learner's camera is not where Teach was recorded.
+  const cameraView = useRef<View | null>(null);
+  const locateState = useRef<"idle" | "pending" | "done">("idle");
   const [manualSetupOpen, setManualSetupOpen] = useState(false);
   const [references, setReferences] = useState<ProcedureReferences | null>(
     null,
@@ -842,8 +847,10 @@ export default function LocalPractice() {
     show,
     felicityTick,
     requestFelicity,
-    automaticStart: (image: Pixels) =>
-      start({ image, source: automaticSource.current! }),
+    automaticStart: (image: Pixels) => {
+      locateCamera(image);
+      start({ image, source: automaticSource.current! });
+    },
     workerTimeout,
   });
   useEffect(() => {
@@ -1078,6 +1085,8 @@ export default function LocalPractice() {
           ? "Opening the camera. Automatic tracking will begin when the starting view is recognized."
           : "This older export has no automatic visual references. Create a fresh Teach approval for automatic Practice; manual setup is available under settings.",
       );
+      cameraView.current = null;
+      locateState.current = "idle";
       if (validated.automaticSetup) {
         automaticWanted.current = true;
         automaticAttemptAt.current = -Infinity;
@@ -1256,6 +1265,79 @@ export default function LocalPractice() {
       message:
         "Practice paused. Verified work is kept; say “Guide, resume practice” to continue.",
     };
+  }
+  /**
+   * One locate step per camera session (no per-frame model calls): SAM finds
+   * the approved objects in this camera; if they agree on a camera mapping
+   * different from the Teach recording, setup restarts in that mapping.
+   * Runs in parallel with the normal setup, so a camera already at the Teach
+   * viewpoint starts without waiting.
+   */
+  function locateCamera(image: Pixels) {
+    const source = automaticSource.current;
+    if (locateState.current !== "idle" || !source || !lesson) return;
+    locateState.current = "pending";
+    const objects = source.objects
+      .map((object) => ({
+        id: object.id,
+        noun: shortNoun(
+          lesson.procedure.components.find((c) => c.id === object.id)
+            ?.description ?? "",
+        ),
+        teach: object.box,
+      }))
+      .filter((object) => object.noun.length >= 2);
+    if (objects.length < 2) {
+      locateState.current = "done";
+      return;
+    }
+    if (!felicitySessionId.current)
+      felicitySessionId.current = `practice-${crypto.randomUUID()}`;
+    void fetch("/api/practice/locate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: felicitySessionId.current,
+        image: imageUrl(image),
+        width: image.width,
+        height: image.height,
+        objects: objects.map(({ id, noun }) => ({ id, noun })),
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const body = (await response.json()) as {
+          objects?: { id: string; box: Region | null }[];
+        };
+        const pairs = objects.flatMap((object) => {
+          const found = body.objects?.find((o) => o.id === object.id)?.box;
+          return found ? [{ teach: object.teach, live: found }] : [];
+        });
+        const view = viewFromBoxes(pairs);
+        console.info(
+          `[practice] camera locate: ${pairs.length}/${objects.length} objects found; mapping ${view ? JSON.stringify(view) : "none (same viewpoint or no agreement)"}`,
+        );
+        if (!view) return;
+        cameraView.current = view;
+        // A setup that started in the wrong viewpoint cannot arm: restart it.
+        if (worker.current && !session.current?.armed) {
+          worker.current.terminate();
+          worker.current = null;
+          busy.current = false;
+          if (session.current) session.current.stopped = true;
+          setRunning(false);
+          setStarting(false);
+          setDetections([]);
+          automaticWanted.current = true;
+          automaticAttemptAt.current = -Infinity;
+        }
+      })
+      .catch(() => {
+        /* Locate is an aid; the unchanged setup keeps retrying. */
+      })
+      .finally(() => {
+        locateState.current = "done";
+      });
   }
   function prepareSetup(resume = false) {
     if (!latest.current || !cameraActive) {
@@ -1538,7 +1620,12 @@ export default function LocalPractice() {
             reply.watchRevision !== watchRevision.current
           )
             return;
-          setDetections(reply.detections);
+          setDetections(
+            reply.detections.map((d) => ({
+              ...d,
+              box: d.box && toLive(d.box, cameraView.current),
+            })),
+          );
           const wasArmed = active.armed;
           const frame = feedTrackingFrame(active, {
             ...reply,
@@ -1788,6 +1875,7 @@ export default function LocalPractice() {
           ...(automatic
             ? {
                 type: "bootstrap",
+                view: cameraView.current,
                 source: {
                   ...automatic.source,
                   zones: lesson.zoneBindings.map((binding) => binding.region),
@@ -2118,11 +2206,14 @@ export default function LocalPractice() {
           : "#0891b2";
   }
   return (
-    <Workspace mode="practice">
-      <div className="w-full space-y-2">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+    <Workspace mode="practice" fitScreen>
+      <div className="practice-compact flex w-full flex-col gap-2 md:min-h-0 md:flex-1">
+        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1">
           <h1 className="text-lg font-bold">Practice</h1>
-          <span className="text-sm text-slate-600">
+          <span
+            className="max-w-xs truncate text-sm text-slate-600"
+            title={lesson?.procedure.title}
+          >
             {lesson?.procedure.title}
           </span>
           {!cameraActive ? (
@@ -2192,7 +2283,8 @@ export default function LocalPractice() {
             id="local-practice-status"
             role="status"
             data-lifecycle-state={lifecycle.state}
-            className="text-sm text-slate-600"
+            className="min-w-0 basis-full truncate text-sm text-slate-600 md:basis-0 md:flex-1"
+            title={notice}
           >
             {notice}
           </p>
@@ -2200,17 +2292,20 @@ export default function LocalPractice() {
             <TrackingReadiness live={liveTracking} state={lifecycle.state} />
           )}
         </div>
-        <div className={calibrating ? "hidden" : "contents space-y-2"}>
-          <div className="flex flex-wrap items-stretch gap-2 text-xs">
+        <div className={calibrating ? "hidden" : "contents"}>
+          <div className="flex shrink-0 flex-wrap items-stretch gap-2 text-xs">
             {lesson && (
               <section
                 aria-label="Current step and goal"
                 className="min-w-52 flex-1 space-y-0.5 rounded-2xl border bg-white p-2"
               >
-                <p className="truncate font-semibold">
+                <p
+                  className="truncate font-semibold"
+                  title={lesson.procedure.execution?.goal}
+                >
                   Goal: {lesson.procedure.execution?.goal}
                 </p>
-                <p>
+                <p className="line-clamp-2">
                   Next:{" "}
                   {!running
                     ? lesson.automaticSetup
@@ -2233,25 +2328,27 @@ export default function LocalPractice() {
               </section>
             )}
             <div className="min-w-52 flex-1 space-y-0.5 rounded-2xl border bg-white p-2">
-              <label className="flex gap-2 font-medium">
-                <input
-                  type="checkbox"
-                  checked={voiceOn}
-                  onChange={(e) => {
-                    setVoiceOn(e.target.checked);
-                    if (!e.target.checked) {
-                      speechGeneration.current++;
-                      setSpeaking(false);
-                      window.speechSynthesis?.cancel();
-                    }
-                  }}
+              <div className="flex flex-wrap items-center gap-x-2">
+                <label className="flex gap-2 font-medium">
+                  <input
+                    type="checkbox"
+                    checked={voiceOn}
+                    onChange={(e) => {
+                      setVoiceOn(e.target.checked);
+                      if (!e.target.checked) {
+                        speechGeneration.current++;
+                        setSpeaking(false);
+                        window.speechSynthesis?.cancel();
+                      }
+                    }}
+                  />
+                  Enable microphone voice controls
+                </label>
+                <CommandHelp
+                  commands={LOCAL_PRACTICE_COMMANDS}
+                  gestures={PRACTICE_GESTURES}
                 />
-                Enable microphone voice controls
-              </label>
-              <CommandHelp
-                commands={LOCAL_PRACTICE_COMMANDS}
-                gestures={PRACTICE_GESTURES}
-              />
+              </div>
               <p
                 className="truncate text-slate-600"
                 title={`Voice control: ${voice.status}. ${voice.feedback}`}
@@ -2261,6 +2358,7 @@ export default function LocalPractice() {
               <p
                 className="truncate text-slate-600"
                 data-testid="voice-transcript"
+                title={`${lastHeard ? `You said: “${lastHeard}”` : ""}${lastHeard && lastGuide ? " · " : ""}${lastGuide ? `Guide said: “${lastGuide}”` : ""}`}
               >
                 {lastHeard ? `You said: “${lastHeard}”` : " "}
                 {lastHeard && lastGuide ? " · " : ""}
@@ -2277,7 +2375,7 @@ export default function LocalPractice() {
           </div>
           <div
             data-testid="practice-live-row"
-            className="relative grid items-stretch gap-2 md:h-[calc(100dvh-300px)] md:min-h-[360px] md:grid-cols-[3fr_2fr]"
+            className="relative grid items-stretch gap-2 md:min-h-[320px] md:flex-1 md:grid-cols-[3fr_2fr] md:grid-rows-[minmax(0,1fr)]"
           >
             {running && (complete || result?.status === "failed") && (
               <div
@@ -2291,7 +2389,7 @@ export default function LocalPractice() {
               data-testid="practice-camera"
               className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border-2 bg-white ${running && result?.status === "failed" ? "border-red-600 practice-frame-warning" : running && complete ? "border-green-600" : "border-slate-200"}`}
             >
-              <div className="flex items-center justify-between border-b px-3 py-2 text-sm font-semibold">
+              <div className="flex shrink-0 items-center justify-between border-b px-3 py-1 text-sm font-semibold">
                 <span>Live work camera</span>
                 <button
                   type="button"
@@ -2382,127 +2480,6 @@ export default function LocalPractice() {
                     </section>
                   </div>
                 )}
-                {lesson && (
-                  // Live goal panel: before/after pictures and the approved
-                  // step checklist, shown the whole time (display only; the
-                  // verifier's step states drive the marks).
-                  <aside
-                    aria-label="Goal checklist"
-                    data-testid="goal-checklist"
-                    className="pointer-events-none absolute bottom-2 left-2 z-20 max-w-[62%] rounded-xl bg-white/90 p-2 text-xs text-slate-900 shadow-lg"
-                  >
-                    {references && (
-                      <div className="mb-1 flex gap-1">
-                        <figure className="w-16 overflow-hidden rounded border">
-                          {/* eslint-disable-next-line @next/next/no-img-element -- local data URL */}
-                          <img
-                            src={references.before}
-                            alt="Starting state"
-                            className="block h-10 w-full object-cover"
-                          />
-                          <figcaption className="px-1 text-[10px] font-bold">
-                            Before
-                          </figcaption>
-                        </figure>
-                        <figure className="w-16 overflow-hidden rounded border">
-                          {/* eslint-disable-next-line @next/next/no-img-element -- local data URL */}
-                          <img
-                            src={references.goal}
-                            alt="Final goal"
-                            className="block h-10 w-full object-cover"
-                          />
-                          <figcaption className="px-1 text-[10px] font-bold">
-                            Goal
-                          </figcaption>
-                        </figure>
-                      </div>
-                    )}
-                    <p className="font-bold">
-                      {lesson.procedure.execution?.goal ??
-                        lesson.procedure.title}
-                    </p>
-                    {(() => {
-                      const statuses = Object.fromEntries(
-                        (result?.steps ?? []).map((st) => [
-                          st.stepId,
-                          st.status,
-                        ]),
-                      );
-                      const p = estimateProgress({
-                        steps: lesson.procedure.steps.map((step) => ({
-                          id: step.id,
-                          demoMs: stepDemoMs(step),
-                        })),
-                        status: statuses,
-                        startedAtMs: practiceStartedAt,
-                        nowMs: Math.max(clockMs, practiceStartedAt ?? 0),
-                        goalComplete: !!complete,
-                      });
-                      return (
-                        <div data-testid="practice-progress" className="my-1">
-                          <div
-                            role="progressbar"
-                            aria-label="Progress to the final goal"
-                            aria-valuemin={0}
-                            aria-valuemax={100}
-                            aria-valuenow={Math.round(p.fraction * 100)}
-                            className="h-2 w-full overflow-hidden rounded-full bg-slate-200"
-                          >
-                            <div
-                              className={`h-full rounded-full ${result?.status === "failed" ? "bg-red-500" : "bg-emerald-500"} transition-all`}
-                              style={{
-                                width: `${Math.round(p.fraction * 100)}%`,
-                              }}
-                            />
-                          </div>
-                          <p className="mt-0.5 text-[11px] text-slate-700">
-                            {p.done}/{p.total} steps
-                            {practiceStartedAt !== null &&
-                              ` · ${formatDuration(p.elapsedMs)}`}
-                            {p.remainingMs !== null &&
-                              ` · ≈ ${formatDuration(p.remainingMs)} left`}
-                          </p>
-                        </div>
-                      );
-                    })()}
-                    <ul className="mt-0.5 space-y-0.5">
-                      {(() => {
-                        const firstOpen = lesson.procedure.steps.findIndex(
-                          (step) =>
-                            result?.steps.find(
-                              (state) => state.stepId === step.id,
-                            )?.status !== "passed",
-                        );
-                        return lesson.procedure.steps.map((step, index) => {
-                          const status =
-                            result?.steps.find(
-                              (state) => state.stepId === step.id,
-                            )?.status ?? "pending";
-                          const mark =
-                            status === "passed"
-                              ? "✓"
-                              : status === "failed"
-                                ? "✗"
-                                : index === firstOpen
-                                  ? "●"
-                                  : "○";
-                          return (
-                            <li
-                              key={step.id}
-                              data-step-status={status}
-                              className={`flex gap-1 ${status === "passed" ? "text-emerald-800" : status === "failed" ? "font-bold text-red-700" : index === firstOpen ? "font-semibold" : "text-slate-600"}`}
-                            >
-                              <span aria-hidden="true">{mark}</span>
-                              <span>
-                                {index + 1}. {step.description}
-                              </span>
-                            </li>
-                          );
-                        });
-                      })()}
-                    </ul>
-                  </aside>
-                )}
                 {running && trackingOverlay && (
                   <svg
                     className="pointer-events-none absolute"
@@ -2556,39 +2533,224 @@ export default function LocalPractice() {
                   </svg>
                 )}
               </div>
-              {lesson && !running && references && (
-                <div className="p-2" aria-label="Before and after goal">
-                  <p className="mb-1 text-xs font-bold">
-                    Before and after goal
-                  </p>
-                  <div className="flex justify-start gap-2">
-                    <figure className="w-20 overflow-hidden rounded-lg border bg-slate-50">
-                      <img
-                        src={references.before}
-                        alt="Demonstrated starting state"
-                        className="block h-12 w-full object-cover"
-                      />
-                      <figcaption className="px-1 py-0.5 text-xs font-bold">
-                        Before
-                      </figcaption>
-                    </figure>
-                    <figure className="w-20 overflow-hidden rounded-lg border bg-slate-50">
-                      <img
-                        src={references.goal}
-                        alt="Demonstrated final goal"
-                        className="block h-12 w-full object-cover"
-                      />
-                      <figcaption className="px-1 py-0.5 text-xs font-bold">
-                        After
-                      </figcaption>
-                    </figure>
+              {alert && (
+                <div className="shrink-0 px-2 pt-1">
+                  <div
+                    key={alert.key}
+                    data-testid="practice-verdict"
+                    role={alert.kind === "failed" ? "alert" : "status"}
+                    aria-live="polite"
+                    title={alert.text}
+                    className={`line-clamp-2 rounded-xl border-2 px-2 py-1 text-sm font-bold ${alert.kind === "failed" ? "border-red-600 bg-red-50 text-red-800 practice-correction-pulse" : alert.kind === "passed" ? "border-green-600 bg-green-50 text-green-800" : "border-amber-600 bg-amber-50 text-amber-800"}`}
+                  >
+                    {alert.text}
                   </div>
                 </div>
               )}
               {lesson && (
-                <section aria-label="Steps" className="px-2 py-1 text-xs">
+                <div className="flex shrink-0 flex-wrap items-start gap-2 border-t p-2 text-xs md:flex-nowrap">
+                  {!running && references && (
+                    <div
+                      className="shrink-0"
+                      aria-label="Before and after goal"
+                    >
+                      <p className="sr-only">Before and after goal</p>
+                      <div className="flex justify-start gap-1">
+                        <figure className="w-16 overflow-hidden rounded border bg-slate-50">
+                          {/* eslint-disable-next-line @next/next/no-img-element -- local data URL */}
+                          <img
+                            src={references.before}
+                            alt="Demonstrated starting state"
+                            className="block h-10 w-full object-cover"
+                          />
+                          <figcaption className="px-1 text-[10px] font-bold">
+                            Before
+                          </figcaption>
+                        </figure>
+                        <figure className="w-16 overflow-hidden rounded border bg-slate-50">
+                          {/* eslint-disable-next-line @next/next/no-img-element -- local data URL */}
+                          <img
+                            src={references.goal}
+                            alt="Demonstrated final goal"
+                            className="block h-10 w-full object-cover"
+                          />
+                          <figcaption className="px-1 text-[10px] font-bold">
+                            After
+                          </figcaption>
+                        </figure>
+                      </div>
+                    </div>
+                  )}
+                  {/* Live goal panel, kept outside the camera image:
+                      before/after pictures and the approved step checklist
+                      (display only; the verifier's step states drive the
+                      marks). */}
+                  <aside
+                    aria-label="Goal checklist"
+                    data-testid="goal-checklist"
+                    className="flex min-w-0 flex-1 flex-wrap items-start gap-2 text-slate-900 md:flex-nowrap"
+                  >
+                    {running && references && (
+                      <div className="flex shrink-0 gap-1">
+                        <figure className="w-16 overflow-hidden rounded border">
+                          {/* eslint-disable-next-line @next/next/no-img-element -- local data URL */}
+                          <img
+                            src={references.before}
+                            alt="Starting state"
+                            className="block h-10 w-full object-cover"
+                          />
+                          <figcaption className="px-1 text-[10px] font-bold">
+                            Before
+                          </figcaption>
+                        </figure>
+                        <figure className="w-16 overflow-hidden rounded border">
+                          {/* eslint-disable-next-line @next/next/no-img-element -- local data URL */}
+                          <img
+                            src={references.goal}
+                            alt="Final goal"
+                            className="block h-10 w-full object-cover"
+                          />
+                          <figcaption className="px-1 text-[10px] font-bold">
+                            Goal
+                          </figcaption>
+                        </figure>
+                      </div>
+                    )}
+                    <div className="min-w-0 basis-full md:w-60 md:shrink-0 md:basis-auto">
+                      <p
+                        className="line-clamp-2 font-bold"
+                        title={
+                          lesson.procedure.execution?.goal ??
+                          lesson.procedure.title
+                        }
+                      >
+                        {lesson.procedure.execution?.goal ??
+                          lesson.procedure.title}
+                      </p>
+                      {(() => {
+                        const statuses = Object.fromEntries(
+                          (result?.steps ?? []).map((st) => [
+                            st.stepId,
+                            st.status,
+                          ]),
+                        );
+                        const p = estimateProgress({
+                          steps: lesson.procedure.steps.map((step) => ({
+                            id: step.id,
+                            demoMs: stepDemoMs(step),
+                          })),
+                          status: statuses,
+                          startedAtMs: practiceStartedAt,
+                          nowMs: Math.max(clockMs, practiceStartedAt ?? 0),
+                          goalComplete: !!complete,
+                        });
+                        return (
+                          <div data-testid="practice-progress" className="my-1">
+                            <div
+                              role="progressbar"
+                              aria-label="Progress to the final goal"
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={Math.round(p.fraction * 100)}
+                              className="h-2 w-full overflow-hidden rounded-full bg-slate-200"
+                            >
+                              <div
+                                className={`h-full rounded-full ${result?.status === "failed" ? "bg-red-500" : "bg-emerald-500"} transition-all`}
+                                style={{
+                                  width: `${Math.round(p.fraction * 100)}%`,
+                                }}
+                              />
+                            </div>
+                            <p className="mt-0.5 text-[11px] text-slate-700">
+                              {p.done}/{p.total} steps
+                              {practiceStartedAt !== null &&
+                                ` · ${formatDuration(p.elapsedMs)}`}
+                              {p.remainingMs !== null &&
+                                ` · ≈ ${formatDuration(p.remainingMs)} left`}
+                            </p>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    <ul className="max-h-16 min-w-0 flex-1 space-y-0.5 overflow-y-auto">
+                      {(() => {
+                        const firstOpen = lesson.procedure.steps.findIndex(
+                          (step) =>
+                            result?.steps.find(
+                              (state) => state.stepId === step.id,
+                            )?.status !== "passed",
+                        );
+                        return lesson.procedure.steps.map((step, index) => {
+                          const status =
+                            result?.steps.find(
+                              (state) => state.stepId === step.id,
+                            )?.status ?? "pending";
+                          const mark =
+                            status === "passed"
+                              ? "✓"
+                              : status === "failed"
+                                ? "✗"
+                                : index === firstOpen
+                                  ? "●"
+                                  : "○";
+                          return (
+                            <li
+                              key={step.id}
+                              data-step-status={status}
+                              className={`flex gap-1 ${status === "passed" ? "text-emerald-800" : status === "failed" ? "font-bold text-red-700" : index === firstOpen ? "font-semibold" : "text-slate-600"}`}
+                            >
+                              <span aria-hidden="true">{mark}</span>
+                              <span>
+                                {index + 1}. {step.description}
+                              </span>
+                            </li>
+                          );
+                        });
+                      })()}
+                    </ul>
+                  </aside>
+                </div>
+              )}
+            </section>
+            <div className="flex min-w-0 flex-col gap-2 md:min-h-0 md:overflow-y-auto">
+              <div data-testid="practice-companion" className="min-w-0 flex-1">
+                <GuideAvatar
+                  artClassName="mx-auto h-52 w-48 [@media(min-height:880px)]:h-64 [@media(min-height:880px)]:w-60"
+                  mode={resolveAvatarMode({
+                    violation: running && result?.status === "failed",
+                    complete: running && complete && alert?.kind !== "warning",
+                    uncertain:
+                      (!running && cameraActive) ||
+                      result?.status === "needs_verification" ||
+                      alert?.kind === "warning",
+                    busy: starting,
+                  })}
+                  speech={
+                    speaking
+                      ? "speaking"
+                      : voice.status === "listening"
+                        ? "listening"
+                        : "silent"
+                  }
+                  caption={alert?.text ?? notice}
+                />
+                {felicityAdvice && (
+                  <p
+                    data-testid="felicity-advice"
+                    role="status"
+                    className="mt-2 rounded-xl border border-violet-300 bg-violet-50 p-2 text-sm text-violet-900"
+                  >
+                    <strong>Felicity:</strong> {felicityAdvice}
+                  </p>
+                )}
+              </div>
+              {lesson && (
+                <section
+                  aria-label="Steps"
+                  className="shrink-0 rounded-2xl border bg-white px-2 py-1 text-xs"
+                >
                   <details open={running ? true : undefined}>
-                    <summary className="cursor-pointer font-bold">
+                    <summary className="cursor-pointer py-0.5 font-bold">
                       Steps ·{" "}
                       {running ? "live verification" : "last observed result"}
                     </summary>
@@ -2620,60 +2782,6 @@ export default function LocalPractice() {
                   </details>
                 </section>
               )}
-              {alert && (
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/85 to-transparent px-3 pb-2 pt-8">
-                  <div
-                    key={alert.key}
-                    data-testid="practice-verdict"
-                    role={alert.kind === "failed" ? "alert" : "status"}
-                    aria-live="polite"
-                    className={`rounded-xl border-2 p-2 text-base font-bold ${alert.kind === "failed" ? "border-red-600 bg-red-50 text-red-800 practice-correction-pulse" : alert.kind === "passed" ? "border-green-600 bg-green-50 text-green-800" : "border-amber-600 bg-amber-50 text-amber-800"}`}
-                  >
-                    {alert.text}
-                  </div>
-                </div>
-              )}
-              {running && references && (
-                <div className="pointer-events-none absolute right-2 top-14 w-24 overflow-hidden rounded-lg border-2 border-white bg-slate-950 shadow-lg">
-                  <img src={references.goal} alt="" className="block w-full" />
-                  <p className="bg-slate-950 px-1 py-0.5 text-center text-[10px] font-bold text-white">
-                    Goal
-                  </p>
-                </div>
-              )}
-            </section>
-            <div className="flex min-w-0 flex-col">
-              <div data-testid="practice-companion" className="min-w-0 flex-1">
-                <GuideAvatar
-                  artClassName="mx-auto h-72 w-64 sm:h-80 sm:w-72"
-                  mode={resolveAvatarMode({
-                    violation: running && result?.status === "failed",
-                    complete: running && complete && alert?.kind !== "warning",
-                    uncertain:
-                      (!running && cameraActive) ||
-                      result?.status === "needs_verification" ||
-                      alert?.kind === "warning",
-                    busy: starting,
-                  })}
-                  speech={
-                    speaking
-                      ? "speaking"
-                      : voice.status === "listening"
-                        ? "listening"
-                        : "silent"
-                  }
-                  caption={alert?.text ?? notice}
-                />
-                {felicityAdvice && (
-                  <p
-                    data-testid="felicity-advice"
-                    role="status"
-                    className="mt-2 rounded-xl border border-violet-300 bg-violet-50 p-2 text-sm text-violet-900"
-                  >
-                    <strong>Felicity:</strong> {felicityAdvice}
-                  </p>
-                )}
-              </div>
             </div>
           </div>
         </div>
