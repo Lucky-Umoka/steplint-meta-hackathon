@@ -1,6 +1,23 @@
 # Changelog
 
-All notable changes, newest first. Versions follow semantic versioning (see CLAUDE.md).
+All notable changes, newest first. Versions follow semantic versioning.
+
+## 0.20.0 — 2026-11-05
+
+### Changed (owner: "it forgot in one second" and asked to move the bowl back)
+- Root cause: when tracking stalled (late evidence, tracker crash, lost calibration), the Felicity supervisor's automatic re-setup created a NEW session, discarding verified steps, the audit and where objects were, so the learner had to restore the starting positions.
+- Supervisor recovery now resumes the paused session: verified steps, events and audit are kept. The session records each object's last clearly observed zone (measured, never predicted), and a resume arms from it. A move observed before the stall completes on fresh frames at the goal; a move nobody observed is still not credited. Manual restart still starts a new attempt.
+
+### Verified
+- New `tests/practice-recovery-resume.test.ts` through the real pipeline/verifier: observed move kept across a stall (failed before: the session expected the start zone), verified step kept and a later reversal still flagged, unobserved move during the stall not credited. Full unit suite, type-check, lint, production build. Not yet measured on the owner's physical camera.
+
+## 0.19.4 — 2026-11-04
+
+### Reverted (owner: tracking stopped working and Practice became much slower after 0.19.1–0.19.3)
+- All Practice runtime code (local-practice, guide camera, appearance tracker, palette, avatar frame rate) restored to the last physically accepted state (commit 8ca6a9e). 0.19.1–0.19.3 were never physically accepted; the owner's dev log showed immediate SAM locate 429s (0.19.1 retry timing) and the supervisor stopping because "tracking evidence arrived too late" (0.19.1 back-to-back frame submission). Synthetic latency tests from 0.19.2 were removed with the code they tested (kept outside the repo).
+
+### Verified
+- Unit tests, type-check and lint on the restored code (below). Not yet re-confirmed on the owner's physical camera.
 
 ## 0.19.3 — 2026-11-04
 
@@ -48,7 +65,7 @@ All notable changes, newest first. Versions follow semantic versioning (see CLAU
 
 ### Fixed (owner export 17:10: goal verified, then tracking glitches)
 - Tracker root cause: the moved object's identity template sampled its whole box, including the towel at the bowl's corners; on the black mat those samples no longer matched and the still bowl was "lost". Moved objects are now matched on their own pixels (`contrastForeground`: samples distinct from the box-border colours, with an outside ring that rejects drifting onto the table); objects that do not stand out keep the whole-box template. Regression reproduces the loss with the old template.
-- Verifier: a verified step is no longer undone by losing sight of the object (identity unclear or partial); only a clearly measured observation elsewhere is a reversal (CLAUDE.md invariant). Replay of the owner's 17:10 export keeps the step passed through 27 s of losses.
+- Verifier: a verified step is no longer undone by losing sight of the object (identity unclear or partial); only a clearly measured observation elsewhere is a reversal. Replay of the owner's 17:10 export keeps the step passed through 27 s of losses.
 - Latency: a lost-object attempt searches the last position plus one approved zone in rotation (was every zone in the same frame; worker p95 471 ms, replies dropped as stale and Practice restarted). The 1 px search grid is kept: a 2 px grid failed the lookalike-separation test.
 - Speech: "Verified" and "Final goal verified" queue instead of cancelling each other (the goal sentence cut "Verified" off after 0.4 s and left Chrome's engine stuck); an interrupted utterance is no longer logged as a failure. Verified objects are monitored silently (no "lost track" nags after the goal).
 - Felicity: an unread error body (provider 502) no longer surfaces as an uncaught AbortError when the incident is replaced.

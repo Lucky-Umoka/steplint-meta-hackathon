@@ -1,10 +1,10 @@
 # StepLint decisions and assumptions
 
-Statuses: **Decided** means a project constraint or design choice; **Proposed** means intended but not yet implemented; **Awaiting verification** means a technical fact must be established before relying on it. Phase 1 source now exists; actual verification and unresolved live access are recorded in [PHASE1.md](PHASE1.md).
+Statuses: **Decided** means a project constraint or design choice; **Proposed** means intended but not yet implemented; **Awaiting verification** means a technical fact must be established before relying on it. Phase 1 source now exists; actual verification and unresolved live access are recorded in PHASE1.md.
 
 | Topic | Status | Decision / rationale |
 |---|---|---|
-| Coding agent | Decided | Muse Code is the only coding agent and follows [AGENTS.md](../AGENTS.md), the single authoritative instruction file. Muse Code's use does not itself demonstrate runtime application integration with Meta models. |
+| Coding agent | Decided | Muse Code is the only coding agent and follows the project's local instruction file. Muse Code's use does not itself demonstrate runtime application integration with Meta models. |
 | Application stack | Decided | Prefer one TypeScript application (Next.js App Router, React, Node, Zod, Vitest) over competing frontend/backend stacks. Add infrastructure only for a demonstrated need. |
 | Runtime/toolchain | Proposed | Prefer Node 22 and npm, subject to compatibility verification with current SDKs and packages. |
 | Meta model roles | Proposed; awaiting verification | Planned Muse Spark for evidence interpretation/draft reasoning, SAM 3.1 for visual detection/segmentation/tracking, and Muse Voice Transcribe for speech-to-text. Verify identifiers, endpoints, payloads, limits, and pricing from current official documentation before implementing. |
@@ -35,7 +35,7 @@ When implementation or a compatibility experiment changes a status, update this 
 
 ## Phase 1 live verification (2026-10-29)
 
-After explicit owner approval, one `muse-spark-1.3` text request and one `sam-3.1` image request succeeded, with automatic retries disabled. Spark returned completed output matching `STEPLINT_OK`; SAM's completed streaming result parsed without diagnostics and yielded one box and one nonempty mask decoded by the official parser. These exact request paths are now verified; broader model accuracy and all later-phase capabilities remain unverified. See [PHASE1.md](PHASE1.md) for commands and bounds. No billing lookup was made.
+After explicit owner approval, one `muse-spark-1.3` text request and one `sam-3.1` image request succeeded, with automatic retries disabled. Spark returned completed output matching `STEPLINT_OK`; SAM's completed streaming result parsed without diagnostics and yielded one box and one nonempty mask decoded by the official parser. These exact request paths are now verified; broader model accuracy and all later-phase capabilities remain unverified. See PHASE1.md for commands and bounds. No billing lookup was made.
 
 ## Phase 2 evaluator decisions (2026-10-29)
 
@@ -44,7 +44,7 @@ After explicit owner approval, one `muse-spark-1.3` text request and one `sam-3.
 - Enforce array order plus prerequisite and forbidden-transition references. Reject non-increasing event times and intervals spanning prerequisite verification rather than inventing temporal order. Schema references must point backward, ruling out cycles.
 - Loss of a verified component condition invalidates its ordered suffix. Correction requires fresh observations; an early closure is never retroactively passed when support is later verified.
 - Deduplicate both event and observation IDs across resets/retries within a session log. Keep timestamped outcome history, evidence references, missing prerequisites, and teaching recovery guidance. Retry/reset clear progress, not historical violations or deduplication.
-- Invalid structure throws ZodError; missing human approval blocks evaluation with an explicit error; valid uncertain evidence returns `needs_verification`. Actual reviewer authentication belongs to the later Teach workflow. See [PHASE2.md](PHASE2.md).
+- Invalid structure throws ZodError; missing human approval blocks evaluation with an explicit error; valid uncertain evidence returns `needs_verification`. Actual reviewer authentication belongs to the later Teach workflow. See PHASE2.md.
 
 ## Phase 3 media decisions (2026-10-29)
 
@@ -52,7 +52,7 @@ After explicit owner approval, one `muse-spark-1.3` text request and one `sam-3.
 - Initial Linux Chromium measurement: H.264 available, AAC unavailable. Produce explicitly video-only MP4 and extract WAV from the original Opus microphone track; do not install a speculative codec plugin. An existing MP4/H.264 fallback requires no H.264 encoder.
 - Use primary tracks and bounded media (≤20 MB, 10–20.5 s, ≤600 frames, ≤1280×720 pixels; PCM16 mono WAV ≤1.1 MB). Validate actual format/codec bytes and owner-approved SHA-256 before paid requests.
 - Keep paid smoke operations in server-only CLI scripts, not public HTTP routes. Files upload uses user_data; SAM video uses input_video/file_id with official streamed video parser and frame indices; cleanup deletes the uploaded MP4. Voice uses its own ASR multipart endpoint and exact WAV contract. Disable retries; approval is per bounded run.
-- Phase 3 local/browser results using fake devices are separated from the subsequent successful owner-approved live calls on real recordings. Files upload, SAM video parsing, cleanup, and Voice transcription are verified for that path. Browser coverage and perception/transcript accuracy remain limited; see [PHASE3.md](PHASE3.md).
+- Phase 3 local/browser results using fake devices are separated from the subsequent successful owner-approved live calls on real recordings. Files upload, SAM video parsing, cleanup, and Voice transcription are verified for that path. Browser coverage and perception/transcript accuracy remain limited; see PHASE3.md.
 
 ### Phase 3 live evidence (2026-10-29)
 
@@ -67,7 +67,7 @@ One owner-approved MP4 upload, one sam-3.1 video request (prompt selected from a
 - Muse Voice uses ENDPOINTING for actual turn timestamps. SAM uses official box/point prompts, source frame indices, include_confidence and official streaming/mask parsing. Spark receives bounded text evidence and strict-schema output with approval forced null. Generated observations never decide procedural pass/fail.
 - Require a separate high-entropy TEACH_ACCESS_TOKEN for paid owner routes; use HttpOnly owner cookies, same-origin checks and encrypted stage/session references. No API key or private environment value is returned to the browser. No multi-user role system or distributed exactly-once spending claim is made.
 - Approval repeats structural/evidence validation and requires explicit per-step review plus supported, non-overlapping zone mappings and ordered confidence-supported before/after frames without gaps. An integrity receipt accompanies exported artifacts; Phase 5 must validate external artifacts before execution.
-- Browser checks use explicitly mocked provider results; the agent does not approve the owner's lesson. The real-recording batch smoke remains a separate approved run. See [PHASE4.md](PHASE4.md).
+- Browser checks use explicitly mocked provider results; the agent does not approve the owner's lesson. The real-recording batch smoke remains a separate approved run. See PHASE4.md.
 
 - Live draft validation rejected a forbidden transition referencing a non-earlier step. Keep the deterministic schema strict; explicitly explain rule ownership, backward references and empty first-step rules in Spark instructions, rather than silently modifying model output. Report the failing stage and confirmed/unconfirmed cleanup without secrets.
 - Accept the exact server-configured Codespaces/Vercel public origin or optional TEACH_PUBLIC_ORIGIN to support TLS reverse proxies; do not trust arbitrary forwarded-origin headers. Keep origin rejection for other sites.
@@ -289,15 +289,15 @@ The initial 250 kbps target exceeded the cap in Chromium on complex footage (2,2
 
 ### 2026-11-02 — Owner-authorized Teach V3 contract, Phase 1 only
 
-Canonical local drafting requires explicit V3 roles, activation, source identity frames, action-owned evidence windows, requirement coverage and initial/final visual predicates. Existing V2 contracts remain readable. Review never automatically narrows required scope. V3 stays unapproved/reviewable until separately authorized approval/storage and Practice migration; the existing V2 verifier must not accept V3 approvals and silently ignore final predicates. No Practice/voice/provider integration changes or live model calls. See [TEACH_V3_PHASE1.md](TEACH_V3_PHASE1.md) for tests, implementation boundaries and remaining dependencies.
+Canonical local drafting requires explicit V3 roles, activation, source identity frames, action-owned evidence windows, requirement coverage and initial/final visual predicates. Existing V2 contracts remain readable. Review never automatically narrows required scope. V3 stays unapproved/reviewable until separately authorized approval/storage and Practice migration; the existing V2 verifier must not accept V3 approvals and silently ignore final predicates. No Practice/voice/provider integration changes or live model calls. See TEACH_V3_PHASE1.md for tests, implementation boundaries and remaining dependencies.
 
 ### 2026-11-02 — Owner-authorized video-informed Teach drafting
 
-The owner requested Baseten to see the demonstration while drafting meaningful actions and goals. The existing final Spark call now accepts the exact reviewed MP4, cryptographically bound to its inspected upload, through documented Chat Completions `video_url` content. The configured Meta alternative retains its own file reference; SAM/discovery/Voice remain unchanged. One existing drafting request includes a source action/goal audit; no second independent model check, retry, fallback or Practice model loop is added. Unknown/unshown work stays unsupported, with null action timing when no observation exists. Provider video sampling is bounded and cannot guarantee every brief action. Existing V3 approval/Practice guards remain. See [TEACH_VIDEO_REVIEW.md](TEACH_VIDEO_REVIEW.md); no live paid call was made during implementation.
+The owner requested Baseten to see the demonstration while drafting meaningful actions and goals. The existing final Spark call now accepts the exact reviewed MP4, cryptographically bound to its inspected upload, through documented Chat Completions `video_url` content. The configured Meta alternative retains its own file reference; SAM/discovery/Voice remain unchanged. One existing drafting request includes a source action/goal audit; no second independent model check, retry, fallback or Practice model loop is added. Unknown/unshown work stays unsupported, with null action timing when no observation exists. Provider video sampling is bounded and cannot guarantee every brief action. Existing V3 approval/Practice guards remain. See TEACH_VIDEO_REVIEW.md; no live paid call was made during implementation.
 
 ### 2026-11-02 — Eligible source-frame generation and measured completion budget
 
-Frame references and action landmarks are now constrained by complete per-object trusted-source catalogs, rather than letting video visibility imply valid SAM evidence. The policy remains 0.90 with actual timestamped observations; no snapping or threshold bypass. Two newly approved Baseten video requests both truncated at 12,000 completion tokens; the second used 10,673 reasoning tokens. Baseten's bounded total cap is now 24,576 to leave room for reasoning and JSON; Meta's cap and all host deadlines remain unchanged. No third call was made; adjusted-budget live acceptance remains outstanding. See [TEACH_SOURCE_EVIDENCE_FIX.md](TEACH_SOURCE_EVIDENCE_FIX.md).
+Frame references and action landmarks are now constrained by complete per-object trusted-source catalogs, rather than letting video visibility imply valid SAM evidence. The policy remains 0.90 with actual timestamped observations; no snapping or threshold bypass. Two newly approved Baseten video requests both truncated at 12,000 completion tokens; the second used 10,673 reasoning tokens. Baseten's bounded total cap is now 24,576 to leave room for reasoning and JSON; Meta's cap and all host deadlines remain unchanged. No third call was made; adjusted-budget live acceptance remains outstanding. See TEACH_SOURCE_EVIDENCE_FIX.md.
 
 ## Teach V3: derived relevance and one validator-feedback correction (2026-11-02)
 
@@ -425,3 +425,6 @@ Verifier: after a step passes, unclear or partial identity is retained as passed
 ### 2026-11-04 — Colour palettes must work in the live search window
 A native colour palette is accepted only if a live-mode measurement (the wider frame-to-frame window) also observes the object; the best-margin candidate is kept. Root cause of multi-second Practice decisions: a cream bowl's hue matched the table outside the grounding ring, so the bowl flapped lost/reacquired. A tracking grace period was rejected because it bypassed the three-match identity reacquisition rule.
 
+
+### 2026-11-05 — Recovery resumes the session from last observed positions
+Supervisor re-setup resumes the paused session instead of creating one. Resume arms each object from its last clearly observed zone in this session (else the verifier's expected zone), so an observed move is never undone by a tracker stall, while an unobserved move still needs observed evidence.

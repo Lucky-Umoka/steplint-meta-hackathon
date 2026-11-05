@@ -1,6 +1,6 @@
 # StepLint three-minute demonstration runbook
 
-Phase 6, 2026-11-02. This is a runbook, not a recording of physical acceptance. Current results and deployment status are in [PHASE6_ACCEPTANCE.md](PHASE6_ACCEPTANCE.md).
+Phase 6, 2026-11-02. This is a runbook, not a recording of physical acceptance. Current results and deployment status are in PHASE6_ACCEPTANCE.md.
 
 ## Prepare before recording
 

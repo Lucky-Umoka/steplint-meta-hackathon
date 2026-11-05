@@ -330,7 +330,7 @@ export function createVerifier(procedureInput: unknown) {
         observation.spatialState === "transit";
       // A verified step is not undone by losing sight of the object (hand,
       // jitter, tracker re-search): only a CLEAR observation elsewhere is a
-      // reversal (CLAUDE.md; owner export 2026-11-04: goal verified, then the
+      // reversal (project invariant; owner export 2026-11-04: goal verified, then the
       // bowl was briefly lost on the mat and the step fell back).
       if (
         procedure.execution &&

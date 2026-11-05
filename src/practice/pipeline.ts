@@ -84,6 +84,12 @@ export type PracticeSession = {
   id: string;
   armed: boolean;
   initialZones: Record<string, string>;
+  /**
+   * Last zone each object was clearly OBSERVED in (armed session, measured
+   * evidence only, never predicted). A recovery resume arms from here, so a
+   * stalled tracker does not make the learner undo an observed move.
+   */
+  lastKnown: Record<string, { zone: string; atMs: number }>;
   calibrations: {
     epoch: number;
     timestampMs: number;
@@ -128,6 +134,7 @@ export function createSession(
     result: verifier.snapshot(),
     id: `session-${globalThis.crypto.randomUUID()}`,
     armed: !procedure.execution,
+    lastKnown: Object.create(null) as Record<string, { zone: string; atMs: number }>,
     initialZones: Object.fromEntries(
       procedure.steps
         .filter(
@@ -257,6 +264,8 @@ export function feedDetection(
       zone = null;
     }
   }
+  if (session.armed && quality === "observed" && zone !== null)
+    session.lastKnown[detection.componentId] = { zone, atMs: nowMs };
   const key = `${quality}:${zone}`;
   let stable = session.stable[detection.componentId];
   if (stable && nowMs <= stable.lastSeen)
@@ -529,7 +538,16 @@ export function resumeSession(
       session.procedure.steps.map((step) => step.condition.componentId),
     ),
   ];
-  session.initialZones = session.verifier.expectedResumeZones();
+  // Verified/unfinished expectations, overridden by where each object was
+  // last clearly observed in this session (owner, 2026-11-05: a stalled
+  // tracker made the learner move the bowl back after an observed move).
+  // An unobserved move still requires the expected zone.
+  session.initialZones = {
+    ...session.verifier.expectedResumeZones(),
+    ...Object.fromEntries(
+      Object.entries(session.lastKnown).map(([id, known]) => [id, known.zone]),
+    ),
+  };
   session.bindings = structuredClone(bindings);
   session.stable = Object.create(null) as Record<string, Stable>;
   session.stopped = false;

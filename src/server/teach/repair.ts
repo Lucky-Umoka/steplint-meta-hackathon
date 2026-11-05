@@ -5,7 +5,7 @@ import { sourceEvidenceCatalog } from "../../teach/source-evidence";
 import { sparkStructured } from "../meta/spark";
 
 /**
- * Felicity draft repair (owner override 2026-11-04, docs/new_final_phases).
+ * Felicity draft repair (owner override 2026-11-04).
  * When drafting is rejected or leaves review issues, Felicity makes ONE
  * bounded Muse Spark Open request for a tiny plan: ordered steps that each
  * name an object and the INDEX of one of that object's measured movement
