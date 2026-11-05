@@ -125,6 +125,8 @@ export function measureNativePalette(
   image: Pixels,
   profile: NativePalette,
   grounding = false,
+  /** Live search radius in pixels (grows during a brief re-measure grace). */
+  searchRadius = 64,
 ): ObjectDetection {
   const unknown = (): ObjectDetection => ({
     objectId: profile.objectId,
@@ -147,7 +149,7 @@ export function measureNativePalette(
     }[] = [];
   const radius = grounding
     ? Math.max(25, Math.sqrt(profile.area || 10000))
-    : 64;
+    : searchRadius;
   const x0 = grounding
       ? Math.max(0, Math.floor(profile.seedBox.left * image.width))
       : Math.max(0, Math.floor(profile.last.x - radius)),
