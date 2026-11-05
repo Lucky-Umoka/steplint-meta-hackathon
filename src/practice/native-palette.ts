@@ -1,8 +1,6 @@
 import type { Box, ObjectDetection } from "../guide/schema";
 import type { Pixels } from "./tracker";
 type Colour = [number, number, number];
-/** Half-size of the frame-to-frame live search window, in pixels. */
-const LIVE_RADIUS = 64;
 export type NativePalette = {
   objectId: string;
   colour: Colour;
@@ -93,7 +91,6 @@ function groundAt(
     bins.set(key, bin);
   }
   const candidates = [...bins.values()].sort((a, b) => b.count - a.count);
-  let best: { profile: NativePalette; score: number } | null = null;
   for (const candidate of candidates.slice(0, 8)) {
     const colour = candidate.sum.map((v) => v / candidate.count) as Colour;
     const positives =
@@ -119,38 +116,10 @@ function groundAt(
         image.width *
         (result.box.bottom - result.box.top) *
         image.height;
-      // The palette must also work the way it is used live: frame-to-frame
-      // tracking searches a wider window than the grounding ring. Owner
-      // exports 2026-11-04: a cream bowl on a blue towel passed the ring
-      // test, but the light table matched its hue inside the live window,
-      // so every frame was ambiguous and the bowl flapped lost/reacquired
-      // (decisions took seconds). Such a palette is refused; the dense
-      // object-only template tracks the object instead.
-      // The 128 px live window can only judge an object that fits inside it.
-      // 0.19.2 regression (owner, 2026-11-04: "no tracking"): applied to
-      // full-resolution Teach images, a larger object was clipped by the
-      // window, every palette was refused, and movers fell back to the
-      // texture tracker that loses them under a grasp. A larger object keeps
-      // the ring-tested palette, as before 0.19.2; the live camera
-      // re-measures it at the 0.9 gate (preferApprovedPalette) anyway.
-      const fitsLiveWindow =
-        Math.max(result.box.right - result.box.left, 0) * image.width <=
-          LIVE_RADIUS * 1.6 &&
-        Math.max(result.box.bottom - result.box.top, 0) * image.height <=
-          LIVE_RADIUS * 1.6;
-      if (!fitsLiveWindow) {
-        if (!best) best = { profile, score: result.score ?? 0 };
-        continue;
-      }
-      const live = measureNativePalette(image, { ...profile, lost: false });
-      if (live.quality !== "observed" || live.score === null) continue;
-      // Keep the candidate with the most margin over the 0.9 gate (a
-      // borderline palette flips to "lost" with small lighting changes).
-      if (!best || live.score > best.score)
-        best = { profile, score: live.score };
+      return profile;
     }
   }
-  return best?.profile ?? null;
+  return null;
 }
 export function measureNativePalette(
   image: Pixels,
@@ -178,7 +147,7 @@ export function measureNativePalette(
     }[] = [];
   const radius = grounding
     ? Math.max(25, Math.sqrt(profile.area || 10000))
-    : LIVE_RADIUS;
+    : 64;
   const x0 = grounding
       ? Math.max(0, Math.floor(profile.seedBox.left * image.width))
       : Math.max(0, Math.floor(profile.last.x - radius)),

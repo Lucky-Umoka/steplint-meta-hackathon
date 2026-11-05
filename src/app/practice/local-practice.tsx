@@ -176,9 +176,12 @@ export default function LocalPractice() {
     new Map<string, { key: string; since: number }>(),
   );
   const lostSince = useRef(new Map<string, number>());
-  /** Capture time of the newest camera frame and of the last one tracked. */
-  const latestAt = useRef(-Infinity),
-    lastSubmittedAt = useRef(-Infinity);
+  /**
+   * Set by the supervisor: its automatic re-setup RESUMES the paused session
+   * (verified steps, audit and last observed positions kept) instead of
+   * starting a new attempt (owner, 2026-11-05).
+   */
+  const recoveryResume = useRef(false);
   const latestDetections = useRef<ObjectDetection[]>([]);
   const cameraActiveRef = useRef(false);
   const setupSince = useRef<number | null>(null);
@@ -917,22 +920,7 @@ export default function LocalPractice() {
         automaticAttemptAt.current = now;
         handlers.current.automaticStart(image);
       }
-      latestAt.current = now;
-      submitFrame(image, now);
-    },
-    (reason) => halt(reason, true, "camera"),
-    { width: 320, height: 240, intervalMs: 33 },
-  );
-  /**
-   * Send one camera frame to the tracker (latest-frame semantics). Called on
-   * each camera tick and, for low latency, as soon as the tracker replies
-   * when a newer frame is already waiting (owner request 2026-11-04: before,
-   * every reply idled until the next camera tick).
-   */
-  function submitFrame(image: Pixels, now: number) {
-    {
       if (!worker.current || !session.current) return;
-      if (now <= lastSubmittedAt.current) return; // never the same frame twice
       if (busy.current) {
         trackingCounters.current.droppedBusy++;
         const limit =
@@ -968,9 +956,10 @@ export default function LocalPractice() {
         },
         [copy.buffer],
       );
-      lastSubmittedAt.current = now;
-    }
-  }
+    },
+    (reason) => halt(reason, true, "camera"),
+    { width: 320, height: 240, intervalMs: 33 },
+  );
   const handlers = useRef({
     halt,
     show,
@@ -985,7 +974,6 @@ export default function LocalPractice() {
     liveStart: (image: Pixels, live: LiveSetup) => start(undefined, { image, ...live }),
     supervise,
     workerTimeout,
-    submitFrame,
   });
   useEffect(() => {
     handlers.current = {
@@ -1002,7 +990,6 @@ export default function LocalPractice() {
       liveStart: (image: Pixels, live: LiveSetup) => start(undefined, { image, ...live }),
     supervise,
       workerTimeout,
-      submitFrame,
     };
   });
   useEffect(
@@ -1381,6 +1368,7 @@ export default function LocalPractice() {
       if (worker.current)
         halt("Restart requested. The previous attempt is kept in the audit.");
       setResumeRequested(false);
+      recoveryResume.current = false;
     } else
       setResumeRequested(
         !!session.current && sameLesson && !!session.current.stopped,
@@ -1449,7 +1437,6 @@ export default function LocalPractice() {
     }
     locateState.current = "pending";
     locateAt.current = performance.now();
-    const sentAt = locateAt.current;
     console.info(
       `[practice] SAM 3.1 camera locate: asking for ${objects.map((o) => `"${o.noun}"`).join(", ")}`,
     );
@@ -1572,10 +1559,7 @@ export default function LocalPractice() {
           console.warn(
             `[practice] scene changed while SAM was answering (difference ${(diff / n).toFixed(1)}); locating again`,
           );
-          // Retry exactly when the server's 8 s per-session interval allows
-          // (it counts from this request's admission): an earlier retry only
-          // earned an HTTP 429 and another full 8 s wait (owner consoles).
-          locateAt.current = sentAt + 250;
+          locateAt.current = performance.now() - 6_000;
           return;
         }
         handlers.current.liveStart(
@@ -1611,6 +1595,7 @@ export default function LocalPractice() {
       return;
     }
     supervised.current.push(now);
+    recoveryResume.current = true;
     console.info(
       `[felicity] supervisor: ${reason} -> re-locating objects with SAM and restarting live setup (attempt ${supervised.current.length}/4)`,
     );
@@ -1633,6 +1618,7 @@ export default function LocalPractice() {
       );
       return false;
     }
+    recoveryResume.current = false;
     if (!resume && worker.current)
       halt("New attempt requested. Prior audit is retained.");
     const image = {
@@ -1687,7 +1673,8 @@ export default function LocalPractice() {
             : marks[`zone:${b.zoneId}`],
       }));
       const resuming =
-        resumeRequested &&
+        (resumeRequested ||
+          (recoveryResume.current && !!session.current?.stopped)) &&
         session.current?.procedure.id === lesson.procedure.id &&
         session.current?.procedure.version === lesson.procedure.version;
       const objects = automatic
@@ -1786,13 +1773,6 @@ export default function LocalPractice() {
           if (reply.generation !== generation.current) return;
           busy.current = false;
           awaiting.current = null;
-          // The tracker is free: hand it the newest waiting frame right after
-          // this reply is applied, instead of idling until the next tick.
-          queueMicrotask(() => {
-            const waiting = latest.current;
-            if (waiting && latestAt.current > lastSubmittedAt.current)
-              handlers.current.submitFrame(waiting, latestAt.current);
-          });
           if (reply.type !== "error") {
             trackingMeasurements.current = reply.measurements;
             autoFailures.current = 0;
@@ -1887,6 +1867,7 @@ export default function LocalPractice() {
               epoch.method = "source_alignment";
             }
             automaticWanted.current = false;
+            recoveryResume.current = false;
             setStarting(false);
             setRunning(true);
             setStill(null);
@@ -1894,7 +1875,9 @@ export default function LocalPractice() {
             if (session.current?.armed)
               lc({ type: "armed", generation: reply.generation });
             setNotice(
-              "Automatic tracking active. Checking starting positions before the first instruction.",
+              resuming
+                ? "Tracking resumed. Verified steps and last seen positions are kept."
+                : "Automatic tracking active. Checking starting positions before the first instruction.",
             );
             return;
           }

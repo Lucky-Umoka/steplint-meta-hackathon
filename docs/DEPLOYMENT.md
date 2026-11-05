@@ -1,6 +1,6 @@
 # Phase 6 deployment preparation
 
-Checked 2026-11-02. This document describes preparation and reproducible checks, not a completed hosted deployment. See [acceptance status](PHASE6_ACCEPTANCE.md).
+Checked 2026-11-02. This document describes preparation and reproducible checks, not a completed hosted deployment. See acceptance status.
 
 ## Verified cause of the reported Vercel failure
 
@@ -72,4 +72,4 @@ Use build command `npm ci && npm run build`, start command `npm start -- --hostn
 
 Local smoke checks and mocked browser checks do not check this list on a deployed URL.
 
-For non-Vercel Node hosting, the standard profile now allows a 12 MB body / 8 MB video at 1 Mbps. Vercel uses 4 MB / 1.98 MB at 180 kbps. Both process up to 60 seconds at 10 fps with 16 kHz mono WAV. See [current 60-second policy](TEACH_60_SECONDS.md); no live 60-second completion time is guaranteed.
+For non-Vercel Node hosting, the standard profile now allows a 12 MB body / 8 MB video at 1 Mbps. Vercel uses 4 MB / 1.98 MB at 180 kbps. Both process up to 60 seconds at 10 fps with 16 kHz mono WAV. See current 60-second policy; no live 60-second completion time is guaranteed.
