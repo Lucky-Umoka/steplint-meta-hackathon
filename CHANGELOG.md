@@ -9,7 +9,7 @@ All notable changes, newest first. Versions follow semantic versioning.
 - For up to 700 ms after the last clear observation, the tracker now measures the object again with its live appearance, in a window growing from 64 px to at most 128 px. Gates are unchanged (single dominant blob, 0.9 colour score, shape); frames in the grace are uncertain, never observed. Longer losses use the existing bounded recovery.
 
 ### Verified
-- New `tests/practice-live-grace.test.ts` through the real tracker: object hidden one frame then 90 px further on is observed again (failed before the fix); a long loss still recovers through the bounded search; two lookalikes in the grown window stay ambiguous. Full unit suite 795/795, type-check, lint 0 errors, production build. Not yet measured on the owner's physical camera.
+- New `tests/practice-live-grace.test.ts` through the real tracker: object hidden one frame then 90 px further on is observed again (failed before the fix); a long loss still recovers through the bounded search; two lookalikes in the grown window stay ambiguous. Full unit suite 795/795, type-check, lint 0 errors, production build. Practice browser specs: 19/21 on the first full run (the 5 s-loss/red-light and finish-celebration tests timed out while the machine was also building); both passed 2/2 when rerun alone, so possibly flaky under load, not confirmed. Not yet measured on the owner's physical camera.
 
 ## 0.20.0 — 2026-11-05
 
