@@ -2,6 +2,15 @@
 
 All notable changes, newest first. Versions follow semantic versioning.
 
+## 0.20.2 — 2026-11-05
+
+### Reverted (owner, physical camera: "worse than before … it doesn't automatically verify")
+- 0.20.1's live re-measure grace removed; tracker restored to 0.20.0.
+- Cause: the search window grew with time since the last observation, which during normal tracking is the frame interval. At the owner's 0.4–1.8 s tracked cadence every frame searched the 128 px maximum, competing same-colour regions made the object ambiguous, and nothing verified. Tests ran at ~30 frames/s and could not expose it.
+
+### Verified
+- Unit suite, type-check, lint on restored code. Owner physical test pending.
+
 ## 0.20.1 — 2026-11-05
 
 ### Fixed (owner: "one second it sees the object, next it is gone")
