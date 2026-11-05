@@ -87,12 +87,35 @@ function groundNative(
     track: groundAppearance(image, id, box),
   };
 }
+/**
+ * Live re-measure grace (owner 2026-11-05: "one second it sees the object,
+ * next it is gone"). One failed frame (blur, a passing hand, a carry larger
+ * than the search window at a low tracked frame rate) used to latch the object
+ * as lost and send it to the slow Teach-template recovery. For a short grace
+ * the LIVE appearance is measured again, in a window that grows with elapsed
+ * time. Every gate is unchanged (single dominant blob, 0.9 colour score,
+ * shape); frames inside the grace are reported as ambiguous, never observed.
+ */
+export const LIVE_GRACE = {
+  ms: 700,
+  baseRadiusPx: 64,
+  /** Plausible hand-carry speed in tracking pixels per millisecond. */
+  growthPxPerMs: 0.2,
+  maxRadiusPx: 128,
+} as const;
+export function graceRadius(elapsedMs: number) {
+  return Math.min(
+    LIVE_GRACE.maxRadiusPx,
+    LIVE_GRACE.baseRadiusPx + Math.max(0, elapsedMs) * LIVE_GRACE.growthPxPerMs,
+  );
+}
 function measureNative(
   image: Pixels,
   frame: ReturnType<typeof prepareTrackingFrame>,
   profile: NativeTrack,
   retainFraction = 0.8,
   occluders: Box[] = [],
+  searchRadius: number = LIVE_GRACE.baseRadiusPx,
 ): ObjectDetection {
   if (profile.lost)
     return {
@@ -102,7 +125,12 @@ function measureNative(
       score: null,
     };
   if (profile.method === "native_palette") {
-    const detection = measureNativePalette(image, profile.track);
+    const detection = measureNativePalette(
+      image,
+      profile.track,
+      false,
+      searchRadius,
+    );
     if (detection.quality !== "observed" && !profile.track.partialIdentity)
       profile.lost = true;
     return detection;
@@ -178,6 +206,8 @@ type Slot = {
   sourcePalette?: NativePalette | null;
   /** Observed frames since the last approved-palette upgrade attempt. */
   upgradeTick?: number;
+  /** Time of the last clearly observed measurement (live re-measure grace). */
+  lastObservedMs?: number;
   /** Last reliable live box, or the approved expected location if never seen. */
   lastBox: Box | null;
   /** Approved start box in live coordinates (colour grounding while there). */
@@ -637,6 +667,8 @@ export function trackLocal(
       }
     }
     if (slot.identity.status === "tracked" && slot.profile) {
+      const sinceObserved =
+        slot.lastObservedMs === undefined ? null : nowMs - slot.lastObservedMs;
       const detection = measureNative(
         image,
         frame,
@@ -647,8 +679,10 @@ export function trackLocal(
               .filter((other) => !other.fixed && other.lastBox)
               .map((other) => other.lastBox!)
           : [],
+        sinceObserved === null ? LIVE_GRACE.baseRadiusPx : graceRadius(sinceObserved),
       );
       if (detection.quality === "observed" && detection.box) {
+        slot.lastObservedMs = nowMs;
         slot.lastBox = { ...detection.box };
         measured.set(id, detection);
         // A mover set up on a frame where its colour profile could not be
@@ -687,7 +721,23 @@ export function trackLocal(
       const identityStillVisible =
         slot.profile.method === "native_palette" &&
         !!slot.profile.track.partialIdentity;
+      if (
+        !state.fixed[id] &&
+        !identityStillVisible &&
+        sinceObserved !== null &&
+        sinceObserved >= 0 &&
+        sinceObserved <= LIVE_GRACE.ms
+      ) {
+        // Brief live re-measure grace: uncertain this frame, measured again
+        // next frame with the same live appearance (never credited unseen).
+        slot.profile.lost = false;
+        if (slot.profile.method === "native_palette")
+          slot.profile.track.lost = false;
+        measured.set(id, detection);
+        continue;
+      }
       if (!state.fixed[id] && !identityStillVisible) {
+        slot.lastObservedMs = undefined;
         slot.identity = loseIdentity(slot.identity, nowMs);
         events.push({
           objectId: id,

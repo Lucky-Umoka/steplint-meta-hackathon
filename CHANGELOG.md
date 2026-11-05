@@ -2,6 +2,15 @@
 
 All notable changes, newest first. Versions follow semantic versioning.
 
+## 0.20.1 — 2026-11-05
+
+### Fixed (owner: "one second it sees the object, next it is gone")
+- Root cause: one failed frame (blur, a passing hand, or a carry larger than the 64 px live window at the 2–3 tracked frames/s seen in the owner's exports) latched a moving object as lost. Recovery then needed the Teach-video appearance and three consistent matches, at most three tries in 2 s, then "Show it clearly" (exports: lost 123.9 s → gave up 127.0 s; 188.1 s → 190.2 s).
+- For up to 700 ms after the last clear observation, the tracker now measures the object again with its live appearance, in a window growing from 64 px to at most 128 px. Gates are unchanged (single dominant blob, 0.9 colour score, shape); frames in the grace are uncertain, never observed. Longer losses use the existing bounded recovery.
+
+### Verified
+- New `tests/practice-live-grace.test.ts` through the real tracker: object hidden one frame then 90 px further on is observed again (failed before the fix); a long loss still recovers through the bounded search; two lookalikes in the grown window stay ambiguous. Full unit suite 795/795, type-check, lint 0 errors, production build. Not yet measured on the owner's physical camera.
+
 ## 0.20.0 — 2026-11-05
 
 ### Changed (owner: "it forgot in one second" and asked to move the bowl back)

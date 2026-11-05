@@ -6,8 +6,8 @@ export default defineConfig([
   ...nextTypescript,
   { rules: { "@typescript-eslint/no-explicit-any": "error" } },
   globalIgnores([
-    // Agent worktrees are separate checkouts, not project source.
-    ".claude/**",
+    // Local git worktrees are separate checkouts, not project source.
+    "**/worktrees/**",
     ".next/**",
     ".next-production/**",
     ".next-verify/**",
